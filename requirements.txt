@@ -1,0 +1,10 @@
+openai
+google-genai
+python-dotenv
+requests
+PyPDF2
+rich
+beautifulsoup4
+webtech
+google-api-python-client
+selenium
