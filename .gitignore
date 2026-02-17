@@ -1,0 +1,10 @@
+nano .gitignore
+```
+
+Escribe esto adentro:
+```
+.env
+venv/
+__pycache__/
+*.pyc
+*.zip
