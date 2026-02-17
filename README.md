@@ -20,7 +20,7 @@
 
 1.  **Clonar el repositorio**:
     ```bash
-    git clone https://github.com/tu-repo/scannus.git
+    git clone https://github.com/kahz12/scannus.git
     cd scannus
     ```
 
@@ -131,7 +131,7 @@ Desarrollado con ❤️ por Ale
 
 1.  **Clone the repository**:
     ```bash
-    git clone https://github.com/your-repo/scannus.git
+    git clone https://github.com/kahz12/scannus.git
     cd scannus
     ```
 
