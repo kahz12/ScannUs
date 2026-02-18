@@ -1,9 +1,5 @@
-nano .gitignore
-```
-
-Escribe esto adentro:
-```
 .env
+.venv/
 venv/
 __pycache__/
 *.pyc
