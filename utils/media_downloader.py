@@ -1,30 +1,32 @@
-# Importaciones de bibliotecas estándar y de terceros
+# Standard and third-party library imports
 import os
-import requests  # Para realizar peticiones HTTP a las URLs.
-import tempfile  # Para crear directorios temporales que se limpian automáticamente.
-import zipfile   # Para crear y gestionar archivos ZIP.
-from urllib.parse import urljoin, urlparse  # Para construir y analizar URLs de forma robusta.
-from bs4 import BeautifulSoup  # Biblioteca para extraer datos de archivos HTML y XML.
-from rich.console import Console  # Para crear salidas de terminal ricas y atractivas.
-from rich.progress import Progress, BarColumn, DownloadColumn, TransferSpeedColumn, TimeRemainingColumn # Componentes para barras de progreso.
-from rich.table import Table # Para mostrar datos en tablas bien formateadas.
-from rich.box import ROUNDED # Estilo para las cajas de los paneles y tablas de rich.
+import requests  # To make HTTP requests to URLs.
+import tempfile  # To create temporary directories that clean up automatically.
+import zipfile   # To create and manage ZIP files.
+from urllib.parse import urljoin, urlparse  # To build and parse URLs robustly.
+from bs4 import BeautifulSoup  # Library to extract data from HTML and XML files.
+from rich.console import Console  # To create rich and attractive terminal outputs.
+from rich.progress import Progress, BarColumn, DownloadColumn, TransferSpeedColumn, TimeRemainingColumn # Components for progress bars.
+from rich.table import Table # To display data in well-formatted tables.
+from rich.box import ROUNDED # Style for rich panels and tables boxes.
+from core.config import DIR_MEDIA
 
-# Inicializa una única instancia de la consola de `rich` para ser usada en todo el módulo.
+# Initializes a single instance of the `rich` console to be used throughout the module.
 console = Console()
 
 def download_media_from_url(url, output_zip_path="media_download.zip", media_type='all'):
     """
-    Función principal que orquesta la descarga de medios desde una página web.
-    Navega a una URL, extrae enlaces de imágenes y/o videos, los descarga a un
-    directorio temporal y finalmente los comprime en un archivo ZIP.
+    Main function that orchestrates downloading media from a webpage.
+    Navigates to a URL, extracts image and/or video links, downloads them to a
+    temporary directory, and finally compresses them into a ZIP file.
 
     Args:
-        url (str): La URL de la página web a analizar.
-        output_zip_path (str): La ruta donde se guardará el archivo ZIP final.
-        media_type (str): Especifica qué tipo de medio descargar.
-                          Puede ser 'images', 'videos' o 'all'.
+        url (str): The URL of the webpage to analyze.
+        output_zip_path (str): The path where the final ZIP file will be saved.
+        media_type (str): Specifies what type of media to download.
+                          Can be 'images', 'videos' or 'all'.
     """
+    output_zip_path = os.path.join(DIR_MEDIA, os.path.basename(output_zip_path))
     # Define cabeceras de User-Agent para simular una petición desde un navegador web,
     # lo que puede ayudar a evitar bloqueos por parte de algunos servidores.
     headers = {
@@ -150,8 +152,8 @@ def download_media_from_url(url, output_zip_path="media_download.zip", media_typ
 
 def download_media(url, output_path, media_type='all'):
     """
-    Función de conveniencia que sirve como punto de entrada principal para la descarga.
-    Simplemente llama a la función más detallada `download_media_from_url`.
-    Esto proporciona una API más simple para los módulos que la importan.
+    Convenience function that serves as the main entry point for downloading.
+    Simply calls the more detailed `download_media_from_url` function.
+    This provides a simpler API for the modules that import it.
     """
     download_media_from_url(url, output_path, media_type)
