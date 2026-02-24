@@ -4,35 +4,35 @@ import os
 
 class BraveSearch:
     """
-    Clase para realizar búsquedas utilizando la API de Brave Search.
-    Requiere una API Key válida.
+    Class to perform searches using the Brave Search API.
+    Requires a valid API Key.
     """
 
     def __init__(self, api_key):
         """
-        Inicializa la instancia de BraveSearch.
+        Initializes the BraveSearch instance.
 
         Args:
-            api_key (str): Tu clave de API de Brave Search.
+            api_key (str): Your Brave Search API key.
         """
         self.api_key = api_key
         self.base_url = "https://api.search.brave.com/res/v1/web/search"
 
     def search(self, query, pages=1):
         """
-        Realiza una búsqueda en Brave Search.
+        Performs a search on Brave Search.
 
         Args:
-            query (str): La consulta de búsqueda.
-            pages (int): Número de páginas de resultados (Brave permite hasta 20 resultados por request, 
-                         pero paginación compleja. Simplificaremos a iterar offset).
+            query (str): The search query.
+            pages (int): Number of result pages (Brave allows up to 20 results per request,
+                         but complex pagination. We simplify by iterating offset).
 
         Returns:
-            list: Lista de diccionarios con resultados (title, description, link).
+            list: List of dictionaries with results (title, description, link).
         """
         final_results = []
-        # La API de Brave Search por defecto devuelve 20 resultados dependiendo del plan,
-        # pero el parámetro 'count' máximo es 20.
+        # The Brave Search API default returns 20 results depending on the plan,
+        # but the maximum 'count' parameter is 20.
         count = 20
         
         headers = {
@@ -42,15 +42,15 @@ class BraveSearch:
         }
 
         for page in range(pages):
-            # La API de Brave usa paginación basada en offset (0, 1, 2...).
-            # El parámetro 'offset' indica el número de página de resultados a saltar (no la cantidad de ítems).
-            # Por ejemplo: página 1 -> offset=0, página 2 -> offset=1.
-            # Nota: El límite máximo de offset suele ser 9 en los planes estándar.
+            # The Brave API uses offset-based pagination (0, 1, 2...).
+            # The 'offset' parameter indicates the number of result pages to skip (not item count).
+            # For example: page 1 -> offset=0, page 2 -> offset=1.
+            # Note: The maximum offset limit is typically 9 in standard plans.
             
             params = {
                 "q": query,
                 "count": count,
-                "offset": page # 0 para la primera página, 1 para la segunda...
+                "offset": page # 0 for the first page, 1 for the second...
             }
             
             try:
@@ -58,13 +58,13 @@ class BraveSearch:
                 response.raise_for_status()
                 data = response.json()
                 
-                # Estructura de la respuesta de Brave:
+                # Brave response structure:
                 # { "web": { "results": [ ... ] } }
                 
                 web_results = data.get("web", {}).get("results", [])
                 
                 for result in web_results:
-                    # Claves de los resultados de Brave: 'title', 'url' (enlace), 'description'
+                    # Brave result keys: 'title', 'url' (link), 'description'
                     final_results.append({
                         "title": result.get("title"),
                         "description": result.get("description"),

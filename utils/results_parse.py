@@ -1,39 +1,43 @@
-# Importaciones de bibliotecas estándar
+# Standard library imports
 import json
 import os
 import csv
+import openpyxl
+from openpyxl.styles import Font
 from rich.console import Console
 from rich.table import Table
+from core.config import DIR_REPORTS
 
-# Define la clase para procesar y mostrar los resultados de búsqueda.
+# Defines the class to process and display search results.
 class ResultsParser:
     """
-    Clase diseñada para manejar los resultados obtenidos de una búsqueda.
-    Proporciona métodos para formatear y exportar estos resultados a diferentes
-    formatos, como una tabla en la consola, un archivo HTML o un archivo JSON.
+    Class designed to handle search results.
+    Provides methods to format and export these results to different
+    formats, such as a table in the console, an HTML file, or a JSON file.
     """
 
     def __init__(self, resultados):
         """
-        Inicializa el parser con una lista de resultados.
+        Initializes the parser with a list of results.
 
         Args:
-            resultados (list): Una lista de diccionarios. Cada diccionario representa
-                               un resultado de búsqueda y debe contener claves como
-                               'title', 'description' y 'link'.
+            resultados (list): A list of dictionaries. Each dictionary represents
+                               a search result and must contain keys like
+                               'title', 'description' and 'link'.
         """
         self.resultados = resultados
 
     def exportar_html(self, archivo_salida):
         """
-        Exporta los resultados de la búsqueda a un archivo HTML bien formateado.
+        Exports search results to a well-formatted HTML file.
 
-        Este método utiliza una plantilla HTML predefinida (`html_template.html`)
-        para asegurar una estructura y estilo consistentes en el informe final.
+        This method uses a predefined HTML template (`html_template.html`)
+        to ensure consistent structure and styling in the final report.
 
         Args:
-            archivo_salida (str): La ruta y el nombre del archivo HTML a crear.
+            archivo_salida (str): The path and name of the HTML file to create.
         """
+        archivo_salida = os.path.join(DIR_REPORTS, os.path.basename(archivo_salida))
         try:
             # Define la ruta a la plantilla HTML. Se asume que está en el mismo directorio.
             template_path = "html_template.html"
@@ -76,11 +80,12 @@ class ResultsParser:
 
     def exportar_csv(self, archivo_salida):
         """
-        Exporta una lista de resultados a un archivo CSV.
+        Exports a list of results to a CSV file.
         
         Args:
-            archivo_salida (str): La ruta del archivo CSV a crear.
+            archivo_salida (str): The path to the CSV file to create.
         """
+        archivo_salida = os.path.join(DIR_REPORTS, os.path.basename(archivo_salida))
         try:
             with open(archivo_salida, 'w', newline='', encoding='utf-8') as f:
                 writer = csv.writer(f)
@@ -93,13 +98,55 @@ class ResultsParser:
         except Exception as e:
             print(f"Ocurrió un error inesperado al exportar a CSV: {e}")
 
+    def exportar_excel(self, archivo_salida):
+        """
+        Exports a list of results to an Excel file (.xlsx).
+        
+        Args:
+            archivo_salida (str): The path to the Excel file to create.
+        """
+        archivo_salida = os.path.join(DIR_REPORTS, os.path.basename(archivo_salida))
+        try:
+            # Crear un libro de trabajo y seleccionar la hoja activa
+            wb = openpyxl.Workbook()
+            ws = wb.active
+            ws.title = "Resultados"
+            
+            # Definir estilos
+            header_font = Font(bold=True)
+            
+            # Escribir cabecera
+            headers = ['ID', 'Título', 'Descripción', 'Enlace']
+            ws.append(headers)
+            
+            for cell in ws[1]:
+                cell.font = header_font
+            
+            # Escribir datos
+            for i, r in enumerate(self.resultados, 1):
+                ws.append([i, r.get('title', ''), r.get('description', ''), r.get('link', '')])
+            
+            # Ajustar anchos básicos
+            ws.column_dimensions['A'].width = 5
+            ws.column_dimensions['B'].width = 40
+            ws.column_dimensions['C'].width = 80
+            ws.column_dimensions['D'].width = 60
+            
+            # Guardar archivo
+            wb.save(archivo_salida)
+            print(f"Resultados exportados a Excel. Fichero creado: {archivo_salida}")
+            
+        except Exception as e:
+            print(f"Ocurrió un error inesperado al exportar a Excel: {e}")
+
     def exportar_json(self, archivo_salida):
         """
-        Exporta la lista de resultados a un archivo en formato JSON.
+        Exports the list of results to a JSON formatted file.
 
         Args:
-            archivo_salida (str): La ruta y el nombre del archivo JSON a crear.
+            archivo_salida (str): The path and name of the JSON file to create.
         """
+        archivo_salida = os.path.join(DIR_REPORTS, os.path.basename(archivo_salida))
         try:
             # Abre el archivo de salida en modo de escritura.
             with open(archivo_salida, 'w', encoding='utf-8') as f:
@@ -117,13 +164,13 @@ class ResultsParser:
 
     def to_table(self):
         """
-        Convierte la lista de resultados en una tabla formateada para la consola.
+        Converts the list of results into a formatted table for the console.
 
-        Utiliza la biblioteca `rich` para crear una tabla visualmente atractiva y legible,
-        ideal para mostrar la información directamente en la terminal.
+        Uses the `rich` library to create a visually appealing and readable table,
+        ideal for displaying information directly in the terminal.
 
         Returns:
-            Table: Un objeto `Table` de `rich` que puede ser impreso en la consola.
+            Table: A `rich` `Table` object that can be printed to the console.
         """
         # Crea una instancia de la tabla, definiendo el estilo de la cabecera.
         table = Table(show_header=True, header_style='green')
