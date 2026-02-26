@@ -17,83 +17,93 @@ import cli.actions
 import os
 
 def select_ia_agent():
+    """
+    Orchestrates the selection and initialization of the AI inference engine.
+    Ensures the target provider (Gemini or OpenAI) has the required credentials 
+    mapped in the local environment before instantiation.
+    """
     respuesta = ""
     while respuesta.lower() not in ("ge", "op"):
-        respuesta = input("¿Qué modelo de IA quieres utilizar? Gemini (ge) o OpenAI (op): ")
+        respuesta = input("Which AI model do you want to use? Gemini (ge) or OpenAI (op): ")
     
     if respuesta.lower() == "ge":
         if not os.getenv("GOOGLE_API_KEY_FOR_GEMINI"):
-            console.print("[bold red]Error: La clave GOOGLE_API_KEY_FOR_GEMINI no se encuentra en .env.[/bold red]")
+            console.print("[bold red]Error: GOOGLE_API_KEY_FOR_GEMINI not found in .env.[/bold red]")
             return None
-        console.print("--- Usando Gemini ---", style="bold green")
+        console.print("--- Using Gemini ---", style="bold green")
         return IAAgent(GeminiGenerator())
     elif respuesta.lower() == "op":
         if not os.getenv("OPENAI_API_KEY"):
-            console.print("[bold yellow]La API Key de OpenAI no está configurada.[/bold yellow]")
+            console.print("[bold yellow]OpenAI API Key is not configured.[/bold yellow]")
             openai_config()
-        console.print("--- Usando OpenAI ---", style="bold green")
+        console.print("--- Using OpenAI ---", style="bold green")
         return IAAgent(OpenAIGenerator(model_name="gpt-4o"))
     return None
 
 def process_selected_url(url, ia_agent):
+    """
+    TUI menu for deep analysis of a specific search result (URL).
+    Provides access to text summarization, metadata extraction, tech stack scanning,
+    Wayback Machine auditing, and AI-driven relationship mapping.
+    """
     while True:
-        console.print(f"\n--- Analizando URL: [cyan]{url}[/cyan] ---", style="bold blue")
-        console.print("Elige una acción:")
-        console.print("1. [green]Resumir[/green] contenido con IA")
-        console.print("2. [green]Extraer[/green] información (emails, teléfonos, etc.)")
-        console.print("3. [green]Escanear[/green] tecnologías web")
-        console.print("4. [green]Descargar[/green] archivo (si es un enlace directo)")
-        console.print("5. [green]Descargar Medios[/green] (imágenes/videos) de la página)")
-        console.print("6. [magenta]Capturar Pantalla[/magenta] (Screenshot)")
-        console.print("7. [magenta]Verificar histórico[/magenta] en Wayback Machine")
-        console.print("8. [yellow]Traducir y Analizar[/yellow] contexto con IA")
-        console.print("9. [yellow]Grafo de Entidades[/yellow] (Pyvis) con IA")
-        console.print("10. [cyan]Extracción Profunda[/cyan] (Renderizado JS / Contenido Oculto)")
-        console.print("0. [red]Volver[/red] al menú principal")
+        console.print(f"\n--- Analyzing URL: [cyan]{url}[/cyan] ---", style="bold blue")
+        console.print("Choose an action:")
+        console.print("1. [green]Summarize[/green] content with AI")
+        console.print("2. [green]Extract[/green] PII (emails, phones, etc.)")
+        console.print("3. [green]Scan[/green] web technologies")
+        console.print("4. [green]Download[/green] file (direct link only)")
+        console.print("5. [green]Download Media[/green] (images/videos) from page")
+        console.print("6. [magenta]Capture Screenshot[/magenta] (Headless)")
+        console.print("7. [magenta]Verify history[/magenta] in Wayback Machine")
+        console.print("8. [yellow]Deep Analysis[/yellow] with AI")
+        console.print("9. [yellow]Entity Graph[/yellow] (Pyvis) via AI")
+        console.print("10. [cyan]Deep Scraping[/cyan] (JS Rendering / Hidden Content)")
+        console.print("0. [red]Return[/red] to main menu")
         action = input("> ").strip()
 
         if action == '1':
             if not ia_agent:
-                console.print("[bold red]Requiere configurar una IA para esta opción.[/bold red]")
+                console.print("[bold red]AI configuration is required for this action.[/bold red]")
                 continue
-            console.print("\n[yellow]Obteniendo y resumiendo contenido...[/yellow]")
+            console.print("\n[yellow]Fetching and summarizing content...[/yellow]")
             page_text = get_text_from_url(url)
             if page_text:
                 summary = summarize_text_with_ia(page_text, ia_agent)
-                console.print("\n--- Resumen ---", style="bold green")
+                console.print("\n--- Summary ---", style="bold green")
                 console.print(summary)
         
         elif action == '2':
-            console.print("\n[yellow]Extrayendo información...[/yellow]")
+            console.print("\n[yellow]Extracting information...[/yellow]")
             page_text = get_text_from_url(url)
             if page_text:
                 extracted_data = extract_information(page_text)
                 if extracted_data:
-                    table = Table(title="Información Extraída", show_header=True, header_style="bold magenta")
-                    table.add_column("Tipo de Dato", style="cyan")
-                    table.add_column("Valores Encontrados", style="green")
+                    table = Table(title="Extracted Information", show_header=True, header_style="bold magenta")
+                    table.add_column("Data Type", style="cyan")
+                    table.add_column("Found Values", style="green")
                     for key, values in extracted_data.items():
                         table.add_row(key.replace('_', ' ').capitalize(), "\n".join(values))
                     console.print(table)
                 else:
-                    console.print("  [yellow]No se encontró información extraíble (emails, teléfonos, etc.).[/yellow]")
+                    console.print("  [yellow]No extractable identifiers (emails, phones) found.[/yellow]")
         
         elif action == '3':
             tech_scan(url)
 
         elif action == '4':
-            console.print("\n[yellow]Intentando descargar...[/yellow]")
+            console.print("\n[yellow]Attempting download...[/yellow]")
             fdownloader = FileDownload()
             fdownloader.descargar_archivo_directo(url, extract_metadata=True)
 
         elif action == '5':
-            console.print("\n[yellow]Iniciando descarga de medios...[/yellow]")
+            console.print("\n[yellow]Starting media download pipeline...[/yellow]")
             try:
                 domain = urlparse(url).netloc.replace('.', '_')
                 zip_file_name = f"{domain}_media.zip"
                 download_media(url, zip_file_name)
             except Exception as e:
-                console.print(f"[bold red]Ocurrió un error durante la descarga de medios:[/bold red] {e}")
+                console.print(f"[bold red]Error during media download:[/bold red] {e}")
 
         elif action == '6':
             take_screenshot(url)
@@ -103,56 +113,64 @@ def process_selected_url(url, ia_agent):
             
         elif action == '8':
             if not ia_agent:
-                console.print("[bold red]Requiere configurar una IA para esta opción.[/bold red]")
+                console.print("[bold red]AI configuration is required for this action.[/bold red]")
                 continue
-            console.print("\n[yellow]Obteniendo contenido para traducir y analizar...[/yellow]")
+            console.print("\n[yellow]Fetching content for deep analysis...[/yellow]")
             page_text = get_text_from_url(url)
             if page_text:
                 analysis = translate_and_analyze_with_ia(page_text, ia_agent)
-                console.print("\n--- Análisis de IA ---", style="bold green")
+                console.print("\n--- AI Analysis ---", style="bold green")
                 console.print(analysis)
                 
         elif action == '9':
             if not ia_agent:
-                console.print("[bold red]Requiere configurar una IA para esta opción.[/bold red]")
+                console.print("[bold red]AI configuration is required for this action.[/bold red]")
                 continue
-            console.print("\n[yellow]Extrayendo entidades para construir grafo...[/yellow]")
+            console.print("\n[yellow]Extracting entities to build relationship graph...[/yellow]")
             page_text = get_text_from_url(url)
             if page_text:
                 domain = urlparse(url).netloc.replace('.', '_')
-                graph_file = f"grafo_{domain}.html"
+                graph_file = f"graph_{domain}.html"
                 result_file = extract_entities_and_graph(page_text, ia_agent, output_filename=graph_file)
                 if result_file:
-                    console.print(f"[bold green]Se ha creado el archivo de grafo de relaciones:[/bold green] {result_file}")
+                    console.print(f"[bold green]Relationship graph generated:[/bold green] {result_file}")
                     
         elif action == '10':
-            console.print("\n[yellow]Iniciando Extracción Profunda (esto puede tardar unos segundos)...[/yellow]")
+            console.print("\n[yellow]Starting Deep Scraping (JS execution may take several seconds)...[/yellow]")
             page_text = get_dynamic_text_from_url(url)
             if page_text:
-                console.print(f"\n[green]Extracción exitosa. Longitud del texto recuperado: {len(page_text)} caracteres.[/green]")
-                console.print("[cyan]Analizando información vital (emails, teléfonos)...[/cyan]")
+                console.print(f"\n[green]Scraping successful. Retrieved {len(page_text)} characters.[/green]")
+                console.print("[cyan]Analyzing vital identifiers...[/cyan]")
                 extracted_data = extract_information(page_text)
                 if extracted_data:
-                    table = Table(title="Información Extraída (Scraping Profundo)", show_header=True, header_style="bold magenta")
-                    table.add_column("Tipo de Dato", style="cyan")
-                    table.add_column("Valores Encontrados", style="green")
+                    table = Table(title="Extracted Information (Deep Scraping)", show_header=True, header_style="bold magenta")
+                    table.add_column("Data Type", style="cyan")
+                    table.add_column("Found Values", style="green")
                     for key, values in extracted_data.items():
                         table.add_row(key.replace('_', ' ').capitalize(), "\n".join(values))
                     console.print(table)
                 else:
-                    console.print("  [yellow]No se encontró información extraíble en el texto profundo.[/yellow]")
+                    console.print("  [yellow]No extractable identifiers found in deep content.[/yellow]")
                 
         elif action == '0':
             break
         else:
-            console.print("[bold red]Opción no válida.[/bold red]")
+            console.print("[bold red]Invalid option.[/bold red]")
 
 
 def interactive_analysis_menu(resultados, ia_agent):
+    """
+    Main interactive loop for processing search results.
+    Enables iterative analysis, mass data exports (Excel), media scraping,
+    and investigation state persistence (Case Management).
+    """
     state.ULTIMOS_RESULTADOS = resultados
-    if not state.CASO_ACTUAL["terminos"]:
-        state.CASO_ACTUAL["terminos"] = {"tipo": "manual", "valor": "N/A"}
     
+    # Initialize session metadata if unpopulated
+    if not state.CASO_ACTUAL["terminos"]:
+        state.CASO_ACTUAL["terminos"] = {"type": "manual", "value": "N/A"}
+    
+    # Standardize result schema for internal state tracking
     formatted_results = []
     for i, r in enumerate(resultados):
         formatted_results.append({
@@ -162,33 +180,33 @@ def interactive_analysis_menu(resultados, ia_agent):
     state.CASO_ACTUAL["resultados"] = formatted_results
     
     while True:
-        table = Table(title="Resultados de la Búsqueda", show_header=True, header_style="bold green")
+        table = Table(title="Search Results", show_header=True, header_style="bold green")
         table.add_column("ID", style="dim", width=4)
-        table.add_column("Título", style="bold")
-        table.add_column("Enlace", style="cyan")
+        table.add_column("Title", style="bold")
+        table.add_column("Link", style="cyan")
         for res in state.CASO_ACTUAL["resultados"]:
             table.add_row(str(res['id']), res['title'], res['link'])
         console.print(table)
 
-        console.print("\n[bold]Selecciona una opción:[/bold]")
-        console.print(" - Ingresa el [cyan]número (ID)[/cyan] del resultado para analizarlo.")
-        console.print(" - Escribe '[magenta]media[/magenta]' para descargar imágenes/videos de uno o más resultados.")
-        console.print(" - Escribe '[yellow]guardar[/yellow]' para guardar la sesión actual como un caso.")
-        console.print(" - Escribe '[green]excel[/green]' para exportar la sesión a Excel.")
-        console.print(" - Escribe '[red]salir[/red]' para terminar.")
+        console.print("\n[bold]Select an option:[/bold]")
+        console.print(" - Enter the [cyan]ID number[/cyan] to analyze a specific result.")
+        console.print(" - Type '[magenta]media[/magenta]' to batch-download media from results.")
+        console.print(" - Type '[yellow]save[/yellow]' to persist current session to DB.")
+        console.print(" - Type '[green]excel[/green]' to export session to Excel.")
+        console.print(" - Type '[red]exit[/red]' to quit.")
         choice = input("\n> ").strip().lower()
 
-        if choice == 'salir':
+        if choice in ('exit', 'salir'):
             break
         
-        if choice == 'guardar':
+        if choice in ('save', 'guardar'):
             guardar_caso()
             continue
             
         if choice == 'excel':
-            archivo = input("Ingrese el nombre del archivo Excel (ej: resultados.xlsx) [resultados.xlsx]: ").strip()
+            archivo = input("Enter Excel filename (e.g., results.xlsx) [results.xlsx]: ").strip()
             if not archivo:
-                archivo = "resultados.xlsx"
+                archivo = "results.xlsx"
             if not archivo.endswith('.xlsx'):
                 archivo += '.xlsx'
             rparser = ResultsParser(state.CASO_ACTUAL.get("resultados", []))
@@ -196,21 +214,21 @@ def interactive_analysis_menu(resultados, ia_agent):
             continue
             
         if choice == 'media':
-            ids_str = input("Elige el ID o los IDs a descargar, separados por comas (ej: 1, 3, 8): ")
+            ids_str = input("Enter result IDs to download, separated by commas (e.g., 1, 3, 8): ")
             ids_to_download = [int(i.strip()) for i in ids_str.split(',') if i.strip().isdigit()]
             
             for index in ids_to_download:
                 if 0 < index <= len(state.CASO_ACTUAL["resultados"]):
                     url = state.CASO_ACTUAL["resultados"][index - 1]['link']
-                    console.print(f"\n[yellow]Iniciando descarga de medios para ID {index} ({url})...[/yellow]")
+                    console.print(f"\n[yellow]Starting media download for ID {index} ({url})...[/yellow]")
                     try:
                         domain = urlparse(url).netloc.replace('.', '_')
                         zip_file_name = f"{domain}_media.zip"
                         download_media(url, zip_file_name)
                     except Exception as e:
-                        console.print(f"[bold red]Ocurrió un error durante la descarga de medios para ID {index}:[/bold red] {e}")
+                        console.print(f"[bold red]Error during media download for ID {index}: {e}[/bold red]")
                 else:
-                    console.print(f"[bold red]ID '{index}' está fuera de rango y será ignorado.[/bold red]")
+                    console.print(f"[bold red]ID '{index}' out of range. Skipping.[/bold red]")
             continue
 
         try:
@@ -219,65 +237,78 @@ def interactive_analysis_menu(resultados, ia_agent):
                 selected_url = state.CASO_ACTUAL["resultados"][index]['link']
                 process_selected_url(selected_url, ia_agent)
             else:
-                console.print("[bold red]Número fuera de rango. Inténtalo de nuevo.[/bold red]")
+                console.print("[bold red]Index out of range. Please try again.[/bold red]")
         except ValueError:
-            console.print("[bold red]Entrada no válida. Ingresa un número, 'media', 'guardar', 'excel' o 'salir'.[/bold red]")
+            console.print("[bold red]Invalid input. Enter an ID, 'media', 'save', 'excel', or 'exit'.[/bold red]")
 
 def show_main_menu():
+    """
+    Root navigation menu for ScannUs.
+    Coordinates the primary workflows: search, image lookup, case loading, and configuration.
+    """
     while True:
-        console.rule("[bold green]Menú Principal de ScannUs[/bold green]")
-        console.print("1. [cyan]Búsqueda Guiada[/cyan] (por nombre, usuario, etc.)")
-        console.print("2. [cyan]Búsqueda Directa[/cyan] (con dork personalizado)")
-        console.print("3. [yellow]Generar Dork con IA[/yellow]")
-        console.print("4. [magenta]Búsqueda Inversa de Imagen[/magenta]")
-        console.print("5. [blue]Analizar Tecnologías de un Sitio Web[/blue]")
-        console.print("6. [green]Cargar Caso de Investigación[/green]")
-        console.print("7. [red]Configurar Claves de API[/red]")
-        console.print("8. [bold red]Salir[/bold red]")
+        console.rule("[bold green]ScannUs Main Menu[/bold green]")
+        console.print("1. [cyan]Guided Search[/cyan] (by Name, Username, Email...)")
+        console.print("2. [cyan]Direct Search[/cyan] (Raw Google Dork)")
+        console.print("3. [yellow]AI Dork Generator[/yellow]")
+        console.print("4. [magenta]Reverse Image Lookup[/magenta]")
+        console.print("5. [blue]Web Technology Analysis[/blue]")
+        console.print("6. [green]Load Saved Case[/green]")
+        console.print("7. [red]Configure API Keys[/red]")
+        console.print("8. [bold red]Exit[/bold red]")
         console.rule()
         
         choice = input("> ").strip()
 
         if choice == '1':
-            console.print("[bold cyan]--- Búsqueda Guiada ---[/bold cyan]")
-            nombre = input("Nombre completo (opcional): ")
-            usuario = input("Nombre de usuario (opcional): ")
-            buscar = input("Término general (opcional): ")
+            console.print("[bold cyan]--- Guided Search ---[/bold cyan]")
+            nombre = input("Full Name (optional): ")
+            usuario = input("Username/Handle (optional): ")
+            email = input("Email address (optional): ")
+            telefono = input("Phone number (optional): ")
+            buscar = input("General search term (optional): ")
             
+            # Aggregate search fragments into a Boolean AND query
             guided_parts = []
             if nombre: guided_parts.append(f'"{nombre}"')
             if usuario: guided_parts.append(f'"{usuario}"')
+            if email: guided_parts.append(f'"{email}"')
+            if telefono: guided_parts.append(f'"{telefono}"')
             if buscar: guided_parts.append(f'"{buscar}"')
             
             if not guided_parts:
-                console.print("[bold red]Debe ingresar al menos un término de búsqueda.[/bold red]")
+                console.print("[bold red]At least one search term is required.[/bold red]")
                 continue
             
             query = " AND ".join(guided_parts)
-            engine = input("Motor de búsqueda (google/duckduckgo/brave) [duckduckgo]: ").lower() or "duckduckgo"
-            interactive_mode = input("¿Activar modo interactivo para análisis? (s/n) [s]: ").lower() or 's'
+            engine = input("Search engine (google/duckduckgo/brave) [duckduckgo]: ").lower() or "duckduckgo"
             
-            ia_agent = None
-            if interactive_mode == 's':
-                ia_agent = select_ia_agent()
-
-            cli.actions.do_search(query, engine, pages=1, start_page=1, lang='lang_es', interactive=(interactive_mode == 's'), ia_agent=ia_agent)
+            # Auto-trigger deep analysis if specific PII is targetted
+            if email or telefono:
+                console.print("[yellow]Starting deep search to extract associated data points...[/yellow]")
+                cli.actions.do_deep_search(query, engine, pages=1, start_page=1, lang='lang_es')
+            else:
+                interactive_mode = input("Enable interactive analysis mode? (y/n) [y]: ").lower() or 'y'
+                ia_agent = None
+                if interactive_mode in ('y', 's'):
+                    ia_agent = select_ia_agent()
+                cli.actions.do_search(query, engine, pages=1, start_page=1, lang='lang_es', interactive=(interactive_mode in ('y', 's')), ia_agent=ia_agent)
 
         elif choice == '2':
-            console.print("[bold cyan]--- Búsqueda Directa ---[/bold cyan]")
-            query = input("Ingrese el dork de búsqueda: ")
+            console.print("[bold cyan]--- Direct Search ---[/bold cyan]")
+            query = input("Enter your search dork: ")
             if not query:
-                console.print("[bold red]La consulta no puede estar vacía.[/bold red]")
+                console.print("[bold red]Query cannot be empty.[/bold red]")
                 continue
             
-            engine = input("Motor de búsqueda (google/duckduckgo/brave) [duckduckgo]: ").lower() or "duckduckgo"
-            interactive_mode = input("¿Activar modo interactivo para análisis? (s/n) [s]: ").lower() or 's'
+            engine = input("Search engine (google/duckduckgo/brave) [duckduckgo]: ").lower() or "duckduckgo"
+            interactive_mode = input("Enable interactive analysis mode? (y/n) [y]: ").lower() or 'y'
             
             ia_agent = None
-            if interactive_mode == 's':
+            if interactive_mode in ('y', 's'):
                 ia_agent = select_ia_agent()
                 
-            cli.actions.do_search(query, engine, pages=1, start_page=1, lang='lang_es', interactive=(interactive_mode == 's'), ia_agent=ia_agent)
+            cli.actions.do_search(query, engine, pages=1, start_page=1, lang='lang_es', interactive=(interactive_mode in ('y', 's')), ia_agent=ia_agent)
 
         elif choice == '3':
             cli.actions.do_generate_dork_ia()
@@ -286,20 +317,22 @@ def show_main_menu():
             do_reverse_image_search()
 
         elif choice == '5':
-            url = input("Ingrese la URL a analizar: ")
+            url = input("Enter URL to analyze: ")
             if url:
                 tech_scan(url)
+                
         elif choice == '6':
             ia_agent = select_ia_agent()
             if ia_agent:
                 if cargar_caso():
                     interactive_analysis_menu(state.ULTIMOS_RESULTADOS, ia_agent)
+                    
         elif choice == '7':
             env_config()
             openai_config()
+            
         elif choice == '8':
-            console.print("[bold green]¡Hasta luego![/bold green]")
+            console.print("[bold green]Goodbye![/bold green]")
             break
         else:
-            console.print("[bold red]Opción no válida. Por favor, intente de nuevo.[/bold red]")
-
+            console.print("[bold red]Invalid option. Please try again.[/bold red]")

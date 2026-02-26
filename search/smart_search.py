@@ -1,51 +1,48 @@
-# Necessary imports
+# Core system imports
 import os
 import re
 import argparse
 from urllib.parse import urlparse
 
-# Local module imports
-# Assumes 'googlesearch' is a local module containing the GoogleSearch class.
+# Engine-specific imports
 from search.engines.googlesearch import GoogleSearch
 
 # --- Information Extraction Functions ---
 
 def extract_information(text):
     """
-    Parses a text block to extract sensitive or interesting information using regular expressions.
+    Parses a text block to extract sensitive or high-interest OSINT patterns 
+    using pre-defined regular expressions.
     
     Args:
-        text (str): The text to analyze.
+        text (str): Raw input text to analyze.
         
     Returns:
-        dict: A dictionary where the keys are the information types (e.g. "emails")
-              and the values are lists of the found matches.
+        dict: Categorized extraction results (e.g., {"emails": [...], "phones": [...]}).
     """
     if not text:
         return {}
     
-    # Define regex patterns for each type of information to extract.
+    # Heuristic-based regex patterns for common data leaks and PII
     patterns = {
         "emails": r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}',
-        "telefonos": r'\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}',
+        "phones": r'\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}',
         "sql_errors": r'(SQL(ite)?|MySQL|PostgreSQL|Oracle)\s(error|exception|failed|denied)|(unclosed quotation mark|syntax error|invalid query)',
         "usernames": r'(user|username|login|usuario|nombre de usuario)[\s:=]+[\'"]?([a-zA-Z0-9._-]{3,})[\'"]?'
     }
     
     extracted_data = {}
     for key, pattern in patterns.items():
-        # Use a set to store unique matches and avoid duplicates.
+        # Set deduplication for overlapping matches
         unique_matches = set()
-        # Iterate over all matches found in the text.
         for match in re.finditer(pattern, text, re.IGNORECASE):
-            # For usernames and SQL errors, capture groups may vary.
-            # Look for the first non-null group.
+            # Complex captures (usernames/sql_errors) extract the specific group payload
             if key in ["usernames", "sql_errors"]:
                 found = next((g for g in match.groups() if g), None)
                 if found:
                     unique_matches.add(found.strip())
             else:
-                # For other patterns, take the full match.
+                # Simple matches capture the entire matched string
                 unique_matches.add(match.group(0).strip())
         
         if unique_matches:
@@ -53,37 +50,37 @@ def extract_information(text):
             
     return extracted_data
 
-# --- Main Search Class ---
+# --- Main Search Implementation ---
 
 class SmartSearch:
     """
-    Class encapsulating the logic to perform smart searches, either in
-    local files or via web search engines like Google.
-    Also includes reverse image search functionality.
+    Orchestrator for multi-vector searches, supporting local file analysis, 
+    SERP (Search Engine Results Page) scraping via Google, and automated 
+    Reverse Image Search.
     """
     def __init__(self, dir_path=None, api_key=None, engine_id=None):
         """
-        Initializes the SmartSearch class.
+        Initializes the search context.
         
         Args:
-            dir_path (str, optional): Path to the directory for local searches.
-            api_key (str, optional): API key for the Google search engine.
-            engine_id (str, optional): Custom Search Engine ID for Google.
+            dir_path (str, optional): Root directory for local file scraping.
+            api_key (str, optional): Google API credential for cloud search.
+            engine_id (str, optional): Google CX ID for custom search targeting.
         """
         self.dir_path = dir_path
-        # Read files from the directory if one is provided.
+        # Populate file cache if a valid directory is provided
         self.files = self._read_files() if self.dir_path else {}
-        # Initialize Google Search engine if credentials are provided.
+        # Strategy pattern initialization for the Google Search engine
         self.google_search_engine = GoogleSearch(api_key, engine_id) if api_key and engine_id else None
 
     def _read_files(self):
         """
-        Reads all files in a directory and stores their content.
-        (Currently not used in the main application flow, but available).
+        Walks the provided directory and reads contents into memory.
+        (Utility method for local-first analysis).
         """
         files = {}
         if not os.path.isdir(self.dir_path):
-            print(f"Error: La ruta '{self.dir_path}' no es un directorio válido.")
+            print(f"Error: The path '{self.dir_path}' is not a valid directory.")
             return files
         for archivo in os.listdir(self.dir_path):
             file_path = os.path.join(self.dir_path, archivo)
@@ -92,13 +89,12 @@ class SmartSearch:
                     with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
                         files[archivo] = f.read()
                 except Exception as e:
-                    print(f"Error al leer el archivo {file_path}: {e}")
+                    print(f"Error reading file {file_path}: {e}")
         return files
 
     def regex_search(self, regex):
         """
-        Performs a search with a regular expression on the loaded local files.
-        (Currently not used in the main flow).
+        Executes an arbitrary regex search against the local file cache.
         """
         coincidencias = {}
         for file, text in self.files.items():
@@ -109,12 +105,11 @@ class SmartSearch:
 
     def extract_from_files(self):
         """
-        Extracts information (emails, phones, etc.) from the loaded local files.
-        (Currently not used in the main flow).
+        Automated extractor loop for PII/Sensitive data in local files.
         """
         all_extracted_data = {}
         for file, text in self.files.items():
-            print(f"\n--- Analizando fichero: {file} ---")
+            print(f"\n--- Analyzing file: {file} ---")
             extracted_data = extract_information(text)
             if extracted_data:
                 all_extracted_data[file] = extracted_data
@@ -123,19 +118,12 @@ class SmartSearch:
                     for value in values:
                         print(f"     - {value}")
             else:
-                print("  No se encontró información relevante.")
+                print("  No relevant information found.")
         return all_extracted_data
 
     def search_google(self, query, pages=1):
         """
-        Performs a Google search using the custom search engine.
-        
-        Args:
-            query (str): The search query.
-            pages (int): The number of result pages to fetch.
-            
-        Returns:
-            list: A list of search results.
+        Proxies the search request to the Google Custom Search instance.
         """
         if not self.google_search_engine:
             raise Exception("Google Search is not initialized. Provide an API key and engine ID.")
@@ -143,16 +131,16 @@ class SmartSearch:
 
     def reverse_image_search(self, image_url):
         """
-        Performs a reverse image search using Yandex Images via Selenium.
-        This method automates a browser in headless mode to perform the search.
+        Performs an automated reverse image search using Yandex Images via Selenium.
+        Orchestrates a headless browser to bypass dynamic rendering requirements.
         
         Args:
-            image_url (str): The URL of the image to search for.
+            image_url (str): Remote URL of the target image payload.
             
         Returns:
-            list: A list of dictionaries with the results (title, link, description).
+            list: Parsed result objects (title, link, description).
         """
-        # Specific Selenium imports, done here so they are only loaded if this function is used.
+        # Latent Selenium imports to minimize startup overhead for non-image tasks
         from selenium import webdriver
         from selenium.webdriver.firefox.options import Options
         from selenium.webdriver.common.by import By
@@ -160,40 +148,37 @@ class SmartSearch:
         from selenium.webdriver.support import expected_conditions as EC
         from selenium.webdriver.firefox.service import Service
 
-        # Configure Firefox options to run in headless mode.
         options = Options()
         options.add_argument("--headless")
         
-        # Path to the browser driver (geckodriver for Firefox).
-        # This path is hardcoded for a specific Termux environment.
+        # Geckodriver path specifically mapped for Termux environments
         geckodriver_path = "/data/data/com.termux/files/usr/bin/geckodriver"
         service = Service(executable_path=geckodriver_path)
 
         driver = None
         try:
-            print("[bold yellow]Iniciando Firefox en modo headless para Yandex...[/bold yellow]")
+            print("[bold yellow]Starting Firefox in headless mode for Yandex search...[/bold yellow]")
             driver = webdriver.Firefox(options=options, service=service)
             
-            # Build the Yandex search URL for reverse image search.
+            # Construct the direct rpt (report) URL for Yandex image view
             search_url = f"https://yandex.com/images/search?rpt=imageview&url={image_url}"
             driver.get(search_url)
 
-            print("[bold yellow]Esperando a que la página de resultados de Yandex cargue...[/bold yellow]")
-            # Explicit wait to give the page time to fully load (up to 40 seconds).
+            print("[bold yellow]Waiting for Yandex results page to render...[/bold yellow]")
+            # Aggressive timeout for high-latency or bot-throttled environments
             wait = WebDriverWait(driver, 40)
 
-            # Wait until the results container appears, which indicates search is done.
+            # Polling for the results list container
             wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, "li.CbirSites-Item")))
 
             results = []
-            # Find all elements containing a search result.
+            # Scrape each result container item
             result_containers = driver.find_elements(By.CSS_SELECTOR, "li.CbirSites-Item")
 
-            print(f"[bold green]Se encontraron {len(result_containers)} posibles resultados en Yandex. Procesando...[/bold green]")
+            print(f"[bold green]Found {len(result_containers)} potential results on Yandex. Processing...[/bold green]")
 
             for container in result_containers:
                 try:
-                    # Extract title and link for each result.
                     title_element = container.find_element(By.CSS_SELECTOR, "div.CbirSites-ItemTitle")
                     link_element = container.find_element(By.CSS_SELECTOR, "a.CbirSites-ItemLink")
                     
@@ -204,78 +189,72 @@ class SmartSearch:
                         results.append({
                             "title": title,
                             "link": link,
-                            "description": f"Fuente: {urlparse(link).netloc}"
+                            "description": f"Source: {urlparse(link).netloc}"
                         })
                 except Exception:
-                    # If there's an error with an individual result, skip and continue.
+                    # Silently skip malformed or dynamic result nodes
                     continue
             
             return results
 
         except Exception as e:
-            # If a generic error occurs during the scraping process...
+            # Persistent state dump for post-mortem debugging of scraping failures
             if driver:
-                # ...save a screenshot and HTML for debugging.
                 driver.save_screenshot("debug_yandex.png")
                 with open("debug_yandex.html", "w", encoding="utf-8") as f:
                     f.write(driver.page_source)
-                print("[bold red]Error durante la búsqueda con Yandex. Se han guardado 'debug_yandex.png' y 'debug_yandex.html' para análisis.[/bold red]")
+                print("[bold red]Error during Yandex search. 'debug_yandex.png' and 'debug_yandex.html' saved for analysis.[/bold red]")
             
-            # Raise an exception so the caller knows the search failed.
-            raise Exception(f"Error with Selenium/Yandex: {e}")
+            raise Exception(f"Selenium/Yandex automation failure: {e}")
         finally:
-            # Ensure the browser closes properly, even if errors occur.
+            # Critical: Ensure process group teardown to prevent zombie browser instances
             if driver:
                 driver.quit()
 
-# --- Main Execution Block (for testing and using as standalone script) ---
+# --- Testing / CLI Standalone Utility ---
 if __name__ == "__main__":
-    # Configure the argument parser for when the script is run directly.
     parser = argparse.ArgumentParser(
-        description="Herramienta para realizar búsquedas en ficheros locales o en la web.",
+        description="SmartSearch Standalone Utility - Local and Remote Intelligence Extraction.",
         formatter_class=argparse.RawTextHelpFormatter
     )
-    parser.add_argument("-d", "--dir_path", type=str, help="Ruta al directorio para búsquedas locales.")
+    parser.add_argument("-d", "--dir_path", type=str, help="Directory target for local analysis.")
     
-    # Mutually exclusive group: only one option can be used at a time.
     group = parser.add_mutually_exclusive_group(required=True)
-    group.add_argument("-r", "--regex", type=str, help="Expresión regular para búsqueda local.")
-    group.add_argument("-e", "--extract", action="store_true", help="Extrae información predefinida de ficheros locales.")
-    group.add_argument("-g", "--google", type=str, help="Término de búsqueda para Google.")
-    group.add_argument("--reverse-image", type=str, help="URL de una imagen para búsqueda inversa.")
+    group.add_argument("-r", "--regex", type=str, help="Custom regex for local search.")
+    group.add_argument("-e", "--extract", action="store_true", help="Batch extract sensitive patterns.")
+    group.add_argument("-g", "--google", type=str, help="Execute Google search query.")
+    group.add_argument("--reverse-image", type=str, help="Target image URL for reverse search.")
     
-    parser.add_argument("-p", "--pages", type=int, default=1, help="Número de páginas para la búsqueda en Google.")
+    parser.add_argument("-p", "--pages", type=int, default=1, help="SERP pagination depth.")
 
     args = parser.parse_args()
 
-    # Logic to handle provided arguments.
     if args.google:
         from dotenv import load_dotenv
-        # Load environment variables from a .env file in the parent directory.
         load_dotenv(dotenv_path='../.env')
         api_key = os.getenv("API_KEY_GOOGLE")
         engine_id = os.getenv("SEARCH_ENGINE_ID")
         if not api_key or not engine_id:
-            print("Error: Se requieren las variables API_KEY_GOOGLE y SEARCH_ENGINE_ID en el fichero .env.")
+            print("Error: API_KEY_GOOGLE and SEARCH_ENGINE_ID required in .env configuration.")
         else:
             searcher = SmartSearch(api_key=api_key, engine_id=engine_id)
             resultados = searcher.search_google(args.google, pages=args.pages)
-            print("\nResultados de la búsqueda en Google:")
+            print("\nGoogle Search Results:")
             for r in resultados:
-                print(f"\n- Título: {r['title']}\n  Descripción: {r['description']}\n  Enlace: {r['link']}")
+                print(f"\n- Title: {r['title']}\n  Description: {r['description']}\n  Link: {r['link']}")
     
     elif args.reverse_image:
         searcher = SmartSearch()
         resultados = searcher.reverse_image_search(args.reverse_image)
-        print("\nResultados de la búsqueda inversa de imagen:")
+        print("\nReverse Image Search Results:")
         for r in resultados:
-            print(f"\n- Título: {r['title']}\n  Fuente: {r['description']}\n  Enlace: {r['link']}")
+            print(f"\n- Title: {r['title']}\n  Source: {r['description']}\n  Link: {r['link']}")
 
     elif args.dir_path:
         searcher = SmartSearch(dir_path=args.dir_path)
         if args.regex:
             resultados = searcher.regex_search(args.regex)
-            print("\nResultados de la búsqueda con Regex:")
+            print("\nRegex Match Results:")
             for file, results in resultados.items():
                 print(f"\n--- {file} ---")
                 for r in results:
@@ -283,6 +262,5 @@ if __name__ == "__main__":
         if args.extract:
             searcher.extract_from_files()
     else:
-        # If local search arguments are used without specifying a directory.
         if args.regex or args.extract:
-            print("Debe proporcionar una ruta de directorio con -d para búsquedas locales.")
+            print("A target directory (-d) is required for local analysis operations.")
