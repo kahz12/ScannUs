@@ -1,165 +1,226 @@
+"""
+core/database.py — SQLite DAO for ScannUs investigation cases.
+
+Improvements:
+  - Added update_case() to overwrite an existing case by name
+  - Added delete_case() for clean teardown
+  - save_case() now returns a conflict signal so callers can offer
+    an 'overwrite?' prompt instead of silently failing
+"""
+
 import sqlite3
 import os
 import json
 from datetime import datetime
-from rich.console import Console
+from cli.ui import console, THEME
 from core.config import DIR_CASES
 
-console = Console()
 
 class DBManager:
     """
-    Data Access Object (DAO) mapped to a local SQLite instance.
-    Handles serialization and hydration of structured 'cases' 
-    (search sessions, collected nodes, queries), ensuring data persistence across runs.
+    Data Access Object mapped to a local SQLite instance.
+    Manages serialisation and hydration of investigation case sessions.
     """
-    def __init__(self, db_path=os.path.join(DIR_CASES, "cases.db")):
+
+    def __init__(self, db_path: str = os.path.join(DIR_CASES, "cases.db")):
         self.db_path = db_path
         self._initialize_db()
 
-    def _initialize_db(self):
-        """
-        Bootstrap method. Verifies and creates the internal schema constraints.
-        Safe to call multiple times as it uses IF NOT EXISTS.
-        """
-        try:
-            conn = sqlite3.connect(self.db_path)
-            cursor = conn.cursor()
-            
-            # Master 'cases' table. Stores high-level query metadata.
-            cursor.execute('''
-                CREATE TABLE IF NOT EXISTS cases (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    name TEXT UNIQUE NOT NULL,
-                    query_data TEXT,
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                )
-            ''')
-            
-            # Dependent 'results' table mapped back to 'cases' via foreign key.
-            # CASCADE ensures clean teardowns if a parent case is deleted.
-            cursor.execute('''
-                CREATE TABLE IF NOT EXISTS results (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    case_id INTEGER,
-                    result_id INTEGER,
-                    title TEXT,
-                    description TEXT,
-                    link TEXT,
-                    FOREIGN KEY (case_id) REFERENCES cases (id) ON DELETE CASCADE
-                )
-            ''')
-            
-            conn.commit()
-            conn.close()
-        except Exception as e:
-            console.print(f"[bold red]Error initializing the database:[/bold red] {e}")
+    # ------------------------------------------------------------------
+    # Schema bootstrap
+    # ------------------------------------------------------------------
 
-    def save_case(self, name, current_case):
-        """
-        Commits an active state dictionary payload to the database.
-        Includes rollback/conflict catching for overlapping case names.
-        """
+    def _initialize_db(self) -> None:
+        """Creates tables if they do not already exist (idempotent)."""
         try:
-            conn = sqlite3.connect(self.db_path)
-            cursor = conn.cursor()
-            
-            # Serialize the complex query dictionary into a flat JSON string for storage
-            query_data_str = json.dumps(current_case.get("terminos", {}), ensure_ascii=False)
-            
-            try:
-                # Attempt to insert the root case node
-                cursor.execute(
-                    "INSERT INTO cases (name, query_data) VALUES (?, ?)", 
-                    (name, query_data_str)
-                )
-                case_id = cursor.lastrowid
-            except sqlite3.IntegrityError:
-                # Catch UNIQUE constraint failures cleanly (duplicate case names)
-                conn.close()
-                return False, f"A case with the name '{name}' already exists."
-            
-            # Batch process the corresponding child result nodes
-            resultados = current_case.get("resultados", [])
-            for res in resultados:
-                cursor.execute(
-                    """
-                    INSERT INTO results (case_id, result_id, title, description, link)
-                    VALUES (?, ?, ?, ?, ?)
-                    """,
-                    (
-                        case_id,
-                        res.get('id'),
-                        res.get('title'),
-                        res.get('description'),
-                        res.get('link')
+            with self._connect() as conn:
+                conn.executescript("""
+                    CREATE TABLE IF NOT EXISTS cases (
+                        id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                        name       TEXT UNIQUE NOT NULL,
+                        query_data TEXT,
+                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    );
+
+                    CREATE TABLE IF NOT EXISTS results (
+                        id        INTEGER PRIMARY KEY AUTOINCREMENT,
+                        case_id   INTEGER,
+                        result_id INTEGER,
+                        title     TEXT,
+                        description TEXT,
+                        link      TEXT,
+                        FOREIGN KEY (case_id) REFERENCES cases (id) ON DELETE CASCADE
+                    );
+                """)
+        except Exception as e:
+            console.print(f"  [{THEME['ERROR']}]✘[/]  DB init error: {e}")
+
+    # ------------------------------------------------------------------
+    # Connection helper
+    # ------------------------------------------------------------------
+
+    def _connect(self) -> sqlite3.Connection:
+        conn = sqlite3.connect(self.db_path)
+        conn.execute("PRAGMA foreign_keys = ON")
+        return conn
+
+    # ------------------------------------------------------------------
+    # Write operations
+    # ------------------------------------------------------------------
+
+    def save_case(self, name: str, current_case: dict) -> tuple[bool, str, bool]:
+        """
+        Persists a case to the database.
+
+        Returns:
+            (success, message, name_conflict)
+            - name_conflict is True when the name already exists, so the
+              caller can offer an 'overwrite?' prompt.
+        """
+        query_data = json.dumps(current_case.get("terminos", {}), ensure_ascii=False)
+        resultados = current_case.get("resultados", [])
+
+        try:
+            with self._connect() as conn:
+                try:
+                    cursor = conn.execute(
+                        "INSERT INTO cases (name, query_data) VALUES (?, ?)",
+                        (name, query_data),
                     )
-                )
-            
-            # Commit the transaction block
-            conn.commit()
-            conn.close()
-            return True, f"Case '{name}' saved successfully."
-        except Exception as e:
-            return False, f"Error saving the case: {e}"
+                    case_id = cursor.lastrowid
+                except sqlite3.IntegrityError:
+                    # UNIQUE constraint → duplicate name
+                    return False, f"A case named '{name}' already exists.", True
 
-    def get_all_cases(self):
+                self._insert_results(conn, case_id, resultados)
+                return True, f"Case '{name}' saved successfully.", False
+
+        except Exception as e:
+            return False, f"Error saving case: {e}", False
+
+    def update_case(self, name: str, current_case: dict) -> tuple[bool, str]:
         """
-        Queries and returns a flat array of all persisted case metadata, sorted chronologically.
+        Overwrites an existing case (by name) with new data.
+        All previous results for the case are deleted before re-inserting.
+
+        Returns:
+            (success, message)
+        """
+        query_data = json.dumps(current_case.get("terminos", {}), ensure_ascii=False)
+        resultados = current_case.get("resultados", [])
+
+        try:
+            with self._connect() as conn:
+                row = conn.execute(
+                    "SELECT id FROM cases WHERE name = ?", (name,)
+                ).fetchone()
+
+                if not row:
+                    return False, f"No case named '{name}' found."
+
+                case_id = row[0]
+                now = datetime.utcnow().isoformat()
+
+                conn.execute(
+                    "UPDATE cases SET query_data = ?, updated_at = ? WHERE id = ?",
+                    (query_data, now, case_id),
+                )
+                conn.execute("DELETE FROM results WHERE case_id = ?", (case_id,))
+                self._insert_results(conn, case_id, resultados)
+
+            return True, f"Case '{name}' updated successfully."
+
+        except Exception as e:
+            return False, f"Error updating case: {e}"
+
+    def delete_case(self, name: str) -> tuple[bool, str]:
+        """
+        Deletes a case (and all its results via CASCADE) from the database.
+
+        Returns:
+            (success, message)
         """
         try:
-            conn = sqlite3.connect(self.db_path)
-            cursor = conn.cursor()
-            cursor.execute("SELECT id, name, created_at FROM cases ORDER BY created_at DESC")
-            cases = cursor.fetchall()
-            conn.close()
-            return cases
+            with self._connect() as conn:
+                cursor = conn.execute(
+                    "DELETE FROM cases WHERE name = ?", (name,)
+                )
+                if cursor.rowcount == 0:
+                    return False, f"No case named '{name}' found."
+            return True, f"Case '{name}' deleted."
         except Exception as e:
-            console.print(f"[bold red]Error retrieving the list of cases:[/bold red] {e}")
+            return False, f"Error deleting case: {e}"
+
+    # ------------------------------------------------------------------
+    # Read operations
+    # ------------------------------------------------------------------
+
+    def get_all_cases(self) -> list[tuple]:
+        """Returns all cases as (id, name, created_at) tuples, newest first."""
+        try:
+            with self._connect() as conn:
+                return conn.execute(
+                    "SELECT id, name, created_at FROM cases ORDER BY created_at DESC"
+                ).fetchall()
+        except Exception as e:
+            console.print(f"  [{THEME['ERROR']}]✘[/]  Error fetching cases: {e}")
             return []
 
-    def get_case_by_id(self, case_id):
+    def get_case_by_id(self, case_id: int) -> dict | None:
         """
-        Performs a deep fetch of a specific case, joining the root metadata with 
-        all its associated result nodes, and reconstituting the Python dictionary state.
+        Deep-fetches a case by ID, joining root metadata with its result nodes.
+
+        Returns:
+            dict with keys 'name', 'terminos', 'resultados', or None on failure.
         """
         try:
-            conn = sqlite3.connect(self.db_path)
-            # Row factory enables dictionary-like column access
-            conn.row_factory = sqlite3.Row
-            cursor = conn.cursor()
-            
-            # Fetch root metadata
-            cursor.execute("SELECT name, query_data FROM cases WHERE id = ?", (case_id,))
-            case_row = cursor.fetchone()
-            
-            if not case_row:
-                conn.close()
-                return None
-            
-            # Fetch the associated leaf nodes
-            cursor.execute("SELECT result_id, title, description, link FROM results WHERE case_id = ? ORDER BY result_id ASC", (case_id,))
-            result_rows = cursor.fetchall()
-            conn.close()
-            
-            # Deserialize the query JSON
-            terminos = json.loads(case_row['query_data']) if case_row['query_data'] else {}
-            resultados = []
-            
-            # Reconstruct the results array
-            for row in result_rows:
-                resultados.append({
-                    'id': row['result_id'],
-                    'title': row['title'],
-                    'description': row['description'],
-                    'link': row['link']
-                })
-                
-            return {
-                "name": case_row['name'],
-                "terminos": terminos,
-                "resultados": resultados
-            }
+            with self._connect() as conn:
+                conn.row_factory = sqlite3.Row
+
+                case_row = conn.execute(
+                    "SELECT name, query_data FROM cases WHERE id = ?", (case_id,)
+                ).fetchone()
+
+                if not case_row:
+                    return None
+
+                result_rows = conn.execute(
+                    "SELECT result_id, title, description, link "
+                    "FROM results WHERE case_id = ? ORDER BY result_id ASC",
+                    (case_id,),
+                ).fetchall()
+
+            terminos   = json.loads(case_row["query_data"]) if case_row["query_data"] else {}
+            resultados = [
+                {
+                    "id":          row["result_id"],
+                    "title":       row["title"],
+                    "description": row["description"],
+                    "link":        row["link"],
+                }
+                for row in result_rows
+            ]
+
+            return {"name": case_row["name"], "terminos": terminos, "resultados": resultados}
+
         except Exception as e:
-            console.print(f"[bold red]Error loading the case:[/bold red] {e}")
+            console.print(f"  [{THEME['ERROR']}]✘[/]  Error loading case: {e}")
             return None
+
+    # ------------------------------------------------------------------
+    # Private helpers
+    # ------------------------------------------------------------------
+
+    def _insert_results(self, conn: sqlite3.Connection,
+                        case_id: int, resultados: list) -> None:
+        """Batch-inserts result rows into the results table."""
+        conn.executemany(
+            "INSERT INTO results (case_id, result_id, title, description, link) "
+            "VALUES (?, ?, ?, ?, ?)",
+            [
+                (case_id, r.get("id"), r.get("title"),
+                 r.get("description"), r.get("link"))
+                for r in resultados
+            ],
+        )

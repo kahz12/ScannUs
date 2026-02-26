@@ -1,28 +1,50 @@
-from cli.ui import console
+"""
+search/reverse_image.py — Reverse image search via Yandex / SmartSearch.
+
+Improvements:
+  - Replaced input() with console.input() so the ❯ prompt renders correctly
+  - Replaced bare console.print() strings with Rich theme helpers
+  - Added a spinner while the headless browser is running
+"""
+
+from cli.ui import console, THEME, print_info, print_error, print_warn
 from search.smart_search import SmartSearch
 from utils.results_parse import ResultsParser
 
-def do_reverse_image_search():
+
+def do_reverse_image_search() -> None:
     """
-    Executes a reverse image search operation.
-    Captures a target image URL via STDIN, dispatches it to the SmartSearch 
-    automation module (Selenium/Yandex), and renders the results in a TUI table.
+    Prompts for an image URL, runs a Yandex reverse image search via
+    Selenium, and renders the results in a styled Rich table.
     """
-    image_url = input("Enter the image URL for reverse search: ")
+    image_url = console.input(
+        f"  [{THEME['DIM']}]Image URL for reverse search:[/] [{THEME['INPUT']}]❯[/] "
+    ).strip()
+
     if not image_url:
-        console.print("[bold red]Image URL cannot be empty.[/bold red]")
+        print_error("Image URL cannot be empty.")
         return
 
-    console.print(f"Performing reverse image search for image: [cyan]{image_url}[/cyan]...")
+    print_info(f"Starting reverse image search for: {image_url}")
+
     try:
-        # Instantiate the unified search orchestrator
-        search_engine = SmartSearch() 
-        # Block until the headless automation driver returns the result set
-        results = search_engine.reverse_image_search(image_url)
-        console.print(f"Search complete. Found [bold yellow]{len(results)}[/bold yellow] results.")
-        
-        # Format the raw dictionary list into a Rich console table for display
+        search_engine = SmartSearch()
+
+        with console.status(
+            f"[{THEME['PRIMARY']}]Running headless browser (Yandex)…[/]",
+            spinner="dots2",
+        ):
+            results = search_engine.reverse_image_search(image_url)
+
+        if not results:
+            print_warn("No results found for this image.")
+            return
+
+        console.print(
+            f"  [{THEME['SUCCESS']}]✔[/]  {len(results)} result(s) found."
+        )
         rparser = ResultsParser(results)
         console.print(rparser.to_table())
+
     except Exception as e:
-        console.print(f"[bold red]An error occurred during reverse image search: {e}[/bold red]")
+        print_error(f"Reverse image search failed: {e}")

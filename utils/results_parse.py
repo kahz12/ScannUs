@@ -1,182 +1,237 @@
-# Standard library imports
+"""
+utils/results_parse.py — Transforms search result sets into various output formats.
+
+Formats supported:
+  - Rich terminal table (to_table)
+  - HTML report  (exportar_html)
+  - CSV          (exportar_csv)
+  - Excel .xlsx  (exportar_excel)  ← improved: colors, autofit, freeze, hyperlinks
+  - JSON         (exportar_json)
+"""
+
 import json
 import os
 import csv
 import openpyxl
-from openpyxl.styles import Font
-from rich.console import Console
+from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+from openpyxl.utils import get_column_letter
 from rich.table import Table
+from cli.ui import console, THEME, print_success, print_error, make_table
 from core.config import DIR_REPORTS
+
 
 class ResultsParser:
     """
-    Data transformation layer for search results.
-    Provides serialization and formatting logic for exporting findings into
-    various report formats (HTML, JSON, CSV, Excel) and TUI-friendly tables.
+    Data transformation layer for search result sets.
     """
 
-    def __init__(self, resultados):
-        """
-        Initializes the parser with a result set.
-
-        Args:
-            resultados (list): Collection of result dictionaries, each containing
-                               'title', 'description', and 'link' keys.
-        """
+    def __init__(self, resultados: list):
         self.resultados = resultados
 
-    def exportar_html(self, archivo_salida):
-        """
-        Exports the current result set into a structured HTML report.
-        Utilizes a local `html_template.html` for base styling and layout.
+    # ------------------------------------------------------------------
+    # Helpers
+    # ------------------------------------------------------------------
 
-        Args:
-            archivo_salida (str): Target filename for the HTML artifact.
+    def _output_path(self, filename: str) -> str:
+        """Returns the absolute path inside DIR_REPORTS."""
+        return os.path.join(DIR_REPORTS, os.path.basename(filename))
+
+    # ------------------------------------------------------------------
+    # HTML export
+    # ------------------------------------------------------------------
+
+    def exportar_html(self, archivo_salida: str) -> None:
         """
-        archivo_salida = os.path.join(DIR_REPORTS, os.path.basename(archivo_salida))
+        Exports results into a structured HTML report using the companion template.
+        """
+        path = self._output_path(archivo_salida)
+        template_path = "html_template.html"
+
         try:
-            # Requires the companion template file in the project root.
-            template_path = "html_template.html"
-            
             if not os.path.exists(template_path):
-                print(f"Error: HTML template '{template_path}' not found.")
+                print_error(f"HTML template '{template_path}' not found.")
                 return
 
-            with open(template_path, 'r', encoding='utf-8') as f:
-                plantilla = f.read()
+            with open(template_path, "r", encoding="utf-8") as f:
+                template = f.read()
 
-            # Construct dynamic HTML fragments for each record
-            elementos_html = ''
-            for indice, resultado in enumerate(self.resultados, start=1):
-                elemento = (
+            html_fragments = ""
+            for i, r in enumerate(self.resultados, 1):
+                html_fragments += (
                     f'<div class="resultado">'
-                    f'<div class="indice">Result {indice}</div>'
-                    f'<h5>{resultado.get("title", "No title")}</h5>'
-                    f'<p>{resultado.get("description", "No description")}</p>'
-                    f'<a href="{resultado.get("link", "#")}" target="_blank">{resultado.get("link", "No link")}</a>'
-                    f'</div>'
+                    f'<div class="indice">Result {i}</div>'
+                    f'<h5>{r.get("title", "No title")}</h5>'
+                    f'<p>{r.get("description", "No description")}</p>'
+                    f'<a href="{r.get("link", "#")}" target="_blank">{r.get("link", "No link")}</a>'
+                    f"</div>"
                 )
-                elementos_html += elemento
-            
-            # Interpolate the generated fragments into the template
-            informe_html = plantilla.replace('{{ resultados }}', elementos_html)
-            
-            # Write finalized report to disk
-            with open(archivo_salida, 'w', encoding='utf-8') as f:
-                f.write(informe_html)
-            print(f"Results exported to HTML. File created: {archivo_salida}")
-        except IOError as e:
-            print(f"I/O error exporting to HTML: {e}")
-        except Exception as e:
-            print(f"Unexpected error exporting to HTML: {e}")
 
-    def exportar_csv(self, archivo_salida):
-        """
-        Dumps the results into a flat CSV file for generic data processing.
-        
-        Args:
-            archivo_salida (str): Target path for the CSV output.
-        """
-        archivo_salida = os.path.join(DIR_REPORTS, os.path.basename(archivo_salida))
+            report = template.replace("{{ resultados }}", html_fragments)
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(report)
+
+            print_success(f"HTML report saved → {path}")
+
+        except IOError as e:
+            print_error(f"I/O error exporting HTML: {e}")
+        except Exception as e:
+            print_error(f"Unexpected error exporting HTML: {e}")
+
+    # ------------------------------------------------------------------
+    # CSV export
+    # ------------------------------------------------------------------
+
+    def exportar_csv(self, archivo_salida: str) -> None:
+        """Dumps results to a flat UTF-8 CSV file."""
+        path = self._output_path(archivo_salida)
         try:
-            with open(archivo_salida, 'w', newline='', encoding='utf-8') as f:
+            with open(path, "w", newline="", encoding="utf-8") as f:
                 writer = csv.writer(f)
-                # Define column headers
-                writer.writerow(['ID', 'Title', 'Description', 'Link'])
-                
-                # Append formatted rows
+                writer.writerow(["ID", "Title", "Description", "Link"])
                 for i, r in enumerate(self.resultados, 1):
-                    writer.writerow([i, r.get('title', ''), r.get('description', ''), r.get('link', '')])
-            print(f"Results exported to CSV. File created: {archivo_salida}")
+                    writer.writerow([
+                        i,
+                        r.get("title", ""),
+                        r.get("description", ""),
+                        r.get("link", ""),
+                    ])
+            print_success(f"CSV saved → {path}")
         except IOError as e:
-            print(f"I/O error exporting to CSV: {e}")
+            print_error(f"I/O error exporting CSV: {e}")
         except Exception as e:
-            print(f"Unexpected error exporting to CSV: {e}")
+            print_error(f"Unexpected error exporting CSV: {e}")
 
-    def exportar_excel(self, archivo_salida):
+    # ------------------------------------------------------------------
+    # Excel export — improved
+    # ------------------------------------------------------------------
+
+    def exportar_excel(self, archivo_salida: str) -> None:
         """
-        Generates a native Excel (.xlsx) file with basic column styling.
-        
-        Args:
-            archivo_salida (str): Target path for the Excel artifact.
+        Generates a polished Excel .xlsx file with:
+        - Styled header row (dark background, white bold text)
+        - Alternating row colours (white / light blue)
+        - Freeze pane on the first row
+        - Auto-fitted column widths
+        - Clickable hyperlinks in the Link column
+        - Thin borders on all cells
         """
-        archivo_salida = os.path.join(DIR_REPORTS, os.path.basename(archivo_salida))
+        path = self._output_path(archivo_salida)
         try:
-            # Bootstrap a new openpyxl workbook context
             wb = openpyxl.Workbook()
             ws = wb.active
             ws.title = "Results"
-            
-            header_font = Font(bold=True)
-            
-            # Setup headers
-            headers = ['ID', 'Title', 'Description', 'Link']
+
+            # ── Styles ────────────────────────────────────────────────
+            header_fill   = PatternFill("solid", fgColor="1E3A5F")   # dark navy
+            header_font   = Font(bold=True, color="FFFFFF", size=11)
+            header_align  = Alignment(horizontal="center", vertical="center")
+
+            row_fill_even = PatternFill("solid", fgColor="EAF2FB")   # light blue
+            row_fill_odd  = PatternFill("solid", fgColor="FFFFFF")   # white
+            row_font      = Font(size=10)
+            link_font     = Font(size=10, color="1155CC", underline="single")
+
+            thin = Side(style="thin", color="BFBFBF")
+            border = Border(left=thin, right=thin, top=thin, bottom=thin)
+
+            # ── Header row ────────────────────────────────────────────
+            headers = ["ID", "Title", "Description", "Link"]
             ws.append(headers)
-            
-            # Format the header row
-            for cell in ws[1]:
-                cell.font = header_font
-            
-            # Populate data rows
-            for i, r in enumerate(self.resultados, 1):
-                ws.append([i, r.get('title', ''), r.get('description', ''), r.get('link', '')])
-            
-            # Apply ergonomic column widths for immediate usability
-            ws.column_dimensions['A'].width = 5
-            ws.column_dimensions['B'].width = 40
-            ws.column_dimensions['C'].width = 80
-            ws.column_dimensions['D'].width = 60
-            
-            wb.save(archivo_salida)
-            print(f"Results exported to Excel. File created: {archivo_salida}")
-            
+            ws.row_dimensions[1].height = 22
+
+            for col_idx, cell in enumerate(ws[1], 1):
+                cell.font      = header_font
+                cell.fill      = header_fill
+                cell.alignment = header_align
+                cell.border    = border
+
+            # ── Freeze top row ────────────────────────────────────────
+            ws.freeze_panes = "A2"
+
+            # ── Data rows ─────────────────────────────────────────────
+            for row_num, r in enumerate(self.resultados, 2):
+                fill = row_fill_even if row_num % 2 == 0 else row_fill_odd
+                url  = r.get("link", "")
+
+                ws.append([
+                    row_num - 1,
+                    r.get("title", ""),
+                    r.get("description", ""),
+                    url,
+                ])
+                ws.row_dimensions[row_num].height = 16
+
+                for col_idx, cell in enumerate(ws[row_num], 1):
+                    cell.fill   = fill
+                    cell.border = border
+                    cell.alignment = Alignment(
+                        vertical="center",
+                        wrap_text=(col_idx == 3)  # wrap description column
+                    )
+
+                    if col_idx == 4 and url:
+                        # Hyperlink in Link column
+                        cell.hyperlink = url
+                        cell.font = link_font
+                    else:
+                        cell.font = row_font
+
+            # ── Auto-fit column widths ────────────────────────────────
+            col_max_widths = {1: 5, 2: 45, 3: 80, 4: 60}
+            for col_idx, col_cells in enumerate(ws.iter_cols(), 1):
+                max_len = max(
+                    (len(str(cell.value)) if cell.value else 0)
+                    for cell in col_cells
+                )
+                # Cap at defined max to prevent unreasonably wide columns
+                fitted = min(max_len + 4, col_max_widths.get(col_idx, 40))
+                ws.column_dimensions[get_column_letter(col_idx)].width = fitted
+
+            wb.save(path)
+            print_success(f"Excel report saved → {path}")
+
         except Exception as e:
-            print(f"Unexpected error exporting to Excel: {e}")
+            print_error(f"Unexpected error exporting Excel: {e}")
 
-    def exportar_json(self, archivo_salida):
-        """
-        Serializes the results list to a pretty-printed JSON file.
+    # ------------------------------------------------------------------
+    # JSON export
+    # ------------------------------------------------------------------
 
-        Args:
-            archivo_salida (str): Target path for the JSON output.
-        """
-        archivo_salida = os.path.join(DIR_REPORTS, os.path.basename(archivo_salida))
+    def exportar_json(self, archivo_salida: str) -> None:
+        """Serialises the result list to a pretty-printed JSON file."""
+        path = self._output_path(archivo_salida)
         try:
-            with open(archivo_salida, 'w', encoding='utf-8') as f:
-                # indentation enabled for human readability
+            with open(path, "w", encoding="utf-8") as f:
                 json.dump(self.resultados, f, ensure_ascii=False, indent=4)
-            print(f"Results exported to JSON. File created: {archivo_salida}")
+            print_success(f"JSON saved → {path}")
         except IOError as e:
-            print(f"I/O error exporting to JSON: {e}")
+            print_error(f"I/O error exporting JSON: {e}")
         except Exception as e:
-            print(f"Unexpected error exporting to JSON: {e}")
+            print_error(f"Unexpected error exporting JSON: {e}")
 
-    def to_table(self):
+    # ------------------------------------------------------------------
+    # Rich terminal table
+    # ------------------------------------------------------------------
+
+    def to_table(self) -> Table:
         """
-        Transforms the result set into a Rich TUI Table node.
-        Used for rendering findings directly into the terminal interface.
-
-        Returns:
-            Table: An instantiated rich.table.Table object.
+        Returns a pre-styled Rich Table of the current result set.
+        Used for non-interactive rendering in the terminal.
         """
-        # Bootstrap the table layout
-        table = Table(show_header=True, header_style='green')
-        
-        # Define the visual schema
-        table.add_column("#", style="dim")  
-        table.add_column("Title", width=25) 
-        table.add_column("Description")     
-        table.add_column("Link")          
-
-        # Hydrate table rows with current data
-        for indice, resultado in enumerate(self.resultados, start=1):
-            table.add_row(
-                str(indice),
-                resultado.get("title", "N/A"),
-                resultado.get("description", "N/A"),
-                resultado.get("link", "N/A")
+        tbl = make_table(
+            f"Results  [{THEME['ACCENT']}]{len(self.resultados)} found[/]",
+            ("#",           THEME["DIM"]),
+            ("Title",       "bold white"),
+            ("Link",        THEME["LINK"]),
+            ("Description", THEME["DIM"]),
+            show_lines=True,
+        )
+        for i, r in enumerate(self.resultados, 1):
+            desc = r.get("description", "")
+            tbl.add_row(
+                str(i),
+                r.get("title", "N/A"),
+                r.get("link",  "N/A"),
+                (desc[:100] + "…") if len(desc) > 100 else desc,
             )
-            # Add visual padding between entries
-            table.add_row("", "", "", "")
-
-        return table
+        return tbl

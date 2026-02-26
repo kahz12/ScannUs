@@ -1,171 +1,225 @@
-# AI Provider Library Imports
-from openai import OpenAI
-from google import genai
-import os
+"""
+core/ai_agent.py — AI provider wrappers with streaming support.
 
-# --- Text Generator Classes ---
+Providers:
+  - OpenAIGenerator  — OpenAI Chat Completions (streaming)
+  - GeminiGenerator  — Google Gemini (streaming)
+
+Both generators implement a consistent interface:
+  generate(prompt)         → str   (full response, buffered)
+  stream(prompt)           → Iterator[str] (token-by-token chunks)
+"""
+
+import os
+from cli.ui import console, THEME
+
+
+# ---------------------------------------------------------------------------
+# OpenAI provider
+# ---------------------------------------------------------------------------
 
 class OpenAIGenerator:
     """
-    Encapsulates the logic to interact with the OpenAI API.
-    This class handles dispatching prompts to a specific OpenAI model (e.g., GPT-4o)
-    and retrieving the generated response.
+    OpenAI Chat Completions wrapper.
+    Supports both buffered and streaming generation.
     """
-    def __init__(self, model_name="gpt-4o"):
-        """
-        Initializes the OpenAI client singleton.
 
-        Args:
-            model_name (str): The identifier of the OpenAI model to target.
-                              Defaults to "gpt-4o".
-        """
+    def __init__(self, model_name: str = "gpt-4o"):
         self.model_name = model_name
-        # The client automatically resolves the OPENAI_API_KEY from the environment.
-        self.client = OpenAI()
+        from openai import OpenAI as _OpenAI
+        self.client = _OpenAI()
 
-    def generate(self, prompt):
+    def generate(self, prompt: str) -> str:
         """
-        Dispatches a prompt to the OpenAI inference engine.
+        Sends a prompt and returns the full response as a single string.
+        Uses streaming internally and renders a live token feed in the terminal.
+        """
+        return "".join(self.stream(prompt, render=True))
+
+    def stream(self, prompt: str, render: bool = False):
+        """
+        Streams the model response token-by-token.
 
         Args:
-            prompt (str): The structured instruction set for the model.
+            prompt: The instruction for the model.
+            render:  If True, tokens are printed live to the terminal.
 
-        Returns:
-            str: The raw text payload from the model's response.
+        Yields:
+            str: Individual text chunks as they arrive.
         """
-        print(f"Generating with OpenAI ({self.model_name})...")
-        chat_completion = self.client.chat.completions.create(
-            messages=[
-                {
-                    "role": "user",
-                    "content": prompt
-                }
-            ],
-            model=self.model_name,
+        console.print(
+            f"  [{THEME['DIM']}]⟳ Generating with OpenAI ({self.model_name})…[/]"
         )
-        # Extract the message content from the primary choice branch.
-        return chat_completion.choices[0].message.content
+
+        stream = self.client.chat.completions.create(
+            model=self.model_name,
+            messages=[{"role": "user", "content": prompt}],
+            stream=True,
+        )
+
+        buffer = []
+        if render:
+            # Live streaming: print each token without newlines until done
+            console.print()
+            for chunk in stream:
+                delta = chunk.choices[0].delta.content or ""
+                if delta:
+                    print(delta, end="", flush=True)
+                    buffer.append(delta)
+            print()  # Final newline after stream ends
+        else:
+            for chunk in stream:
+                delta = chunk.choices[0].delta.content or ""
+                if delta:
+                    buffer.append(delta)
+                    yield delta
+
+        if render:
+            # When render=True, yield the full buffered result
+            yield "".join(buffer)
+
+
+# ---------------------------------------------------------------------------
+# Gemini provider
+# ---------------------------------------------------------------------------
 
 class GeminiGenerator:
     """
-    Encapsulates logic for interfacing with the Google Gemini API via the `google-genai` SDK.
+    Google Gemini API wrapper via the `google-genai` SDK.
+    Supports buffered and streaming generation.
     """
-    def __init__(self, model_name="gemini-2.5-flash"):
-        """
-        Initializes the Gemini client context.
 
-        Args:
-            model_name (str): The Gemini model identifier.
-        """
+    def __init__(self, model_name: str = "gemini-2.0-flash"):
         self.model_name = model_name
         self.client = None
         self._initialize_client()
 
     def _initialize_client(self):
-        """Attempts to bootstrap the client using the GOOGLE_API_KEY_FOR_GEMINI environment variable."""
+        """Bootstrap the Gemini client from the environment API key."""
         api_key = os.getenv("GOOGLE_API_KEY_FOR_GEMINI")
         if api_key:
             try:
+                from google import genai
                 self.client = genai.Client(api_key=api_key)
             except Exception as e:
-                print(f"Error initializing Gemini client: {e}")
+                console.print(f"  [{THEME['ERROR']}]✘[/]  Gemini init error: {e}")
 
-    def generate(self, prompt):
+    def generate(self, prompt: str) -> str:
         """
-        Sends a prompt to the Gemini model and returns the generated text.
-
-        Args:
-            prompt (str): The input text payload.
-
-        Returns:
-            str: The response text content.
+        Sends a prompt and streams the response, rendering tokens live.
+        Returns the full response as a single string when done.
         """
         if not self.client:
             self._initialize_client()
             if not self.client:
-                return "Error: Gemini client not initialized (missing GOOGLE_API_KEY_FOR_GEMINI API Key)."
+                return "Error: Gemini client not initialized — check GOOGLE_API_KEY_FOR_GEMINI."
 
-        print("Generating with Gemini...")
+        console.print(
+            f"  [{THEME['DIM']}]⟳ Generating with Gemini ({self.model_name})…[/]"
+        )
+
         try:
-            # Executes content generation using the modern GenAI SDK syntax.
-            response = self.client.models.generate_content(
+            chunks = []
+            console.print()
+            # generate_content_stream yields incremental response parts
+            for chunk in self.client.models.generate_content_stream(
                 model=self.model_name,
-                contents=prompt
-            )
-            return response.text
+                contents=prompt,
+            ):
+                text = chunk.text or ""
+                if text:
+                    print(text, end="", flush=True)
+                    chunks.append(text)
+            print()  # Final newline
+            return "".join(chunks)
+
+        except AttributeError:
+            # Fallback: SDK version without streaming — use buffered call
+            try:
+                response = self.client.models.generate_content(
+                    model=self.model_name,
+                    contents=prompt,
+                )
+                return response.text or ""
+            except Exception as e:
+                return f"Error during Gemini generation: {e}"
         except Exception as e:
             return f"Error during Gemini generation: {e}"
 
-# --- AI Agent Class ---
+    def stream(self, prompt: str):
+        """
+        Yields text chunks from the Gemini streaming API.
+        Does NOT print to the terminal — caller decides how to consume.
+        """
+        if not self.client:
+            self._initialize_client()
+
+        try:
+            for chunk in self.client.models.generate_content_stream(
+                model=self.model_name,
+                contents=prompt,
+            ):
+                text = chunk.text or ""
+                if text:
+                    yield text
+        except Exception as e:
+            yield f"[Streaming error: {e}]"
+
+
+# ---------------------------------------------------------------------------
+# Strategy-based orchestrator
+# ---------------------------------------------------------------------------
 
 class IAAgent:
     """
-    Orchestrator class that leverages an underlying text generator (Strategy Pattern)
-    to perform domain-specific OSINT tasks, such as automated Google Dork synthesis.
+    Orchestrator that wraps any text generator (Strategy Pattern) and
+    exposes domain-specific OSINT tasks: Google Dork generation, etc.
     """
-    def __init__(self, generator):
-        """
-        Initializes the agent with a specific generation strategy.
 
-        Args:
-            generator: An implementation of a generator (e.g., `OpenAIGenerator`).
-        """
+    def __init__(self, generator):
         self.generator = generator
 
-    def generate_gdork(self, description):
+    def generate_gdork(self, description: str) -> str | None:
         """
-        Synthesizes an optimized Google Dork from a natural language description.
+        Synthesizes an optimized Google Dork from a natural-language description.
 
         Args:
-            description (str): Human-readable target description.
+            description: Human-readable target description.
 
         Returns:
-            str: The generated dork string, or None on failure.
+            The generated dork string, or None on failure.
         """
         prompt = self._build_prompt(description)
         try:
-            output = self.generator.generate(prompt)
-            return output
+            return self.generator.generate(prompt)
         except Exception as e:
-            print(f'Error generating Google Dork: {e}')
+            console.print(f"  [{THEME['ERROR']}]✘[/]  Error generating dork: {e}")
             return None
 
-    def _build_prompt(self, description):
-        """
-        Constructs a structured few-shot prompt to guide the LLM's output format.
-        
-        This method defines the persona and constraints required to ensure the
-        model returns a valid, high-precision search query.
+    def _build_prompt(self, description: str) -> str:
+        return f"""
+Your task is to act as an OSINT expert and generate a precise and effective Google Dork
+based on the user's description. A Google Dork uses advanced search operators to find
+specific information that is not easily accessible through conventional searches.
 
-        Args:
-            description (str): User-provided search target.
+Instructions:
+1. Analyze the user's description to identify keywords, file types, domains, and any other constraints.
+2. Translate these requirements into the corresponding Google operators (e.g., `site:`, `filetype:`, `inurl:`, `intitle:`, etc.).
+3. Combine the operators logically to create a cohesive and efficient dork.
+4. Return ONLY the generated dork, without any additional explanations or text.
 
-        Returns:
-            str: Formatted prompt for the LLM.
-        """
-        return f'''
-        Your task is to act as an OSINT expert and generate a precise and effective Google Dork
-        based on the user's description. A Google Dork uses advanced search operators to find
-        specific information that is not easily accessible through conventional searches.
+Examples:
 
-        Instructions:
-        1. Analyze the user's description to identify keywords, file types, domains, and any other constraints.
-        2. Translate these requirements into the corresponding Google operators (e.g., `site:`, `filetype:`, `inurl:`, `intitle:`, etc.).
-        3. Combine the operators logically to create a cohesive and efficient dork.
-        4. Return ONLY the generated dork, without any additional explanations or text.
+User description: "Find annual reports in PDF format from Microsoft."
+Google Dork: filetype:pdf "annual report" site:microsoft.com
 
-        Examples:
+User description: "Search for admin login pages on educational sites in Colombia."
+Google Dork: site:.edu.co intitle:"admin login" | inurl:"admin"
 
-        User description: "Find annual reports in PDF format from Microsoft."
-        Google Dork: filetype:pdf "annual report" site:microsoft.com
+User description: "I want to find Excel spreadsheets containing price lists for electronic products."
+Google Dork: filetype:xlsx "price list" "electronic products"
 
-        User description: "Search for admin login pages on educational sites in Colombia."
-        Google Dork: site:.edu.co intitle:"admin login" | inurl:"admin"
+Now, generate the Google Dork for the following description:
 
-        User description: "I want to find Excel spreadsheets containing price lists for electronic products."
-        Google Dork: filetype:xlsx "price list" "electronic products"
-
-        Now, generate the Google Dork for the following description:
-
-        User description: "{description}"
-        '''
+User description: "{description}"
+"""

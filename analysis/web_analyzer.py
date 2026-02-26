@@ -1,268 +1,303 @@
-# Standard and third-party library imports
-import requests  
-from bs4 import BeautifulSoup  
-from core.ai_agent import IAAgent, GeminiGenerator  
+"""
+analysis/web_analyzer.py — Web content extraction and AI-driven analysis.
+
+Key improvements:
+  - Replaced all plain print() with Rich console helpers
+  - Text chunking instead of hard truncation: long texts are summarised in
+    overlapping chunks and the partial summaries are merged for a final answer
+"""
+
+import requests
 import time
 import os
+from bs4 import BeautifulSoup
 from pyvis.network import Network
+
 from core.config import DIR_GRAPHS
+from cli.ui import console, THEME, print_info, print_warn, print_error
 
-def get_text_from_url(url):
+
+# ---------------------------------------------------------------------------
+# Web text extraction
+# ---------------------------------------------------------------------------
+
+_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/124.0.0.0 Safari/537.36"
+    )
+}
+
+
+def get_text_from_url(url: str) -> str | None:
     """
-    Extracts and cleans the text content of a webpage.
+    Downloads a webpage and returns its sanitised visible text.
 
-    Downloads the HTML of a URL, parses it via BeautifulSoup,
-    and strips out non-visible DOM elements (like scripts and styles) to isolate
-    the human-readable text payload.
+    Strips <script>, <style>, and other non-content tags, then
+    normalises whitespace for clean downstream processing.
 
     Args:
-        url (str): The target web address.
+        url: Target web address.
 
     Returns:
-        str: Sanitized webpage text, or None if extraction fails.
+        Sanitised text string, or None if extraction fails.
     """
     try:
-        # User-Agent spoofing to bypass rudimentary anti-bot mechanisms.
-        headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
-        }
-        
-        # Execute HTTP GET with a 15s timeout buffer.
-        response = requests.get(url, headers=headers, timeout=15)
+        response = requests.get(url, headers=_HEADERS, timeout=15)
         response.raise_for_status()
-        
-        soup = BeautifulSoup(response.text, 'html.parser')
-        
-        # Prune non-content DOM nodes.
-        for script_or_style in soup(["script", "style"]):
-            script_or_style.decompose() 
-            
-        text = soup.get_text()
-        
-        # Text normalization pipeline:
-        # 1. Strip trailing/leading whitespace per line.
-        lines = (line.strip() for line in text.splitlines())
-        # 2. Break apart lines by multiple spaces to catch inline gaps.
+
+        soup = BeautifulSoup(response.text, "html.parser")
+        for tag in soup(["script", "style", "noscript", "header", "footer", "nav"]):
+            tag.decompose()
+
+        raw = soup.get_text()
+        lines  = (line.strip() for line in raw.splitlines())
         chunks = (phrase.strip() for line in lines for phrase in line.split("  "))
-        # 3. Join valid chunks with line breaks for clean ingestion.
-        clean_text = '\n'.join(chunk for chunk in chunks if chunk)
-        
-        return clean_text
+        return "\n".join(chunk for chunk in chunks if chunk)
+
     except requests.exceptions.RequestException as e:
-        print(f"Error extracting text from {url}: {e}")
+        print_error(f"Network error fetching {url}: {e}")
         return None
     except Exception as e:
-        print(f"Unexpected error during URL processing: {e}")
+        print_error(f"Unexpected error processing {url}: {e}")
         return None
 
-def _build_summary_prompt(text):
-    """
-    Constructs the base prompt for LLM summarization tasks.
-    """
-    return f"Please provide a concise and technical summary of the following text extracted from a webpage:\n\n---\n{text}\n---"
 
-def summarize_text_with_ia(text, ia_agent):
+# ---------------------------------------------------------------------------
+# Text chunking utilities
+# ---------------------------------------------------------------------------
+
+_CHUNK_SIZE   = 12_000   # characters per chunk sent to the LLM
+_CHUNK_OVERLAP = 500     # overlap to preserve context at boundaries
+
+
+def _split_into_chunks(text: str, chunk_size: int = _CHUNK_SIZE,
+                       overlap: int = _CHUNK_OVERLAP) -> list[str]:
     """
-    Delegates text summarization to the active AI Agent.
+    Splits a long text into overlapping fixed-size character chunks.
 
     Args:
-        text (str): The raw text payload.
-        ia_agent (IAAgent): The active AI worker instance.
+        text:       Source text.
+        chunk_size: Maximum characters per chunk.
+        overlap:    Characters of overlap between consecutive chunks.
 
     Returns:
-        str: AI-generated summary or error diagnostic.
+        List of text chunk strings.
+    """
+    chunks, start = [], 0
+    while start < len(text):
+        end = start + chunk_size
+        chunks.append(text[start:end])
+        start = end - overlap
+    return chunks
+
+
+def _chunk_generate(text: str, build_prompt_fn, ia_agent,
+                    merge_prompt: str | None = None) -> str:
+    """
+    Handles LLM calls for long texts by splitting into chunks.
+
+    Strategy:
+      1. If text fits in one chunk → single call.
+      2. If text is too long → process each chunk independently, then ask
+         the LLM to merge the partial answers into a single final response.
+
+    Args:
+        text:            Source text.
+        build_prompt_fn: Callable(chunk_text) → prompt string.
+        ia_agent:        Active IAAgent instance.
+        merge_prompt:    Optional template for the merging step.
+                         Should contain a `{partials}` placeholder.
+
+    Returns:
+        Final generated text string.
+    """
+    chunks = _split_into_chunks(text)
+
+    if len(chunks) == 1:
+        return ia_agent.generator.generate(build_prompt_fn(chunks[0]))
+
+    print_info(f"Text is long ({len(text):,} chars) — processing in {len(chunks)} chunks…")
+
+    partials = []
+    for i, chunk in enumerate(chunks, 1):
+        print_info(f"  Processing chunk {i}/{len(chunks)}…")
+        result = ia_agent.generator.generate(build_prompt_fn(chunk))
+        partials.append(result)
+
+    if merge_prompt is None:
+        merge_prompt = (
+            "You received partial analyses of different sections of the same document. "
+            "Merge them into a single, coherent, non-redundant summary:\n\n{partials}"
+        )
+
+    merged_input = merge_prompt.format(partials="\n\n---\n\n".join(partials))
+    print_info("  Merging partial results…")
+    return ia_agent.generator.generate(merged_input)
+
+
+# ---------------------------------------------------------------------------
+# AI-powered functions
+# ---------------------------------------------------------------------------
+
+def _build_summary_prompt(text: str) -> str:
+    return (
+        "Please provide a concise and technical summary of the following text "
+        "extracted from a webpage:\n\n---\n" + text + "\n---"
+    )
+
+
+def summarize_text_with_ia(text: str, ia_agent) -> str:
+    """
+    Summarises webpage text using the active AI agent.
+    Automatically chunks the text if it exceeds the token-safe limit.
+
+    Args:
+        text:     Raw text payload.
+        ia_agent: Active IAAgent instance.
+
+    Returns:
+        AI-generated summary string.
     """
     if not text:
-        return "No text provided for summarization."
-
-    # Prevent token limit overflow (approx 30k chars safety limit).
-    max_chars = 30000 
-    if len(text) > max_chars:
-        text = text[:max_chars] + "... [Text truncated due to length constraints]"
-
+        return "No text provided for summarisation."
     try:
-        prompt = _build_summary_prompt(text)
-        summary = ia_agent.generator.generate(prompt)
-        return summary if summary else "AI failed to generate a summary."
+        return _chunk_generate(text, _build_summary_prompt, ia_agent)
     except Exception as e:
         return f"AI Generation Error: {e}"
 
-def _build_translation_analysis_prompt(text):
-    """
-    Constructs the base prompt for deep context analysis and key insight extraction.
-    """
-    return f'''
-        Act as an expert OSINT analyst. Analyze the following extracted text from a website
-        and provide a detailed technical summary of its content. 
-        Highlight key entities, potential leads, and core topics.
-        The text may contain extraction noise; infer context where necessary.
 
-        TEXT:
-        {text}
-        '''
+def _build_analysis_prompt(text: str) -> str:
+    return (
+        "Act as an expert OSINT analyst. Analyse the following extracted text from a "
+        "website and provide a detailed technical summary. Highlight key entities, "
+        "potential leads, and core topics. The text may contain extraction noise; "
+        "infer context where necessary.\n\nTEXT:\n" + text
+    )
 
-def translate_and_analyze_with_ia(text, ia_agent):
+
+def translate_and_analyze_with_ia(text: str, ia_agent) -> str:
     """
-    Performs context analysis using the AI agent.
-    
+    Performs deep OSINT-focused analysis using the AI agent.
+    Supports chunked processing for long texts.
+
     Args:
-        text (str): The target raw text.
-        ia_agent (IAAgent): The active AI worker instance.
-        
+        text:     Raw text payload.
+        ia_agent: Active IAAgent instance.
+
     Returns:
-        str: The AI's analytical response payload.
+        AI analytical response.
     """
     if not text:
         return "No text provided for analysis."
-
-    # Enforce token limit safety buffer.
-    max_chars = 30000 
-    if len(text) > max_chars:
-        text = text[:max_chars] + "... [Text truncated]"
-
     try:
-        prompt = _build_translation_analysis_prompt(text)
-        analysis_result = ia_agent.generator.generate(prompt)
-        return analysis_result if analysis_result else "AI failed to generate analysis."
+        return _chunk_generate(
+            text,
+            _build_analysis_prompt,
+            ia_agent,
+            merge_prompt=(
+                "You are an OSINT analyst. You received partial analyses of different "
+                "sections of the same webpage. Merge them into one coherent report, "
+                "removing duplicate information and keeping the most relevant findings:\n\n"
+                "{partials}"
+            ),
+        )
     except Exception as e:
         return f"AI Generation Error: {e}"
 
-def extract_entities_and_graph(text, ia_agent, output_filename="graph.html"):
+
+# ---------------------------------------------------------------------------
+# Entity graph
+# ---------------------------------------------------------------------------
+
+def extract_entities_and_graph(text: str, ia_agent,
+                               output_filename: str = "graph.html") -> str | None:
     """
-    Orchestrates AI-driven entity extraction and relationship mapping,
-    rendering an interactive HTML graph using Pyvis.
-    
+    Extracts entity relationships via AI and renders an interactive Pyvis graph.
+
+    Supports chunked input: extracts relationships per chunk, deduplicates,
+    then builds the graph from the full merged edge list.
+
     Args:
-        text (str): Source text payload.
-        ia_agent (IAAgent): AI Agent for entity extraction.
-        output_filename (str): Name of the generated HTML artifact.
-        
+        text:            Source text payload.
+        ia_agent:        Active IAAgent instance.
+        output_filename: Name of the output HTML graph file.
+
     Returns:
-        str: Absolute path to the generated HTML graph, or None on failure.
+        Absolute path to the HTML graph, or None on failure.
     """
-    output_filename = os.path.join(DIR_GRAPHS, os.path.basename(output_filename))
+    output_path = os.path.join(DIR_GRAPHS, os.path.basename(output_filename))
+
     if not text:
-        print("[bold red]No text available for graph analysis.[/bold red]")
+        print_error("No text available for graph analysis.")
         return None
 
-    # Stricter character limit for complex reasoning tasks.
-    max_chars = 25000 
-    if len(text) > max_chars:
-        text = text[:max_chars] + "... [Text truncated]"
+    _ENTITY_PROMPT = lambda t: f"""
+Act as an OSINT Intelligence Analyst. Read the text and extract relationships between entities.
+Entities: Person, Organization, Location, Website/Domain, Email, Technology.
 
-    # Few-shot prompt enforcing exact pipe-delimited schema for reliable parsing.
-    prompt = f'''
-    Act as an OSINT Intelligence Analyst. Read the following text and extract relationships between distinct entities.
-    Entities can be: Person, Organization, Location, Website/Domain, Email, or Technology.
-    
-    Return ONLY a list of relationships in plain text using the following schema (one per line):
-    [Entity 1] | [Type of Entity 1] | [Relationship description] | [Entity 2] | [Type of Entity 2]
-    
-    Example:
-    John Doe | Person | works at | Tech Corp | Organization
-    Tech Corp | Organization | located in | New York | Location
-    admin@example.com | Email | belongs to | John Doe | Person
-    
-    Do NOT use Markdown. Do NOT include any preamble or postamble.
-    If no relationships are found, respond with "NO_RELATIONSHIPS".
-    
-    Source Text:
-    {text}
-    '''
+Return ONLY a list of relationships (one per line) in this exact schema:
+[Entity 1] | [Type 1] | [Relationship] | [Entity 2] | [Type 2]
+
+Example:
+John Doe | Person | works at | Tech Corp | Organization
+
+Do NOT use Markdown. Do NOT add any preamble.
+If no relationships, respond with NO_RELATIONSHIPS.
+
+Source Text:
+{t}
+"""
 
     try:
-        response_text = ia_agent.generator.generate(prompt)
-        if not response_text or response_text.strip() == "NO_RELATIONSHIPS":
-            print("[yellow]No sufficient entities or relationships identified for graph generation.[/yellow]")
+        raw = _chunk_generate(text, _ENTITY_PROMPT, ia_agent,
+                              merge_prompt=(
+                                  "Below are relationship lists extracted from multiple chunks "
+                                  "of the same document. Merge them into one deduplicated list "
+                                  "using the same pipe-delimited schema. Output ONLY the list:\n\n"
+                                  "{partials}"
+                              ))
+
+        if not raw or raw.strip() == "NO_RELATIONSHIPS":
+            print_warn("No sufficient entities found for graph generation.")
             return None
-            
-        # Bootstrap Pyvis Network with a dark-themed TUI aesthetic.
-        net = Network(height="750px", width="100%", bgcolor="#222222", font_color="white", directed=True)
-        
-        # Color palette for entity classifications.
+
         color_map = {
-            'Person': '#E57373',
-            'Organization': '#64B5F6',
-            'Location': '#81C784',
-            'Website': '#FFD54F', 'Domain': '#FFD54F',
-            'Email': '#BA68C8',
-            'Technology': '#4DB6AC'
+            "Person": "#E57373", "Organization": "#64B5F6", "Location": "#81C784",
+            "Website": "#FFD54F", "Domain": "#FFD54F",
+            "Email": "#BA68C8", "Technology": "#4DB6AC",
         }
-        
-        lines = response_text.strip().split('\n')
-        nodes_added = set()
+
+        net = Network(height="750px", width="100%",
+                      bgcolor="#1a1a2e", font_color="white", directed=True)
+        net.set_options("""{"physics": {"stabilization": {"iterations": 150}}}""")
+
+        nodes_added: set = set()
         edges_added = 0
-        
-        # Parse the structured LLM output.
-        for line in lines:
-            parts = [p.strip() for p in line.split('|')]
-            
-            # Discard malformed lines to maintain graph integrity.
-            if len(parts) == 5:
-                e1, t1, relation, e2, t2 = parts
-                
-                # Default to white for unmapped types.
-                c1 = color_map.get(t1, "#FFFFFF")
-                c2 = color_map.get(t2, "#FFFFFF")
-                
-                # Check cache to prevent duplicate node exceptions.
-                if e1 not in nodes_added:
-                    net.add_node(e1, label=e1, title=t1, color=c1)
-                    nodes_added.add(e1)
-                
-                if e2 not in nodes_added:
-                    net.add_node(e2, label=e2, title=t2, color=c2)
-                    nodes_added.add(e2)
-                
-                # Establish directed edge.
-                net.add_edge(e1, e2, title=relation, label=relation, color="#aaaaaa")
-                edges_added += 1
+
+        for line in raw.strip().splitlines():
+            parts = [p.strip() for p in line.split("|")]
+            if len(parts) != 5:
+                continue
+            e1, t1, relation, e2, t2 = parts
+            for entity, etype in ((e1, t1), (e2, t2)):
+                if entity not in nodes_added:
+                    net.add_node(entity, label=entity, title=etype,
+                                 color=color_map.get(etype, "#FFFFFF"),
+                                 size=20, font={"size": 12})
+                    nodes_added.add(entity)
+            net.add_edge(e1, e2, title=relation, label=relation, color="#888888")
+            edges_added += 1
 
         if edges_added == 0:
-            print("[yellow]No valid relationships parsed to build the graph.[/yellow]")
+            print_warn("No valid relationships parsed for graph building.")
             return None
 
-        net.save_graph(output_filename)
-        print(f"[green]Graph successfully generated and saved to:[/green] {output_filename}")
-        return output_filename
+        net.save_graph(output_path)
+        print_info(f"Entity graph saved → {output_path}")
+        return output_path
 
     except Exception as e:
-        print(f"[bold red]Graph generation failure:[/bold red] {e}")
+        print_error(f"Graph generation failure: {e}")
         return None
-
-# --- Standalone Smokescreen Test ---
-if __name__ == '__main__':
-    """
-    Demonstration block for unit testing the module's extraction and AI pipeline.
-    """
-    test_url = "https://www.xataka.com/robotica-e-ia/gemini-1-5-pro-probamos-brutal-ia-google-que-analiza-documentos-videos-codigo-da-sopas-chatgpt-4"
-    
-    print(f"--- Fetching text from: {test_url} ---")
-    page_text = get_text_from_url(test_url)
-    
-    if page_text:
-        print("\n--- Extracted Text Preview (500 chars) ---")
-        print(page_text[:500])
-        
-        print("\n--- Triggering AI Summarization (Gemini) ---")
-        try:
-            from dotenv import load_dotenv
-            import os
-
-            load_dotenv() 
-            gemini_key = os.getenv("GOOGLE_API_KEY_FOR_GEMINI")
-            
-            if gemini_key:
-                gemini_gen = GeminiGenerator()
-                agent = IAAgent(gemini_gen)
-                
-                summary = summarize_text_with_ia(page_text, agent)
-                print("\n--- Summary Output ---")
-                print(summary)
-            else:
-                print("\nWarning: GOOGLE_API_KEY_FOR_GEMINI not found in .env.")
-
-        except ImportError:
-            print("\nWarning: Missing dependencies for local testing (python-dotenv).")
-        except Exception as e:
-            print(f"\nExample execution failure: {e}")

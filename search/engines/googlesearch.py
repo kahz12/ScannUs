@@ -1,4 +1,5 @@
 import requests
+from search.engines.cache import search_cache
 
 class GoogleSearch:
     """
@@ -36,8 +37,14 @@ class GoogleSearch:
             Exception: On network failure, non-200 HTTP status, or malformed JSON responses.
         """
         final_results = []
-        # Google Custom Search API hard-caps at 10 results per request.
         results_per_page = 10
+
+        # --- In-session cache check ---
+        cache_key = search_cache.make_key("google", query, pages=pages,
+                                          start=start_page, lang=lang)
+        cached = search_cache.get(cache_key)
+        if cached is not None:
+            return cached
 
         for page in range(pages):
             # Calculate the 'start' query parameter. 
@@ -63,14 +70,11 @@ class GoogleSearch:
                 final_results.extend(cresults)
                 
             except requests.exceptions.RequestException as e:
-                error_msg = f"Network or HTTP error fetching page {page + 1}: {e}"
-                print(error_msg)
-                raise Exception(error_msg)
+                raise Exception(f"Network or HTTP error fetching page {page + 1}: {e}")
             except ValueError as e:
-                error_msg = f"Error decoding JSON for page {page + 1}: {e}"
-                print(error_msg)
-                raise Exception(error_msg)
-                
+                raise Exception(f"Error decoding JSON for page {page + 1}: {e}")
+
+        search_cache.set(cache_key, final_results)
         return final_results
 
     def custom_results(self, results):
