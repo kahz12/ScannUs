@@ -4,70 +4,88 @@ from cli.ui import console
 from rich.table import Table
 
 def show_custom_help(parser):
-    console.print("\n[bold green]Tabla de Ayuda de NinjaDorks[/bold green]")
+    """
+    Renders a colorized and structured help menu using the Rich library.
+    Iterates through argparse groups to present command-line options in a 
+    standardized TUI table format, followed by usage examples.
+    """
+    console.print("\n[bold green]ScannUs Help Table[/bold green]")
     for group in parser._action_groups:
+        # Filter for actions that have associated option flags
         actions = [action for action in group._group_actions if action.option_strings]
         if not actions:
             continue
+        
         table = Table(title=f"[bold magenta]{group.title}[/bold magenta]", show_header=True, header_style="bold cyan", box=None)
-        table.add_column("Argumento", style="cyan", no_wrap=True)
-        table.add_column("Descripción", style="green")
-        table.add_column("Valor Esperado", style="yellow")
+        table.add_column("Argument", style="cyan", no_wrap=True)
+        table.add_column("Description", style="green")
+        table.add_column("Expected Value", style="yellow")
+        
         for action in actions:
             opts = ", ".join(action.option_strings)
             metavar = action.metavar or ""
             table.add_row(opts, action.help, metavar)
         console.print(table)
     
-    console.rule("[bold_green]Ejemplos de Uso:[/bold_green]")
-    console.print("  [white]1. Búsqueda Básica:[/white]")
+    # Showcase common CLI usage patterns to assist the operator
+    console.rule("[bold_green]Usage Examples:[/bold_green]")
+    console.print("  [white]1. Basic Search Query:[/white]")
     console.print("     [cyan]python main.py -q \"site:.gov filetype:pdf\"[/cyan]")
-    console.print("  [white]2. Búsqueda con Motor Específico (Google/DuckDuckGo/Brave):[/white]")
+    console.print("  [white]2. Target Engine Selection (Brave/Google/DuckDuckGo):[/white]")
     console.print("     [cyan]python main.py -q \"OSINT tools\" --engine brave --pages 2[/cyan]")
-    console.print("  [white]3. Generación de Dork con IA:[/white]")
-    console.print("     [cyan]python main.py -gd \"Encontrar listas de precios en Excel de empresas de tecnología\"[/cyan]")
-    console.print("  [white]4. Búsqueda Guiada (Nombre/Usuario):[/white]")
+    console.print("  [white]3. Natural Language Dork Generation:[/white]")
+    console.print("     [cyan]python main.py -gd \"Find excel price lists of tech companies\"[/cyan]")
+    console.print("  [white]4. Guided Multi-Parameter Search:[/white]")
     console.print("     [cyan]python main.py -n \"John Doe\" -u \"jdoe88\"[/cyan]")
-    console.print("  [white]5. Descarga de Medios de una URL:[/white]")
-    console.print("     [cyan]python main.py --media-scrape \"https://ejemplo.com/galeria\"[/cyan]")
-    console.print("  [white]6. Modo Interactivo Directo:[/white]")
+    console.print("  [white]5. Media Scraper Pipeline:[/white]")
+    console.print("     [cyan]python main.py --media-scrape \"https://example.com/gallery\"[/cyan]")
+    console.print("  [white]6. Enter Interactive TUI Mode:[/white]")
     console.print("     [cyan]python main.py -i[/cyan]")
 
 def get_parser():
+    """
+    Initializes and configures the global ArgumentParser instance.
+    Arguments are categorized into logical groups to optimize CLI ergonomics.
+    """
     parser = argparse.ArgumentParser(
-        description="Herramienta para realizar búsquedas avanzadas en Google y análisis de resultados.",
-        add_help=False
+        description="ScannUs: Advanced Search Orchestrator and OSINT Analysis Engine.",
+        add_help=False # Suppress default help to use custom rich renderer
     )
-    general_group = parser.add_argument_group('Argumentos Principales')
-    general_group.add_argument("-h", "--help", action="store_true", help="Muestra esta tabla de ayuda y sale.")
-    general_group.add_argument("-q", "--query", type=str, help="Especifica el dork que desea buscar.")
-    general_group.add_argument("-c", "--configure", action="store_true", help="Inicia el proceso de configuración para .env")
-    general_group.add_argument("-i", "--interactive", action="store_true", help="Activa el modo de análisis interactivo.")
     
-    case_group = parser.add_argument_group('Gestión de Casos')
-    case_group.add_argument("--load-case", action="store_true", help="Carga un caso de investigación guardado.")
+    general_group = parser.add_argument_group('Main Arguments')
+    general_group.add_argument("-h", "--help", action="store_true", help="Display this custom help table.")
+    general_group.add_argument("-q", "--query", type=str, help="Primary search string or complex Google Dork.")
+    general_group.add_argument("-c", "--configure", action="store_true", help="Start the .env credential setup sequence.")
+    general_group.add_argument("-i", "--interactive", action="store_true", help="Enter the interactive investigation menu.")
+    
+    case_group = parser.add_argument_group('Case Management')
+    case_group.add_argument("--load-case", action="store_true", help="Hydrate session state from a previously saved case.")
 
-    search_group = parser.add_argument_group('Opciones de Búsqueda')
-    search_group.add_argument("--engine", type=str, default="duckduckgo", help="Motor de búsqueda a utilizar (google, duckduckgo, brave).")
-    search_group.add_argument("-n", "--nombre", help="Nombre completo de la persona a buscar.")
-    search_group.add_argument("-u", "--usuario", help="Nombre de usuario a buscar.")
-    search_group.add_argument("-b", "--buscar", help="Término o tema de búsqueda general.")
-    search_group.add_argument("-rev", "--reverse", help="URL de una imagen para búsqueda inversa.")
-    search_group.add_argument("--start-page", type=int, default=1, help="Página de inicio para la búsqueda (def: 1).")
-    search_group.add_argument("--pages", type=int, default=1, help="Número de páginas a revisar (def: 1).")
-    search_group.add_argument("--lang", type=str, default="lang_es", help="Código de idioma para la búsqueda (def: lang_es).")
+    search_group = parser.add_argument_group('Search Parameters')
+    search_group.add_argument("--engine", type=str, default="duckduckgo", help="Target engine (google, duckduckgo, brave).")
+    search_group.add_argument("-n", "--nombre", help="Target's full legal name.")
+    search_group.add_argument("-u", "--usuario", help="Target's primary username/handle.")
+    search_group.add_argument("-b", "--buscar", help="Generic search term or topic.")
+    search_group.add_argument("-e", "--email", help="Target's email address.")
+    search_group.add_argument("-t", "--telefono", help="Target's phone number.")
+    search_group.add_argument("--deep", action="store_true", help="Execute recursive analysis on each search result.")
+    search_group.add_argument("-rev", "--reverse", help="Image URL for reverse lookup.")
+    search_group.add_argument("--start-page", type=int, default=1, help="Starting SERP offset (default: 1).")
+    search_group.add_argument("--pages", type=int, default=1, help="Number of result pages to retrieve (default: 1).")
+    search_group.add_argument("--lang", type=str, default="lang_es", help="Language code filter (default: lang_es).")
 
-    ia_group = parser.add_argument_group('Opciones de IA')
-    ia_group.add_argument("-gd", "--google-dorks", type=str, metavar='"DESC"', help="Genera un Dork usando IA a partir de una descripción.")
+    ia_group = parser.add_argument_group('AI & NLP Options')
+    ia_group.add_argument("-gd", "--google-dorks", type=str, metavar='"DESC"', help="Synthesize a Google Dork from a natural language prompt.")
 
-    media_group = parser.add_argument_group('Opciones de Medios')
-    media_group.add_argument("--media-scrape", type=str, metavar="URL", help="Descarga todos los medios de una URL a un archivo ZIP.")
+    media_group = parser.add_argument_group('Media Processing')
+    media_group.add_argument("--media-scrape", type=str, metavar="URL", help="Extract and archive media from a remote URL.")
 
-    output_group = parser.add_argument_group('Opciones de Salida (No Interactivo)')
-    output_group.add_argument("--json", type=str, metavar="FILE.json", help="Exporta los resultados a un fichero JSON.")
-    output_group.add_argument("--html", type=str, metavar="FILE.html", help="Exporta los resultados a un fichero HTML.")
-    output_group.add_argument("--csv", type=str, metavar="FILE.csv", help="Exporta los resultados a un fichero CSV.")
-    output_group.add_argument("--excel", type=str, metavar="FILE.xlsx", help="Exporta los resultados a un fichero Excel.")
-    output_group.add_argument("--download", type=str, metavar="pdf,docx", help="Descarga archivos por tipo. Ej: 'pdf,docx' o 'all'.")
-    output_group.add_argument("--metadata", action="store_true", help="Extrae metadatos de los archivos descargados.")
+    output_group = parser.add_argument_group('Export Options')
+    output_group.add_argument("--json", type=str, metavar="FILE.json", help="Serialize findings to a JSON artifact.")
+    output_group.add_argument("--html", type=str, metavar="FILE.html", help="Generate a stylized HTML report.")
+    output_group.add_argument("--csv", type=str, metavar="FILE.csv", help="Export flat data to a CSV file.")
+    output_group.add_argument("--excel", type=str, metavar="FILE.xlsx", help="Export structured data to an Excel workbook.")
+    output_group.add_argument("--download", type=str, metavar="TYPES", help="Batch download filetypes (e.g., 'pdf,docx' or 'all').")
+    output_group.add_argument("--metadata", action="store_true", help="Trigger automated metadata extraction on downloaded artifacts.")
+    
     return parser

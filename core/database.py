@@ -9,20 +9,24 @@ console = Console()
 
 class DBManager:
     """
-    Class to manage the storage and retrieval of cases
-    using a SQLite database.
+    Data Access Object (DAO) mapped to a local SQLite instance.
+    Handles serialization and hydration of structured 'cases' 
+    (search sessions, collected nodes, queries), ensuring data persistence across runs.
     """
     def __init__(self, db_path=os.path.join(DIR_CASES, "cases.db")):
         self.db_path = db_path
         self._initialize_db()
 
     def _initialize_db(self):
-        """Initializes the database by creating necessary tables if they do not exist."""
+        """
+        Bootstrap method. Verifies and creates the internal schema constraints.
+        Safe to call multiple times as it uses IF NOT EXISTS.
+        """
         try:
             conn = sqlite3.connect(self.db_path)
             cursor = conn.cursor()
             
-            # Cases table
+            # Master 'cases' table. Stores high-level query metadata.
             cursor.execute('''
                 CREATE TABLE IF NOT EXISTS cases (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -32,7 +36,8 @@ class DBManager:
                 )
             ''')
             
-            # Results table associated with a case
+            # Dependent 'results' table mapped back to 'cases' via foreign key.
+            # CASCADE ensures clean teardowns if a parent case is deleted.
             cursor.execute('''
                 CREATE TABLE IF NOT EXISTS results (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -48,30 +53,33 @@ class DBManager:
             conn.commit()
             conn.close()
         except Exception as e:
-            console.print(f"[bold red]Error al inicializar la base de datos:[/bold red] {e}")
+            console.print(f"[bold red]Error initializing the database:[/bold red] {e}")
 
     def save_case(self, name, current_case):
         """
-        Saves a case and its results into the database.
+        Commits an active state dictionary payload to the database.
+        Includes rollback/conflict catching for overlapping case names.
         """
         try:
             conn = sqlite3.connect(self.db_path)
             cursor = conn.cursor()
             
-            # Insert the case
+            # Serialize the complex query dictionary into a flat JSON string for storage
             query_data_str = json.dumps(current_case.get("terminos", {}), ensure_ascii=False)
             
             try:
+                # Attempt to insert the root case node
                 cursor.execute(
                     "INSERT INTO cases (name, query_data) VALUES (?, ?)", 
                     (name, query_data_str)
                 )
                 case_id = cursor.lastrowid
             except sqlite3.IntegrityError:
+                # Catch UNIQUE constraint failures cleanly (duplicate case names)
                 conn.close()
-                return False, f"Ya existe un caso con el nombre '{name}'."
+                return False, f"A case with the name '{name}' already exists."
             
-            # Insert the results
+            # Batch process the corresponding child result nodes
             resultados = current_case.get("resultados", [])
             for res in resultados:
                 cursor.execute(
@@ -88,15 +96,16 @@ class DBManager:
                     )
                 )
             
+            # Commit the transaction block
             conn.commit()
             conn.close()
-            return True, f"Caso '{name}' guardado exitosamente."
+            return True, f"Case '{name}' saved successfully."
         except Exception as e:
-            return False, f"Error al guardar el caso: {e}"
+            return False, f"Error saving the case: {e}"
 
     def get_all_cases(self):
         """
-        Retrieves a list of all saved cases.
+        Queries and returns a flat array of all persisted case metadata, sorted chronologically.
         """
         try:
             conn = sqlite3.connect(self.db_path)
@@ -106,19 +115,21 @@ class DBManager:
             conn.close()
             return cases
         except Exception as e:
-            console.print(f"[bold red]Error al obtener la lista de casos:[/bold red] {e}")
+            console.print(f"[bold red]Error retrieving the list of cases:[/bold red] {e}")
             return []
 
     def get_case_by_id(self, case_id):
         """
-        Retrieves a complete case (search data and results) by its ID.
+        Performs a deep fetch of a specific case, joining the root metadata with 
+        all its associated result nodes, and reconstituting the Python dictionary state.
         """
         try:
             conn = sqlite3.connect(self.db_path)
+            # Row factory enables dictionary-like column access
             conn.row_factory = sqlite3.Row
             cursor = conn.cursor()
             
-            # Get case data
+            # Fetch root metadata
             cursor.execute("SELECT name, query_data FROM cases WHERE id = ?", (case_id,))
             case_row = cursor.fetchone()
             
@@ -126,14 +137,16 @@ class DBManager:
                 conn.close()
                 return None
             
-            # Get results
+            # Fetch the associated leaf nodes
             cursor.execute("SELECT result_id, title, description, link FROM results WHERE case_id = ? ORDER BY result_id ASC", (case_id,))
             result_rows = cursor.fetchall()
             conn.close()
             
+            # Deserialize the query JSON
             terminos = json.loads(case_row['query_data']) if case_row['query_data'] else {}
             resultados = []
             
+            # Reconstruct the results array
             for row in result_rows:
                 resultados.append({
                     'id': row['result_id'],
@@ -148,5 +161,5 @@ class DBManager:
                 "resultados": resultados
             }
         except Exception as e:
-            console.print(f"[bold red]Error al cargar el caso:[/bold red] {e}")
+            console.print(f"[bold red]Error loading the case:[/bold red] {e}")
             return None

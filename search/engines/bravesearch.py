@@ -4,35 +4,33 @@ import os
 
 class BraveSearch:
     """
-    Class to perform searches using the Brave Search API.
-    Requires a valid API Key.
+    Client wrapper for the Brave Search API (V1).
+    Encapsulates authentication, request construction, and result normalization.
     """
 
     def __init__(self, api_key):
         """
-        Initializes the BraveSearch instance.
+        Initializes the BraveSearch service layer.
 
         Args:
-            api_key (str): Your Brave Search API key.
+            api_key (str): X-Subscription-Token for Brave API authentication.
         """
         self.api_key = api_key
         self.base_url = "https://api.search.brave.com/res/v1/web/search"
 
     def search(self, query, pages=1):
         """
-        Performs a search on Brave Search.
+        Executes a search query against the Brave web index.
 
         Args:
-            query (str): The search query.
-            pages (int): Number of result pages (Brave allows up to 20 results per request,
-                         but complex pagination. We simplify by iterating offset).
+            query (str): Target search string/dork.
+            pages (int): Number of result pages to fetch. Brave returns up to 20 results per request.
 
         Returns:
-            list: List of dictionaries with results (title, description, link).
+            list: Normalized result objects containing 'title', 'description', and 'link'.
         """
         final_results = []
-        # The Brave Search API default returns 20 results depending on the plan,
-        # but the maximum 'count' parameter is 20.
+        # Brave Search API 'count' parameter caps at 20 per request.
         count = 20
         
         headers = {
@@ -42,15 +40,14 @@ class BraveSearch:
         }
 
         for page in range(pages):
-            # The Brave API uses offset-based pagination (0, 1, 2...).
-            # The 'offset' parameter indicates the number of result pages to skip (not item count).
-            # For example: page 1 -> offset=0, page 2 -> offset=1.
-            # Note: The maximum offset limit is typically 9 in standard plans.
+            # Brave API uses page-based offsets.
+            # Page 1 corresponds to offset 0, Page 2 to offset 1, etc.
+            # Note: Many subscription tiers limit the maximum offset (often to 9).
             
             params = {
                 "q": query,
                 "count": count,
-                "offset": page # 0 for the first page, 1 for the second...
+                "offset": page
             }
             
             try:
@@ -58,13 +55,11 @@ class BraveSearch:
                 response.raise_for_status()
                 data = response.json()
                 
-                # Brave response structure:
-                # { "web": { "results": [ ... ] } }
-                
+                # Payload traversal: data -> web -> results (list)
                 web_results = data.get("web", {}).get("results", [])
                 
                 for result in web_results:
-                    # Brave result keys: 'title', 'url' (link), 'description'
+                    # Map Brave response fields to internal ScannUs schema
                     final_results.append({
                         "title": result.get("title"),
                         "description": result.get("description"),
@@ -72,7 +67,8 @@ class BraveSearch:
                     })
                     
             except Exception as e:
-                print(f"Error en búsqueda con Brave (página {page+1}): {e}")
+                print(f"Brave Search API Error (page {page+1}): {e}")
+                # Halt sequential fetching on connection or authentication failure
                 break
                 
         return final_results

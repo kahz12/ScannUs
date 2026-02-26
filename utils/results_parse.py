@@ -8,189 +8,175 @@ from rich.console import Console
 from rich.table import Table
 from core.config import DIR_REPORTS
 
-# Defines the class to process and display search results.
 class ResultsParser:
     """
-    Class designed to handle search results.
-    Provides methods to format and export these results to different
-    formats, such as a table in the console, an HTML file, or a JSON file.
+    Data transformation layer for search results.
+    Provides serialization and formatting logic for exporting findings into
+    various report formats (HTML, JSON, CSV, Excel) and TUI-friendly tables.
     """
 
     def __init__(self, resultados):
         """
-        Initializes the parser with a list of results.
+        Initializes the parser with a result set.
 
         Args:
-            resultados (list): A list of dictionaries. Each dictionary represents
-                               a search result and must contain keys like
-                               'title', 'description' and 'link'.
+            resultados (list): Collection of result dictionaries, each containing
+                               'title', 'description', and 'link' keys.
         """
         self.resultados = resultados
 
     def exportar_html(self, archivo_salida):
         """
-        Exports search results to a well-formatted HTML file.
-
-        This method uses a predefined HTML template (`html_template.html`)
-        to ensure consistent structure and styling in the final report.
+        Exports the current result set into a structured HTML report.
+        Utilizes a local `html_template.html` for base styling and layout.
 
         Args:
-            archivo_salida (str): The path and name of the HTML file to create.
+            archivo_salida (str): Target filename for the HTML artifact.
         """
         archivo_salida = os.path.join(DIR_REPORTS, os.path.basename(archivo_salida))
         try:
-            # Define la ruta a la plantilla HTML. Se asume que está en el mismo directorio.
+            # Requires the companion template file in the project root.
             template_path = "html_template.html"
-            # Verifica si el archivo de plantilla existe antes de proceder.
+            
             if not os.path.exists(template_path):
-                print(f"Error: La plantilla HTML '{template_path}' no se encuentra.")
+                print(f"Error: HTML template '{template_path}' not found.")
                 return
 
-            # Lee el contenido de la plantilla.
             with open(template_path, 'r', encoding='utf-8') as f:
                 plantilla = f.read()
 
-            # Construye dinámicamente el contenido HTML para cada resultado.
+            # Construct dynamic HTML fragments for each record
             elementos_html = ''
             for indice, resultado in enumerate(self.resultados, start=1):
-                # Crea un bloque <div> para cada resultado, incluyendo título, descripción y enlace.
                 elemento = (
                     f'<div class="resultado">'
-                    f'<div class="indice">Resultado {indice}</div>'
-                    f'<h5>{resultado.get("title", "Sin título")}</h5>'
-                    f'<p>{resultado.get("description", "Sin descripción")}</p>'
-                    f'<a href="{resultado.get("link", "#")}" target="_blank">{resultado.get("link", "Sin enlace")}</a>'
+                    f'<div class="indice">Result {indice}</div>'
+                    f'<h5>{resultado.get("title", "No title")}</h5>'
+                    f'<p>{resultado.get("description", "No description")}</p>'
+                    f'<a href="{resultado.get("link", "#")}" target="_blank">{resultado.get("link", "No link")}</a>'
                     f'</div>'
                 )
                 elementos_html += elemento
             
-            # Reemplaza el marcador de posición '{{ resultados }}' en la plantilla con el HTML generado.
+            # Interpolate the generated fragments into the template
             informe_html = plantilla.replace('{{ resultados }}', elementos_html)
             
-            # Escribe el informe HTML final en el archivo de salida.
+            # Write finalized report to disk
             with open(archivo_salida, 'w', encoding='utf-8') as f:
                 f.write(informe_html)
-            print(f"Resultados exportados a HTML. Fichero creado: {archivo_salida}")
+            print(f"Results exported to HTML. File created: {archivo_salida}")
         except IOError as e:
-            # Maneja errores específicos de lectura/escritura de archivos.
-            print(f"Error de E/S al exportar a HTML: {e}")
+            print(f"I/O error exporting to HTML: {e}")
         except Exception as e:
-            # Captura cualquier otro error inesperado durante la exportación.
-            print(f"Ocurrió un error inesperado al exportar a HTML: {e}")
+            print(f"Unexpected error exporting to HTML: {e}")
 
     def exportar_csv(self, archivo_salida):
         """
-        Exports a list of results to a CSV file.
+        Dumps the results into a flat CSV file for generic data processing.
         
         Args:
-            archivo_salida (str): The path to the CSV file to create.
+            archivo_salida (str): Target path for the CSV output.
         """
         archivo_salida = os.path.join(DIR_REPORTS, os.path.basename(archivo_salida))
         try:
             with open(archivo_salida, 'w', newline='', encoding='utf-8') as f:
                 writer = csv.writer(f)
-                writer.writerow(['ID', 'Título', 'Descripción', 'Enlace'])
+                # Define column headers
+                writer.writerow(['ID', 'Title', 'Description', 'Link'])
+                
+                # Append formatted rows
                 for i, r in enumerate(self.resultados, 1):
                     writer.writerow([i, r.get('title', ''), r.get('description', ''), r.get('link', '')])
-            print(f"Resultados exportados a CSV. Fichero creado: {archivo_salida}")
+            print(f"Results exported to CSV. File created: {archivo_salida}")
         except IOError as e:
-            print(f"Error de E/S al exportar a CSV: {e}")
+            print(f"I/O error exporting to CSV: {e}")
         except Exception as e:
-            print(f"Ocurrió un error inesperado al exportar a CSV: {e}")
+            print(f"Unexpected error exporting to CSV: {e}")
 
     def exportar_excel(self, archivo_salida):
         """
-        Exports a list of results to an Excel file (.xlsx).
+        Generates a native Excel (.xlsx) file with basic column styling.
         
         Args:
-            archivo_salida (str): The path to the Excel file to create.
+            archivo_salida (str): Target path for the Excel artifact.
         """
         archivo_salida = os.path.join(DIR_REPORTS, os.path.basename(archivo_salida))
         try:
-            # Crear un libro de trabajo y seleccionar la hoja activa
+            # Bootstrap a new openpyxl workbook context
             wb = openpyxl.Workbook()
             ws = wb.active
-            ws.title = "Resultados"
+            ws.title = "Results"
             
-            # Definir estilos
             header_font = Font(bold=True)
             
-            # Escribir cabecera
-            headers = ['ID', 'Título', 'Descripción', 'Enlace']
+            # Setup headers
+            headers = ['ID', 'Title', 'Description', 'Link']
             ws.append(headers)
             
+            # Format the header row
             for cell in ws[1]:
                 cell.font = header_font
             
-            # Escribir datos
+            # Populate data rows
             for i, r in enumerate(self.resultados, 1):
                 ws.append([i, r.get('title', ''), r.get('description', ''), r.get('link', '')])
             
-            # Ajustar anchos básicos
+            # Apply ergonomic column widths for immediate usability
             ws.column_dimensions['A'].width = 5
             ws.column_dimensions['B'].width = 40
             ws.column_dimensions['C'].width = 80
             ws.column_dimensions['D'].width = 60
             
-            # Guardar archivo
             wb.save(archivo_salida)
-            print(f"Resultados exportados a Excel. Fichero creado: {archivo_salida}")
+            print(f"Results exported to Excel. File created: {archivo_salida}")
             
         except Exception as e:
-            print(f"Ocurrió un error inesperado al exportar a Excel: {e}")
+            print(f"Unexpected error exporting to Excel: {e}")
 
     def exportar_json(self, archivo_salida):
         """
-        Exports the list of results to a JSON formatted file.
+        Serializes the results list to a pretty-printed JSON file.
 
         Args:
-            archivo_salida (str): The path and name of the JSON file to create.
+            archivo_salida (str): Target path for the JSON output.
         """
         archivo_salida = os.path.join(DIR_REPORTS, os.path.basename(archivo_salida))
         try:
-            # Abre el archivo de salida en modo de escritura.
             with open(archivo_salida, 'w', encoding='utf-8') as f:
-                # Vuelca la lista de resultados al archivo JSON.
-                # `ensure_ascii=False` es importante para guardar correctamente caracteres especiales (ej. tildes, ñ).
-                # `indent=4` formatea el JSON con sangría para que sea fácilmente legible por humanos.
+                # indentation enabled for human readability
                 json.dump(self.resultados, f, ensure_ascii=False, indent=4)
-            print(f"Resultados exportados a JSON. Fichero creado: {archivo_salida}")
+            print(f"Results exported to JSON. File created: {archivo_salida}")
         except IOError as e:
-            # Maneja errores que puedan ocurrir al escribir en el archivo.
-            print(f"Error de E/S al exportar a JSON: {e}")
+            print(f"I/O error exporting to JSON: {e}")
         except Exception as e:
-            # Captura otros errores inesperados.
-            print(f"Ocurrió un error inesperado al exportar a JSON: {e}")
+            print(f"Unexpected error exporting to JSON: {e}")
 
     def to_table(self):
         """
-        Converts the list of results into a formatted table for the console.
-
-        Uses the `rich` library to create a visually appealing and readable table,
-        ideal for displaying information directly in the terminal.
+        Transforms the result set into a Rich TUI Table node.
+        Used for rendering findings directly into the terminal interface.
 
         Returns:
-            Table: A `rich` `Table` object that can be printed to the console.
+            Table: An instantiated rich.table.Table object.
         """
-        # Crea una instancia de la tabla, definiendo el estilo de la cabecera.
+        # Bootstrap the table layout
         table = Table(show_header=True, header_style='green')
-        # Define las columnas de la tabla con sus respectivos estilos y anchos.
-        table.add_column("#", style="dim")  # Columna para el número de resultado.
-        table.add_column("Titulo", width=25) # Columna para el título.
-        table.add_column("Descripcion")     # Columna para la descripción.
-        table.add_column("Enlace")          # Columna para el enlace.
+        
+        # Define the visual schema
+        table.add_column("#", style="dim")  
+        table.add_column("Title", width=25) 
+        table.add_column("Description")     
+        table.add_column("Link")          
 
-        # Itera sobre la lista de resultados para poblar la tabla.
+        # Hydrate table rows with current data
         for indice, resultado in enumerate(self.resultados, start=1):
-            # Añade una fila a la tabla con los datos de cada resultado.
-            # `resultado.get("clave", "N/A")` se usa para evitar errores si una clave no existe.
             table.add_row(
                 str(indice),
                 resultado.get("title", "N/A"),
                 resultado.get("description", "N/A"),
                 resultado.get("link", "N/A")
             )
-            # Añade una fila vacía como separador para mejorar la legibilidad entre resultados.
+            # Add visual padding between entries
             table.add_row("", "", "", "")
 
         return table

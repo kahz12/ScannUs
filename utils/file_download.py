@@ -2,74 +2,71 @@
 
 # Standard and third-party library imports
 import os
-import requests  # To make HTTP requests and download files.
-import datetime  # To work with dates, especially for metadata.
-from PyPDF2 import PdfReader  # To read and extract metadata from PDF files.
-from rich.console import Console  # For a more attractive and readable terminal output.
-from rich.table import Table  # To format data into tables in the console.
+import requests
+import datetime
+from PyPDF2 import PdfReader
+from rich.console import Console
+from rich.table import Table
 import exifread
 from core.config import DIR_DOWNLOADS
 
 class FileDownload:
     """
-    Class designed to manage downloading files from URLs.
-    Includes features to create destination directories and extract
-    metadata from specific file types, like PDF.
+    Service layer for artifact retrieval and post-download processing.
+    Handles chunked HTTP streaming, destination scaffolding, and 
+    automated metadata extraction for PDF and image (EXIF) payloads.
     """
 
     def __init__(self, directorio_destino=DIR_DOWNLOADS):
         """
-        Initializes the FileDownload instance.
+        Initializes the download context.
 
         Args:
-            directorio_destino (str): The directory path where downloaded
-                                      files will be saved.
+            directorio_destino (str): Target directory for persisted artifacts.
         """
         self.directorio = directorio_destino
-        self.crear_directorio()  # Se asegura de que el directorio de destino exista.
-        self.console = Console()  # Inicializa una consola de `rich` para toda la clase.
+        self.crear_directorio() 
+        self.console = Console()
 
     def crear_directorio(self):
         """
-        Creates the destination directory specified in the constructor if it doesn't exist.
+        Idempotent directory initialization for the download dropzone.
         """
         if not os.path.exists(self.directorio):
             os.makedirs(self.directorio)
 
     def _extract_pdf_metadata(self, file_path):
         """
-        Private method to extract and display metadata from a PDF file.
+        Specialized parser for PDF document properties.
 
         Args:
-            file_path (str): The local path to the PDF file.
+            file_path (str): Pointer to the local PDF artifact.
         """
         try:
-            # Abre el archivo PDF en modo de lectura binaria ('rb').
             with open(file_path, 'rb') as f:
                 reader = PdfReader(f)
-                meta = reader.metadata  # Accede a la propiedad de metadatos del objeto.
+                meta = reader.metadata
 
                 if not meta:
-                    self.console.print("  [yellow]No se encontraron metadatos en el PDF.[/yellow]")
+                    self.console.print("  [yellow]No metadata found in the PDF.[/yellow]")
                     return
 
-                # Crea una tabla de `rich` para mostrar los metadatos de forma ordenada.
-                table = Table(title=f"Metadatos para {os.path.basename(file_path)}", show_header=False, box=None)
-                table.add_column("Campo", style="cyan")
-                table.add_column("Valor", style="green")
+                # Render extracted properties in a Rich table
+                table = Table(title=f"Metadata for {os.path.basename(file_path)}", show_header=False, box=None)
+                table.add_column("Field", style="cyan")
+                table.add_column("Value", style="green")
 
-                # Mapea las claves crudas de los metadatos de PDF a nombres más legibles.
+                # Map PDF internal keys to human-readable descriptors
                 meta_map = {
-                    '/Author': 'Autor',
-                    '/Creator': 'Creador (Software)',
-                    '/Producer': 'Productor (Software)',
-                    '/Subject': 'Asunto',
-                    '/Title': 'Título',
-                    '/CreationDate': 'Fecha de Creación',
-                    '/ModDate': 'Fecha de Modificación'
+                    '/Author': 'Author',
+                    '/Creator': 'Creator (Software)',
+                    '/Producer': 'Producer (Software)',
+                    '/Subject': 'Subject',
+                    '/Title': 'Title',
+                    '/CreationDate': 'Creation Date',
+                    '/ModDate': 'Modification Date'
                 }
 
-                # Itera sobre el mapa y, si la clave existe en los metadatos, la añade a la tabla.
                 for key, readable_name in meta_map.items():
                     if key in meta:
                         table.add_row(readable_name, str(meta[key]))
@@ -77,110 +74,104 @@ class FileDownload:
                 self.console.print(table)
 
         except Exception as e:
-            # Captura y muestra cualquier error que ocurra durante la lectura del PDF.
-            self.console.print(f"  [bold red]Error al extraer metadatos del PDF:[/bold red] {e}")
+            self.console.print(f"  [bold red]Error extracting PDF metadata:[/bold red] {e}")
 
     def _extract_exif_metadata(self, file_path):
         """
-        Private method to extract and display EXIF metadata from images.
+        Specialized parser for image EXIF telemetry.
         """
         try:
             with open(file_path, 'rb') as f:
+                # detail=False suppresses high-volume binary blobs
                 tags = exifread.process_file(f, details=False)
                 
                 if not tags:
-                    self.console.print("  [yellow]No se encontraron metadatos EXIF en la imagen.[/yellow]")
+                    self.console.print("  [yellow]No EXIF metadata found in the image.[/yellow]")
                     return
 
-                table = Table(title=f"Metadatos EXIF para {os.path.basename(file_path)}", show_header=False, box=None)
-                table.add_column("Campo", style="cyan")
-                table.add_column("Valor", style="green")
+                table = Table(title=f"EXIF Metadata for {os.path.basename(file_path)}", show_header=False, box=None)
+                table.add_column("Field", style="cyan")
+                table.add_column("Value", style="green")
 
+                # Filter out raw thumbnails and proprietary maker notes to reduce noise
                 for tag, value in tags.items():
                     if tag not in ('JPEGThumbnail', 'TIFFThumbnail', 'Filename', 'EXIF MakerNote'):
                         table.add_row(tag, str(value))
                         
                 self.console.print(table)
         except Exception as e:
-            self.console.print(f"  [bold red]Error al extraer metadatos EXIF:[/bold red] {e}")
+            self.console.print(f"  [bold red]Error extracting EXIF metadata:[/bold red] {e}")
 
     def extract_metadata(self, file_path):
         """
-        Extracts metadata from a file based on its extension.
-        Currently, has specialized support for PDF. For other files,
-        it displays basic file system information.
+        Dispatches the file to the appropriate metadata extraction pipeline
+        based on its file extension.
 
         Args:
-            file_path (str): The path to the file from which metadata will be extracted.
+            file_path (str): Path to the artifact on disk.
         """
-        self.console.print(f"\n--- Extrayendo metadatos para: [cyan]{os.path.basename(file_path)}[/cyan] ---")
+        self.console.print(f"\n--- Extracting metadata for: [cyan]{os.path.basename(file_path)}[/cyan] ---")
 
-        # Obtiene la extensión del archivo para decidir qué extractor usar.
         _, extension = os.path.splitext(file_path)
 
         if extension.lower() == '.pdf':
-            # Llama al método específico para PDF.
             self._extract_pdf_metadata(file_path)
         elif extension.lower() in ['.jpg', '.jpeg', '.png', '.tiff']:
             self._extract_exif_metadata(file_path)
         else:
-            # Para otros tipos de archivo, informa que no hay un extractor específico.
-            self.console.print(f"  [yellow]No hay un extractor de metadatos para archivos '{extension}'.[/yellow]")
+            # Fallback to filesystem-level stat metadata for unsupported formats
+            self.console.print(f"  [yellow]No specialized metadata extractor available for '{extension}' files.[/yellow]")
             try:
-                # Muestra metadatos básicos del sistema de archivos como alternativa.
                 stat = os.stat(file_path)
-                self.console.print(f"  -> Tamaño: {stat.st_size} bytes")
-                self.console.print(f"  -> Última modificación: {datetime.datetime.fromtimestamp(stat.st_mtime)}")
+                self.console.print(f"  -> Size: {stat.st_size} bytes")
+                self.console.print(f"  -> Last Modification: {datetime.datetime.fromtimestamp(stat.st_mtime)}")
             except Exception as e:
-                self.console.print(f"  [bold red]Ocurrió un error durante la extracción de metadatos básicos:[/bold red] {e}")
+                self.console.print(f"[bold red]Error during basic filesystem metadata extraction:[/bold red] {e}")
 
     def descargar_archivo(self, url, extract_metadata=False):
         """
-        Downloads a file from a URL.
+        Performs a chunked binary download from a target URL.
 
         Args:
-            url (str): The URL of the file to download.
-            extract_metadata (bool): If True, attempts to extract metadata after downloading.
+            url (str): Source URI.
+            extract_metadata (bool): If True, triggers post-download metadata analysis.
         """
         try:
             from urllib.parse import urlparse
             parsed_url = urlparse(url)
             nombre_archivo = os.path.basename(parsed_url.path)
 
-            # Si la URL no termina en un nombre de archivo (ej. '.../download?id=123'),
-            # se genera un nombre de archivo único basado en un hash de la URL.
+            # Fallback name synthesis for endpoints without a direct path-to-filename mapping
             if not nombre_archivo:
                 import hashlib
                 hash_object = hashlib.md5(url.encode())
-                nombre_archivo = hash_object.hexdigest() + ".bin"  # Se usa una extensión genérica.
-                self.console.print(f"[yellow]Advertencia: No se pudo determinar el nombre del archivo. Usando:[/yellow] {nombre_archivo}")
+                nombre_archivo = hash_object.hexdigest() + ".bin" 
+                self.console.print(f"[yellow]Warning: Could not determine filename from URL. Using hash:[/yellow] {nombre_archivo}")
 
             ruta_completa = os.path.join(self.directorio, nombre_archivo)
 
-            self.console.print(f"Descargando '[green]{nombre_archivo}[/green]' desde '{url}'...")
+            self.console.print(f"Downloading '[green]{nombre_archivo}[/green]' from '{url}'...")
 
-            # Realiza la petición GET. `stream=True` es importante para no cargar todo el archivo en memoria de una vez.
+            # Execute streaming GET to handle large binary artifacts without memory spikes
             respuesta = requests.get(url, stream=True, timeout=15)
-            respuesta.raise_for_status()  # Lanza una excepción si la respuesta es un error HTTP.
+            respuesta.raise_for_status()
 
-            # Escribe el contenido de la respuesta en el archivo local en fragmentos (chunks).
+            # Iterate over the response stream in 8KB buffers
             with open(ruta_completa, "wb") as archivo:
                 for chunk in respuesta.iter_content(chunk_size=8192):
                     archivo.write(chunk)
-            self.console.print(f"¡Éxito! Archivo [green]{nombre_archivo}[/green], descargado en [cyan]{ruta_completa}[/cyan]")
+            self.console.print(f"Success! File [green]{nombre_archivo}[/green] downloaded to [cyan]{ruta_completa}[/cyan]")
 
-            # Si se solicita, llama a la función de extracción de metadatos.
             if extract_metadata:
                 self.extract_metadata(ruta_completa)
 
         except requests.exceptions.RequestException as e:
-            self.console.print(f"[bold red]Error de red o HTTP al descargar {url}:[/bold red] {e}")
+            self.console.print(f"[bold red]Network or HTTP error downloading {url}:[/bold red] {e}")
         except Exception as e:
-            self.console.print(f"[bold red]Ocurrió un error inesperado al descargar {url}:[/bold red] {e}")
+            self.console.print(f"[bold red]Unexpected error downloading {url}:[/bold red] {e}")
 
     def descargar_archivo_directo(self, url, extract_metadata=False):
         """
-        Convenience method that acts as an alias for `descargar_archivo`.
-        Simplifies calls from other parts of the code that only need to download a file.
+        Exposes a simplified interface for direct file downloads.
         """
         self.descargar_archivo(url, extract_metadata)

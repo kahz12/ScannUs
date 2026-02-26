@@ -2,9 +2,16 @@ import textwrap
 from rich.console import Console
 from rich.table import Table
 
+# Initialize global Rich console for standardized TUI rendering
 console = Console()
 
 def print_startup_banner(google_api_key_found):
+    """
+    Renders the ASCII art banner and performs bootstrap sequence logging.
+    
+    Args:
+        google_api_key_found (bool): Readiness flag for the LLM provider context.
+    """
     banner = textwrap.dedent(r"""
     [bold #00ff00]   _____                         _   _           [/]
     [bold #00ff40]  / ____|                       | | | |          [/]
@@ -16,14 +23,14 @@ def print_startup_banner(google_api_key_found):
 
     console.print(banner, justify="center")
     console.print()
-    console.rule("[bold green]Herramienta de Búsqueda y Análisis Avanzado[/bold green]")
+    console.rule("[bold green]Advanced Search & OSINT Analysis Tool[/bold green]")
 
-    with console.status("[bold green]Inicializando...[/bold green]", spinner="dots") as status:
-        status.update("Cargando variables de entorno...")
-        console.log("[green]Variables de entorno cargadas.[/green]")
+    with console.status("[bold green]Initializing system context...[/bold green]", spinner="dots") as status:
+        status.update("Resolving environment variables...")
+        console.log("[green]Environment configuration resolved.[/green]")
         
         if google_api_key_found:
-            console.log("[green]Clave de API de Gemini encontrada en .env.[/green]")
+            console.log("[green]Gemini API Key identified in local configuration.[/green]")
         else:
-            console.log("[yellow]Clave de API de Gemini no encontrada en .env.[/yellow]")
+            console.log("[yellow]Gemini API Key not found in .env configuration.[/yellow]")
     console.rule()
