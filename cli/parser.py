@@ -1,91 +1,189 @@
-import argparse
-import sys
-from cli.ui import console
-from rich.table import Table
+"""
+cli/parser.py — Argument parser and styled help renderer for ScannUs CLI.
 
-def show_custom_help(parser):
+Improvements:
+  - Uses shared THEME tokens for visual consistency with the TUI
+  - Help table rendered inside a Rich Panel per argument group
+  - Examples section uses a styled two-column grid
+"""
+
+import argparse
+from rich.panel import Panel
+from rich.table import Table
+from rich.columns import Columns
+from rich.text import Text
+from rich import box
+
+from cli.ui import console, THEME, make_table
+
+
+# ---------------------------------------------------------------------------
+# Custom help renderer
+# ---------------------------------------------------------------------------
+
+def show_custom_help(parser: argparse.ArgumentParser) -> None:
     """
-    Renders a colorized and structured help menu using the Rich library.
-    Iterates through argparse groups to present command-line options in a 
-    standardized TUI table format, followed by usage examples.
+    Renders a structured, theme-consistent help screen using Rich.
+
+    Each argparse group becomes its own Panel with a table of options.
+    Common usage examples are shown in a two-column grid at the bottom.
     """
-    console.print("\n[bold green]ScannUs Help Table[/bold green]")
+    console.print()
+    console.print(
+        Panel(
+            f"[{THEME['DIM']}]Advanced OSINT search and analysis framework[/]",
+            title=f"[{THEME['PRIMARY']}]⬡  ScannUs — Help[/]",
+            subtitle=f"[{THEME['DIM']}]Use -i to enter interactive TUI mode[/]",
+            border_style="bright_black",
+            padding=(0, 2),
+        )
+    )
+    console.print()
+
+    # One styled panel per argument group
     for group in parser._action_groups:
-        # Filter for actions that have associated option flags
-        actions = [action for action in group._group_actions if action.option_strings]
+        actions = [a for a in group._group_actions if a.option_strings]
         if not actions:
             continue
-        
-        table = Table(title=f"[bold magenta]{group.title}[/bold magenta]", show_header=True, header_style="bold cyan", box=None)
-        table.add_column("Argument", style="cyan", no_wrap=True)
-        table.add_column("Description", style="green")
-        table.add_column("Expected Value", style="yellow")
-        
-        for action in actions:
-            opts = ", ".join(action.option_strings)
-            metavar = action.metavar or ""
-            table.add_row(opts, action.help, metavar)
-        console.print(table)
-    
-    # Showcase common CLI usage patterns to assist the operator
-    console.rule("[bold_green]Usage Examples:[/bold_green]")
-    console.print("  [white]1. Basic Search Query:[/white]")
-    console.print("     [cyan]python main.py -q \"site:.gov filetype:pdf\"[/cyan]")
-    console.print("  [white]2. Target Engine Selection (Brave/Google/DuckDuckGo):[/white]")
-    console.print("     [cyan]python main.py -q \"OSINT tools\" --engine brave --pages 2[/cyan]")
-    console.print("  [white]3. Natural Language Dork Generation:[/white]")
-    console.print("     [cyan]python main.py -gd \"Find excel price lists of tech companies\"[/cyan]")
-    console.print("  [white]4. Guided Multi-Parameter Search:[/white]")
-    console.print("     [cyan]python main.py -n \"John Doe\" -u \"jdoe88\"[/cyan]")
-    console.print("  [white]5. Media Scraper Pipeline:[/white]")
-    console.print("     [cyan]python main.py --media-scrape \"https://example.com/gallery\"[/cyan]")
-    console.print("  [white]6. Enter Interactive TUI Mode:[/white]")
-    console.print("     [cyan]python main.py -i[/cyan]")
 
-def get_parser():
+        tbl = Table(box=None, show_header=True, header_style=THEME["DIM"],
+                    padding=(0, 1), border_style="bright_black")
+        tbl.add_column("Flag",        style=THEME["PRIMARY"], no_wrap=True, min_width=22)
+        tbl.add_column("Description", style="white")
+        tbl.add_column("Value",       style=THEME["ACCENT"], no_wrap=True)
+
+        for action in actions:
+            opts     = ", ".join(action.option_strings)
+            metavar  = action.metavar or ("FLAG" if action.nargs == 0 else "VALUE")
+            tbl.add_row(opts, action.help or "", metavar)
+
+        console.print(
+            Panel(
+                tbl,
+                title=f"[{THEME['ACCENT']}]{group.title}[/]",
+                border_style="bright_black",
+                padding=(0, 1),
+            )
+        )
+
+    # Usage examples in a two-column layout
+    console.print()
+    console.rule(f"[{THEME['PRIMARY']}]Usage Examples[/]")
+    console.print()
+
+    examples = [
+        ("Basic search query",
+         'python main.py -q "site:.gov filetype:pdf"'),
+        ("Multi-engine with pagination",
+         'python main.py -q "OSINT tools" --engine brave --pages 2'),
+        ("AI Dork generation",
+         'python main.py -gd "Find Excel price lists of tech companies"'),
+        ("Guided multi-parameter search",
+         'python main.py -n "John Doe" -u "jdoe88" --engine google'),
+        ("Media scraper pipeline",
+         'python main.py --media-scrape "https://example.com/gallery"'),
+        ("Interactive TUI mode",
+         'python main.py -i'),
+        ("Deep extraction + Excel export",
+         'python main.py -q "target@corp.com" --deep --excel results.xlsx'),
+        ("Load saved case",
+         'python main.py --load-case'),
+    ]
+
+    panels = []
+    for title, cmd in examples:
+        panels.append(
+            Panel(
+                f"[{THEME['LINK']}]{cmd}[/]",
+                title=f"[{THEME['DIM']}]{title}[/]",
+                border_style="bright_black",
+                padding=(0, 1),
+            )
+        )
+
+    # Render in a two-column Columns layout
+    console.print(Columns(panels, equal=True, expand=True))
+    console.print()
+
+
+# ---------------------------------------------------------------------------
+# Parser factory
+# ---------------------------------------------------------------------------
+
+def get_parser() -> argparse.ArgumentParser:
     """
-    Initializes and configures the global ArgumentParser instance.
-    Arguments are categorized into logical groups to optimize CLI ergonomics.
+    Builds and returns the configured ArgumentParser for ScannUs CLI.
+    Arguments are grouped into logical sections for clarity in the help screen.
     """
     parser = argparse.ArgumentParser(
-        description="ScannUs: Advanced Search Orchestrator and OSINT Analysis Engine.",
-        add_help=False # Suppress default help to use custom rich renderer
+        description="ScannUs: Advanced OSINT Search Orchestrator.",
+        add_help=False,  # Suppress default help — we use show_custom_help()
     )
-    
-    general_group = parser.add_argument_group('Main Arguments')
-    general_group.add_argument("-h", "--help", action="store_true", help="Display this custom help table.")
-    general_group.add_argument("-q", "--query", type=str, help="Primary search string or complex Google Dork.")
-    general_group.add_argument("-c", "--configure", action="store_true", help="Start the .env credential setup sequence.")
-    general_group.add_argument("-i", "--interactive", action="store_true", help="Enter the interactive investigation menu.")
-    
-    case_group = parser.add_argument_group('Case Management')
-    case_group.add_argument("--load-case", action="store_true", help="Hydrate session state from a previously saved case.")
 
-    search_group = parser.add_argument_group('Search Parameters')
-    search_group.add_argument("--engine", type=str, default="duckduckgo", help="Target engine (google, duckduckgo, brave).")
-    search_group.add_argument("-n", "--nombre", help="Target's full legal name.")
-    search_group.add_argument("-u", "--usuario", help="Target's primary username/handle.")
-    search_group.add_argument("-b", "--buscar", help="Generic search term or topic.")
-    search_group.add_argument("-e", "--email", help="Target's email address.")
-    search_group.add_argument("-t", "--telefono", help="Target's phone number.")
-    search_group.add_argument("--deep", action="store_true", help="Execute recursive analysis on each search result.")
-    search_group.add_argument("-rev", "--reverse", help="Image URL for reverse lookup.")
-    search_group.add_argument("--start-page", type=int, default=1, help="Starting SERP offset (default: 1).")
-    search_group.add_argument("--pages", type=int, default=1, help="Number of result pages to retrieve (default: 1).")
-    search_group.add_argument("--lang", type=str, default="lang_es", help="Language code filter (default: lang_es).")
+    # ── Main ──────────────────────────────────────────────────────────────
+    general = parser.add_argument_group("Main Options")
+    general.add_argument("-h", "--help",        action="store_true",
+                         help="Display this help screen.")
+    general.add_argument("-q", "--query",       type=str,
+                         help="Primary search string or Google Dork.")
+    general.add_argument("-c", "--configure",   action="store_true",
+                         help="Launch the .env API credential setup wizard.")
+    general.add_argument("-i", "--interactive", action="store_true",
+                         help="Enter the full interactive TUI investigation mode.")
 
-    ia_group = parser.add_argument_group('AI & NLP Options')
-    ia_group.add_argument("-gd", "--google-dorks", type=str, metavar='"DESC"', help="Synthesize a Google Dork from a natural language prompt.")
+    # ── Case management ───────────────────────────────────────────────────
+    cases = parser.add_argument_group("Case Management")
+    cases.add_argument("--load-case", action="store_true",
+                       help="Restore session state from a previously saved case.")
 
-    media_group = parser.add_argument_group('Media Processing')
-    media_group.add_argument("--media-scrape", type=str, metavar="URL", help="Extract and archive media from a remote URL.")
+    # ── Search parameters ─────────────────────────────────────────────────
+    search = parser.add_argument_group("Search Parameters")
+    search.add_argument("--engine",     type=str, default="duckduckgo", metavar="ENGINE",
+                        help="Search engine: google | duckduckgo | brave  (default: duckduckgo).")
+    search.add_argument("-n", "--nombre",   metavar="NAME",
+                        help="Target's full legal name.")
+    search.add_argument("-u", "--usuario",  metavar="HANDLE",
+                        help="Target's username or social handle.")
+    search.add_argument("-b", "--buscar",   metavar="TERM",
+                        help="Generic keyword or search topic.")
+    search.add_argument("-e", "--email",    metavar="EMAIL",
+                        help="Target's email address (triggers deep PII mode).")
+    search.add_argument("-t", "--telefono", metavar="PHONE",
+                        help="Target's phone number (triggers deep PII mode).")
+    search.add_argument("--deep",           action="store_true",
+                        help="Recursively analyse each result URL for PII.")
+    search.add_argument("-rev", "--reverse", metavar="URL",
+                        help="Image URL to submit for Yandex reverse image search.")
+    search.add_argument("--start-page",    type=int, default=1, metavar="N",
+                        help="Starting SERP page index (default: 1).")
+    search.add_argument("--pages",         type=int, default=1, metavar="N",
+                        help="Number of result pages to retrieve (default: 1).")
+    search.add_argument("--lang",          type=str, default="lang_es", metavar="CODE",
+                        help="Language restrict code (default: lang_es).")
 
-    output_group = parser.add_argument_group('Export Options')
-    output_group.add_argument("--json", type=str, metavar="FILE.json", help="Serialize findings to a JSON artifact.")
-    output_group.add_argument("--html", type=str, metavar="FILE.html", help="Generate a stylized HTML report.")
-    output_group.add_argument("--csv", type=str, metavar="FILE.csv", help="Export flat data to a CSV file.")
-    output_group.add_argument("--excel", type=str, metavar="FILE.xlsx", help="Export structured data to an Excel workbook.")
-    output_group.add_argument("--download", type=str, metavar="TYPES", help="Batch download filetypes (e.g., 'pdf,docx' or 'all').")
-    output_group.add_argument("--metadata", action="store_true", help="Trigger automated metadata extraction on downloaded artifacts.")
-    
+    # ── AI / NLP ──────────────────────────────────────────────────────────
+    ia = parser.add_argument_group("AI & NLP Options")
+    ia.add_argument("-gd", "--google-dorks", type=str, metavar='"DESCRIPTION"',
+                    help="Generate a Google Dork from a natural-language description via LLM.")
+
+    # ── Media ─────────────────────────────────────────────────────────────
+    media = parser.add_argument_group("Media Processing")
+    media.add_argument("--media-scrape", type=str, metavar="URL",
+                       help="Scrape and archive all media assets from a remote URL.")
+
+    # ── Export ────────────────────────────────────────────────────────────
+    export = parser.add_argument_group("Export Options")
+    export.add_argument("--json",     type=str, metavar="FILE.json",
+                        help="Serialise results to a JSON file.")
+    export.add_argument("--html",     type=str, metavar="FILE.html",
+                        help="Generate a styled HTML report.")
+    export.add_argument("--csv",      type=str, metavar="FILE.csv",
+                        help="Export results to a flat CSV file.")
+    export.add_argument("--excel",    type=str, metavar="FILE.xlsx",
+                        help="Export results to a styled Excel workbook.")
+    export.add_argument("--download", type=str, metavar="TYPES",
+                        help="Batch-download file types from results (e.g. 'pdf,docx' or 'all').")
+    export.add_argument("--metadata", action="store_true",
+                        help="Extract metadata from downloaded files.")
+
     return parser

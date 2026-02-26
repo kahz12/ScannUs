@@ -1,6 +1,7 @@
 import requests
 import json
 import os
+from search.engines.cache import search_cache
 
 class BraveSearch:
     """
@@ -30,9 +31,14 @@ class BraveSearch:
             list: Normalized result objects containing 'title', 'description', and 'link'.
         """
         final_results = []
-        # Brave Search API 'count' parameter caps at 20 per request.
         count = 20
-        
+
+        # --- In-session cache check ---
+        cache_key = search_cache.make_key("brave", query, pages=pages)
+        cached = search_cache.get(cache_key)
+        if cached is not None:
+            return cached
+
         headers = {
             "Accept": "application/json",
             "Accept-Encoding": "gzip",
@@ -67,8 +73,7 @@ class BraveSearch:
                     })
                     
             except Exception as e:
-                print(f"Brave Search API Error (page {page+1}): {e}")
-                # Halt sequential fetching on connection or authentication failure
-                break
-                
+                raise RuntimeError(f"Brave Search API Error (page {page + 1}): {e}")
+
+        search_cache.set(cache_key, final_results)
         return final_results

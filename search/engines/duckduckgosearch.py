@@ -1,6 +1,7 @@
 import requests
 from bs4 import BeautifulSoup
 from urllib.parse import unquote
+from search.engines.cache import search_cache
 
 class DuckDuckGoSearch:
     """
@@ -27,8 +28,13 @@ class DuckDuckGoSearch:
             list: Normalized list of result dictionaries (title, description, link).
         """
         final_results = []
-        
-        # Standard desktop User-Agent to prevent bot-detection flags
+
+        # --- In-session cache check ---
+        cache_key = search_cache.make_key("duckduckgo", query, pages=pages)
+        cached = search_cache.get(cache_key)
+        if cached is not None:
+            return cached
+
         headers = {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/58.0.3029.110 Safari/537.3'
         }
@@ -70,10 +76,11 @@ class DuckDuckGoSearch:
                         })
 
         except requests.exceptions.RequestException as e:
-            print(f"Network error searching DuckDuckGo: {e}")
+            raise RuntimeError(f"Network error searching DuckDuckGo: {e}")
         except Exception as e:
-            print(f"Unexpected DOM processing error on DuckDuckGo: {e}")
-            
+            raise RuntimeError(f"Unexpected DOM processing error on DuckDuckGo: {e}")
+
+        search_cache.set(cache_key, final_results)
         return final_results
 
     def clean_link(self, raw_link):
