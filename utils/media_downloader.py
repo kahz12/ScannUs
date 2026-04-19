@@ -1,13 +1,17 @@
 import os
 import re
-import requests
+import json
+import shutil
+import hashlib
+import asyncio
 import tempfile
 import zipfile
 import time
+import subprocess
+import requests
 from urllib.parse import urljoin, urlparse
 from bs4 import BeautifulSoup
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from rich.console import Console
 from rich.progress import (
     Progress, BarColumn, DownloadColumn,
     TransferSpeedColumn, TimeRemainingColumn, TaskProgressColumn, TextColumn
@@ -17,8 +21,15 @@ from rich.box import ROUNDED
 from cli.ui import console, THEME, print_info, print_warn, print_error, print_success
 from core.config import DIR_MEDIA
 
+# aiohttp is optional — fall back to ThreadPoolExecutor if absent.
+try:
+    import aiohttp  # type: ignore
+    _HAS_AIOHTTP = True
+except ImportError:
+    _HAS_AIOHTTP = False
+
 # Minimum file size in bytes to filter out tracking pixels, spacers, and favicons.
-MIN_FILE_SIZE_BYTES = 5 * 10024  # 5 KB
+MIN_FILE_SIZE_BYTES = 5 * 1024  # 5 KB
 
 # Maps MIME type prefixes to (subdirectory, file extension) tuples.
 MIME_MAP = {
@@ -216,6 +227,225 @@ def _download_single(media_url: str, temp_dir: str, headers: dict,
         progress.advance(overall_task_id)
 
         return False, f"Unexpected error for {media_url}: {e}"
+
+
+# ---------------------------------------------------------------------------
+# Content-based deduplication (SHA-256)
+# ---------------------------------------------------------------------------
+
+def _sha256(path: str, chunk_size: int = 1024 * 1024) -> str:
+    """Computes the SHA-256 hex digest of a file by streaming 1 MB chunks."""
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        while True:
+            chunk = f.read(chunk_size)
+            if not chunk:
+                break
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def _dedupe_by_content_hash(root_dir: str) -> int:
+    """
+    Walks ``root_dir`` recursively and removes files whose SHA-256 digest has
+    already been seen. The first occurrence of each digest is preserved.
+
+    Returns the number of duplicate files removed.
+    """
+    seen: dict[str, str] = {}
+    removed = 0
+    for root, _, files in os.walk(root_dir):
+        for name in sorted(files):
+            full = os.path.join(root, name)
+            try:
+                digest = _sha256(full)
+            except OSError:
+                continue
+            if digest in seen:
+                try:
+                    os.remove(full)
+                    removed += 1
+                except OSError:
+                    pass
+            else:
+                seen[digest] = full
+    return removed
+
+
+# ---------------------------------------------------------------------------
+# Video metadata via ffprobe
+# ---------------------------------------------------------------------------
+
+def _ffprobe_metadata(path: str) -> dict | None:
+    """
+    Runs ``ffprobe`` on a media file and returns a dict with the most relevant
+    technical metadata. Returns None if ffprobe is unavailable or the file
+    cannot be parsed.
+    """
+    if shutil.which("ffprobe") is None:
+        return None
+    try:
+        result = subprocess.run(
+            ["ffprobe", "-v", "quiet", "-print_format", "json",
+             "-show_streams", "-show_format", path],
+            capture_output=True, text=True, timeout=30,
+        )
+        if result.returncode != 0:
+            return None
+        data = json.loads(result.stdout or "{}")
+    except (subprocess.TimeoutExpired, json.JSONDecodeError, OSError):
+        return None
+
+    fmt = data.get("format", {}) or {}
+    streams = data.get("streams", []) or []
+    video_stream = next((s for s in streams if s.get("codec_type") == "video"), None)
+    audio_stream = next((s for s in streams if s.get("codec_type") == "audio"), None)
+
+    meta = {
+        "duration": fmt.get("duration"),
+        "size":     fmt.get("size"),
+        "bitrate":  fmt.get("bit_rate"),
+        "format":   fmt.get("format_name"),
+    }
+    if video_stream:
+        meta["video_codec"] = video_stream.get("codec_name")
+        meta["width"]       = video_stream.get("width")
+        meta["height"]      = video_stream.get("height")
+        meta["fps"]         = video_stream.get("r_frame_rate")
+    if audio_stream:
+        meta["audio_codec"] = audio_stream.get("codec_name")
+        meta["sample_rate"] = audio_stream.get("sample_rate")
+    return meta
+
+
+def _print_video_metadata_table(video_dir: str) -> None:
+    """Renders an ffprobe metadata table for every video file in ``video_dir``."""
+    if not os.path.isdir(video_dir):
+        return
+    video_files = [
+        os.path.join(video_dir, f) for f in sorted(os.listdir(video_dir))
+        if os.path.isfile(os.path.join(video_dir, f))
+    ]
+    if not video_files:
+        return
+
+    rows: list[tuple[str, dict]] = []
+    for path in video_files:
+        meta = _ffprobe_metadata(path)
+        if meta:
+            rows.append((os.path.basename(path), meta))
+
+    if not rows:
+        return
+
+    tbl = Table(title="Video Metadata (ffprobe)", box=ROUNDED,
+                header_style=f"bold {THEME['PRIMARY']}")
+    tbl.add_column("File", style="cyan", overflow="fold")
+    tbl.add_column("Resolution", style="green")
+    tbl.add_column("Duration", style="green")
+    tbl.add_column("Video", style=THEME["DIM"])
+    tbl.add_column("Audio", style=THEME["DIM"])
+
+    for name, meta in rows:
+        w, h = meta.get("width"), meta.get("height")
+        resolution = f"{w}x{h}" if w and h else "—"
+        duration = meta.get("duration")
+        try:
+            duration = f"{float(duration):.1f}s" if duration else "—"
+        except (TypeError, ValueError):
+            duration = str(duration or "—")
+        tbl.add_row(
+            name, resolution, duration,
+            meta.get("video_codec") or "—",
+            meta.get("audio_codec") or "—",
+        )
+    console.print(tbl)
+
+
+# ---------------------------------------------------------------------------
+# Asynchronous download path (aiohttp)
+# ---------------------------------------------------------------------------
+
+async def _async_download_single(
+    session, media_url: str, temp_dir: str, headers: dict,
+    progress: Progress, overall_task_id, min_size: int,
+) -> tuple[bool, str]:
+    """aiohttp variant of ``_download_single`` — streams a single asset."""
+    try:
+        async with session.get(media_url, headers=headers, timeout=20) as resp:
+            if resp.status >= 400:
+                progress.advance(overall_task_id)
+                return False, f"HTTP {resp.status} for {media_url}"
+
+            content_type = resp.headers.get("content-type", "")
+            content_length = int(resp.headers.get("content-length") or 0)
+
+            if content_length and content_length < min_size:
+                progress.advance(overall_task_id)
+                return False, f"Skipped (too small: {content_length}B): {media_url}"
+
+            subdir, file_name = _build_filename(media_url, content_type)
+            subdir_path = os.path.join(temp_dir, subdir)
+            os.makedirs(subdir_path, exist_ok=True)
+            file_path = os.path.join(subdir_path, file_name)
+
+            with open(file_path, "wb") as f:
+                async for chunk in resp.content.iter_chunked(8192):
+                    if chunk:
+                        f.write(chunk)
+
+        actual_size = os.path.getsize(file_path)
+        if actual_size < min_size:
+            os.remove(file_path)
+            progress.advance(overall_task_id)
+            return False, f"Skipped (too small after download: {actual_size}B): {media_url}"
+
+        progress.advance(overall_task_id)
+        return True, file_path
+
+    except Exception as e:
+        progress.advance(overall_task_id)
+        return False, f"Async error for {media_url}: {e}"
+
+
+async def _download_media_async(
+    media_urls: list[str], temp_dir: str, headers: dict,
+    progress: Progress, overall_task_id, min_size: int,
+    max_concurrent: int = 16,
+) -> tuple[int, int, int]:
+    """
+    aiohttp-based concurrent downloader. Returns (success, skip, error) counts.
+    """
+    timeout = aiohttp.ClientTimeout(total=None, sock_connect=15, sock_read=30)
+    connector = aiohttp.TCPConnector(limit=max_concurrent, ssl=False)
+    sem = asyncio.Semaphore(max_concurrent)
+
+    async with aiohttp.ClientSession(connector=connector, timeout=timeout) as session:
+        async def bounded(url):
+            async with sem:
+                return await _async_download_single(
+                    session, url, temp_dir, headers,
+                    progress, overall_task_id, min_size,
+                )
+
+        results = await asyncio.gather(*(bounded(u) for u in media_urls),
+                                       return_exceptions=True)
+
+    success = skip = error = 0
+    for r in results:
+        if isinstance(r, Exception):
+            error += 1
+            continue
+        ok, msg = r
+        if ok:
+            success += 1
+        elif "Skipped" in msg:
+            skip += 1
+            console.print(f"  [dim]{msg}[/dim]")
+        else:
+            error += 1
+            console.print(f"  [yellow]{msg}[/yellow]")
+    return success, skip, error
 
 
 def _download_videos_ytdlp(url: str, output_dir: str) -> list[str]:
@@ -416,8 +646,6 @@ def _scrape_media_urls_static(url: str, headers: dict, media_type: str) -> list[
     Returns:
         Deduplicated list of absolute media URLs.
     """
-    import re
-
     try:
         response = requests.get(url, headers=headers, timeout=20)
         response.raise_for_status()
@@ -476,8 +704,6 @@ def _scrape_media_urls_dynamic(url: str, media_type: str) -> list[str]:
     Returns:
         Deduplicated list of absolute media URLs found in the rendered DOM.
     """
-    import re
-
     try:
         from selenium import webdriver
         from selenium.webdriver.firefox.options import Options
@@ -560,6 +786,7 @@ def download_media_from_url(
     use_selenium:    bool = False,
     max_workers:     int  = 8,
     min_size:        int  = MIN_FILE_SIZE_BYTES,
+    use_async:       bool = False,
 ) -> None:
     """
     Orchestrates media scraping and parallel downloading from a target URL.
@@ -581,6 +808,9 @@ def download_media_from_url(
         use_selenium:    If True, forces Selenium for non-video scraping.
         max_workers:     Parallel download threads (applies to image/audio).
         min_size:        Minimum file size in bytes (default 5 KB).
+        use_async:       If True and ``aiohttp`` is installed, uses an asyncio
+                         downloader instead of ``ThreadPoolExecutor`` for the
+                         image/audio pipeline.
     """
     output_zip_path = os.path.join(DIR_MEDIA, os.path.basename(output_zip_path))
 
@@ -719,24 +949,38 @@ def download_media_from_url(
                         f"[cyan]Downloading {len(media_urls)} assets…",
                         total=len(media_urls),
                     )
-                    with ThreadPoolExecutor(max_workers=max_workers) as executor:
-                        futures = {
-                            executor.submit(
-                                _download_single, u, temp_dir, headers,
-                                progress, overall, min_size
-                            ): u
-                            for u in media_urls
-                        }
-                        for future in as_completed(futures):
-                            ok, msg = future.result()
-                            if ok:
-                                success_count += 1
-                            elif "Skipped" in msg:
-                                skip_count += 1
-                                console.print(f"  [dim]{msg}[/dim]")
-                            else:
-                                error_count += 1
-                                console.print(f"  [yellow]{msg}[/yellow]")
+
+                    if use_async and _HAS_AIOHTTP:
+                        print_info("Using aiohttp async downloader.")
+                        s, k, e = asyncio.run(_download_media_async(
+                            media_urls, temp_dir, headers,
+                            progress, overall, min_size,
+                            max_concurrent=max(max_workers, 8),
+                        ))
+                        success_count += s
+                        skip_count    += k
+                        error_count   += e
+                    else:
+                        if use_async and not _HAS_AIOHTTP:
+                            print_warn("aiohttp not installed — falling back to ThreadPoolExecutor.")
+                        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                            futures = {
+                                executor.submit(
+                                    _download_single, u, temp_dir, headers,
+                                    progress, overall, min_size
+                                ): u
+                                for u in media_urls
+                            }
+                            for future in as_completed(futures):
+                                ok, msg = future.result()
+                                if ok:
+                                    success_count += 1
+                                elif "Skipped" in msg:
+                                    skip_count += 1
+                                    console.print(f"  [dim]{msg}[/dim]")
+                                else:
+                                    error_count += 1
+                                    console.print(f"  [yellow]{msg}[/yellow]")
 
         # ── Summary ────────────────────────────────────────────────────────
         console.print(
@@ -748,6 +992,16 @@ def download_media_from_url(
         if success_count == 0:
             print_warn("No files were downloaded. ZIP archive will not be created.")
             return
+
+        # Content-based deduplication across all downloaded assets
+        removed = _dedupe_by_content_hash(temp_dir)
+        if removed:
+            print_info(f"Removed {removed} duplicate file(s) by SHA-256 content hash.")
+            success_count -= removed
+
+        # Video metadata via ffprobe (best-effort)
+        if media_type in ("videos", "all"):
+            _print_video_metadata_table(os.path.join(temp_dir, "videos"))
 
         # Compress all assets preserving subdirectory structure
         print_info(f"Compressing → {output_zip_path}")
@@ -762,7 +1016,7 @@ def download_media_from_url(
 
 
 def download_media(url: str, output_path: str, media_type: str = "all",
-                   use_selenium: bool = False) -> None:
+                   use_selenium: bool = False, use_async: bool = False) -> None:
     """
     Public API wrapper for the media downloader pipeline.
 
@@ -772,140 +1026,8 @@ def download_media(url: str, output_path: str, media_type: str = "all",
         media_type:   'images', 'videos', 'audio', or 'all'.
         use_selenium: Set True to use headless browser for images/audio scraping.
                       Videos always attempt yt-dlp → Selenium → static.
+        use_async:    Set True to use aiohttp-based async downloader for
+                      images/audio (requires ``aiohttp``).
     """
-    download_media_from_url(url, output_path, media_type, use_selenium=use_selenium)
-
-    """
-    Orchestrates media scraping and parallel downloading from a target URL.
-
-    Improvements over the previous version:
-    - [HIGH #1] Concurrent downloads via ThreadPoolExecutor
-    - [HIGH #2] Optional Selenium fallback for JS-rendered pages
-    - [HIGH #3] Minimum file size filter (skips tracking pixels/favicons)
-    - Global single progress bar instead of per-file bars
-    - MIME-type-aware extension resolution and subdirectory organization
-
-    Args:
-        url:             Target webpage URL.
-        output_zip_path: Filename for the output ZIP archive.
-        media_type:      'images', 'videos', 'audio', or 'all'.
-        use_selenium:    If True, uses headless browser to render JS before scraping.
-        max_workers:     Number of parallel download threads.
-        min_size:        Minimum file size in bytes to keep (default 5 KB).
-    """
-    output_zip_path = os.path.join(DIR_MEDIA, os.path.basename(output_zip_path))
-
-    headers = {
-        'User-Agent': (
-            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
-            'AppleWebKit/537.36 (KHTML, like Gecko) '
-            'Chrome/120.0.0.0 Safari/537.36'
-        )
-    }
-
-    # --- High Priority Improvement #2: Selenium fallback for JS-rendered content ---
-    if use_selenium:
-        console.print("[yellow]Using Selenium for JS-rendered scraping...[/yellow]")
-        media_urls = _scrape_media_urls_dynamic(url, media_type)
-    else:
-        console.print(f"[yellow]Accessing URL: [cyan]{url}[/cyan][/yellow]")
-        media_urls = _scrape_media_urls_static(url, headers, media_type)
-
-    if not media_urls:
-        console.print(f"[yellow]No '{media_type}' media found on the page.[/yellow]")
-        return
-
-    # Display a summary table of discovered assets
-    table = Table(
-        title=f"Discovered Media Assets ({len(media_urls)} URLs)",
-        box=ROUNDED, header_style="bold blue", title_style="bold magenta"
-    )
-    table.add_column("#", style="dim", width=4)
-    table.add_column("URL", style="cyan", no_wrap=False)
-    for i, u in enumerate(media_urls, 1):
-        table.add_row(str(i), u)
-    console.print(table)
-
-    console.print(
-        f"\nStarting [bold green]parallel download[/bold green] with "
-        f"[cyan]{max_workers}[/cyan] threads | "
-        f"Min file size: [yellow]{min_size // 1024} KB[/yellow]\n"
-    )
-
-    with tempfile.TemporaryDirectory() as temp_dir:
-        success_count = 0
-        skip_count = 0
-        error_count = 0
-
-        # --- High Priority Improvement #1: Concurrent downloads with global progress bar ---
-        with Progress(
-            TextColumn("[progress.description]{task.description}"),
-            BarColumn(),
-            TaskProgressColumn(),
-            "•",
-            TransferSpeedColumn(),
-            "•",
-            TimeRemainingColumn(),
-            console=console,
-        ) as progress:
-            overall = progress.add_task(
-                f"[cyan]Downloading {len(media_urls)} files...", total=len(media_urls)
-            )
-
-            with ThreadPoolExecutor(max_workers=max_workers) as executor:
-                futures = {
-                    executor.submit(
-                        _download_single, url, temp_dir, headers, progress, overall, min_size
-                    ): url
-                    for url in media_urls
-                }
-
-                for future in as_completed(futures):
-                    ok, message = future.result()
-                    if ok:
-                        success_count += 1
-                    elif "Skipped" in message:
-                        skip_count += 1
-                        console.print(f"  [dim]{message}[/dim]")
-                    else:
-                        error_count += 1
-                        console.print(f"  [yellow]{message}[/yellow]")
-
-        # Summarize results
-        console.print(
-            f"\n✅ Downloaded: [green]{success_count}[/green]  "
-            f"⏩ Skipped (too small): [yellow]{skip_count}[/yellow]  "
-            f"❌ Errors: [red]{error_count}[/red]"
-        )
-
-        if success_count == 0:
-            console.print("[bold yellow]No files were downloaded. ZIP archive will not be created.[/bold yellow]")
-            return
-
-        # Consolidate all assets (preserving subdirectory structure) into ZIP
-        console.print(f"\nCompressing into [cyan]{output_zip_path}[/cyan]...")
-        with zipfile.ZipFile(output_zip_path, 'w', compression=zipfile.ZIP_DEFLATED) as zipf:
-            for root, _, files in os.walk(temp_dir):
-                for file in files:
-                    full_path = os.path.join(root, file)
-                    # Preserve relative subdirectory structure inside ZIP
-                    arcname = os.path.relpath(full_path, temp_dir)
-                    zipf.write(full_path, arcname=arcname)
-
-    console.print(
-        f"[bold green]Done! {success_count} files archived in:[/bold green] {output_zip_path}"
-    )
-
-
-def download_media(url: str, output_path: str, media_type: str = 'all',
-                   use_selenium: bool = False):
-    """
-    Public API wrapper for the media downloader pipeline.
-
-    Args:
-        url:          Target page URL.
-        output_path:  ZIP archive destination filename.
-        media_type:   'images', 'videos', 'audio', or 'all'.
-        use_selenium: Set True to use headless browser for JS-rendered pages.
-    """
-    download_media_from_url(url, output_path, media_type, use_selenium=use_selenium)
+    download_media_from_url(url, output_path, media_type,
+                            use_selenium=use_selenium, use_async=use_async)

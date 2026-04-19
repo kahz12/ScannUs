@@ -1,8 +1,6 @@
 import os
-from rich.table import Table
 from rich.panel import Panel
 from rich.text import Text
-from rich import box
 from cli.ui import console, THEME, print_success, print_error, print_warn, print_info, make_table
 from utils.results_parse import ResultsParser
 from search.engines.duckduckgosearch import DuckDuckGoSearch
@@ -92,7 +90,7 @@ def do_deep_search(query: str, engine: str, pages: int, start_page: int, lang: s
 
     try:
         resultados = _get_search_engine(engine, pages, start_page, lang, query)
-    except (EnvironmentError, Exception) as e:
+    except Exception as e:
         print_error(str(e))
         return
 
@@ -143,7 +141,7 @@ def do_search(query: str, engine: str, pages: int, start_page: int,
 
     try:
         resultados = _get_search_engine(engine, pages, start_page, lang, query)
-    except (EnvironmentError, Exception) as e:
+    except Exception as e:
         print_error(str(e))
         return
 

@@ -1,177 +1,297 @@
+"""
+analysis/advanced_osint.py — Screenshots, deep scraping, Wayback Machine.
+
+Screenshot engines (auto-selected):
+  1. Playwright (Chromium) — native full-page screenshot, most stable.
+  2. Selenium (Firefox)     — resizes the window to the document height.
+"""
+
 import os
 import time
 import requests
 from bs4 import BeautifulSoup
-from urllib.parse import urlparse
-from rich.console import Console
+from urllib.parse import urlparse, quote_plus
+from cli.ui import console, THEME, print_info, print_warn, print_error, print_success, make_table
 from core.config import DIR_SCREENSHOTS
 
-console = Console()
 
-def take_screenshot(url, output_dir=DIR_SCREENSHOTS):
-    """
-    Captures a high-resolution screenshot of the target URL using Headless Selenium.
-    
-    Args:
-        url (str): The target URL to capture.
-        output_dir (str): Destination directory for the resulting image.
-    
-    Returns:
-        str: Absolute path to the generated PNG artifact, or None on failure.
-    """
-    # Latent imports to minimize interpreter startup overhead
-    from selenium import webdriver
-    from selenium.webdriver.firefox.options import Options
-    from selenium.webdriver.firefox.service import Service
-    
-    if not os.path.exists(output_dir):
-        os.makedirs(output_dir)
+# ---------------------------------------------------------------------------
+# Screenshot
+# ---------------------------------------------------------------------------
 
-    # Sanitize the domain string to create a filesystem-safe filename
-    domain = urlparse(url).netloc.replace('.', '_')
-    if not domain:
-        domain = "unknown_domain"
-    output_path = os.path.join(output_dir, f"{domain}_screenshot.png")
+def _slug(url: str) -> str:
+    """Filesystem-safe identifier derived from the URL host."""
+    host = urlparse(url).netloc.replace(".", "_")
+    return host or "unknown_domain"
+
+
+def _screenshot_playwright(url: str, output_path: str, timeout_ms: int = 30_000) -> bool:
+    """Playwright full-page screenshot. Returns True on success."""
+    try:
+        from playwright.sync_api import sync_playwright
+    except ImportError:
+        return False
+
+    try:
+        with sync_playwright() as pw:
+            browser = pw.chromium.launch(headless=True)
+            context = browser.new_context(viewport={"width": 1920, "height": 1080})
+            page = context.new_page()
+            page.goto(url, timeout=timeout_ms, wait_until="networkidle")
+            page.screenshot(path=output_path, full_page=True)
+            browser.close()
+        return True
+    except Exception as e:
+        print_warn(f"Playwright screenshot failed: {e}")
+        return False
+
+
+def _screenshot_selenium(url: str, output_path: str) -> bool:
+    """
+    Selenium (Firefox headless) full-page screenshot.
+    Resizes the window to match the document height before capture.
+    """
+    try:
+        from selenium import webdriver
+        from selenium.webdriver.firefox.options import Options
+        from selenium.webdriver.firefox.service import Service
+    except ImportError:
+        print_error("Selenium is not installed.")
+        return False
 
     options = Options()
     options.add_argument("--headless")
-    
-    # Geckodriver path specifically mapped for Termux environments
+    options.add_argument("--width=1920")
+    options.add_argument("--height=3000")
+
     geckodriver_path = "/data/data/com.termux/files/usr/bin/geckodriver"
     service = Service(executable_path=geckodriver_path) if os.path.exists(geckodriver_path) else None
 
     driver = None
     try:
-        console.print(f"[yellow]Starting headless browser to capture {url}...[/yellow]")
-        if service:
-            driver = webdriver.Firefox(options=options, service=service)
-        else:
-            driver = webdriver.Firefox(options=options)
-            
+        driver = webdriver.Firefox(options=options, service=service) if service \
+            else webdriver.Firefox(options=options)
         driver.set_page_load_timeout(30)
         driver.get(url)
-        
-        # Flush the frame buffer to the local disk as a PNG
-        driver.save_screenshot(output_path)
-        console.print(f"[bold green]Screenshot successfully saved to:[/bold green] {output_path}")
-        return output_path
 
+        # Resize to the full document height so a single screenshot captures everything
+        total_height = driver.execute_script(
+            "return Math.max(document.body.scrollHeight, document.documentElement.scrollHeight);"
+        ) or 3000
+        total_width = driver.execute_script(
+            "return Math.max(document.body.scrollWidth, document.documentElement.scrollWidth);"
+        ) or 1920
+        # Cap to avoid runaway allocations on infinite-scroll pages
+        total_height = min(int(total_height), 20_000)
+        total_width = min(int(total_width), 3840)
+        driver.set_window_size(total_width, total_height)
+        time.sleep(1)  # let layout stabilise
+
+        # Firefox's get_full_page_screenshot_as_file is available on recent geckodriver
+        saved = False
+        if hasattr(driver, "get_full_page_screenshot_as_file"):
+            try:
+                driver.get_full_page_screenshot_as_file(output_path)
+                saved = True
+            except Exception:
+                saved = False
+        if not saved:
+            driver.save_screenshot(output_path)
+        return True
     except Exception as e:
-        console.print(f"[bold red]Error capturing screenshot:[/bold red] {e}")
-        return None
+        print_error(f"Selenium screenshot failed: {e}")
+        return False
     finally:
-        # Mandatory process group teardown to prevent zombie browser instances
         if driver:
             driver.quit()
 
-def get_dynamic_text_from_url(url):
+
+def take_screenshot(url: str, output_dir: str = DIR_SCREENSHOTS,
+                    engine: str = "auto") -> str | None:
     """
-    Extracts text payload from a webpage after executing JavaScript via Headless Selenium.
-    Essential for SPAs (Single Page Applications) or content hidden behind lazy-loaders.
+    Captures a full-page screenshot of the target URL.
+
+    Args:
+        url:        Target URL.
+        output_dir: Directory to persist the PNG into.
+        engine:     'playwright', 'selenium', or 'auto' (tries Playwright first).
+
+    Returns:
+        Absolute path to the PNG, or None on failure.
     """
-    from selenium import webdriver
-    from selenium.webdriver.firefox.options import Options
-    from selenium.webdriver.firefox.service import Service
-    
+    os.makedirs(output_dir, exist_ok=True)
+    output_path = os.path.join(output_dir, f"{_slug(url)}_screenshot.png")
+
+    print_info(f"Capturing screenshot → {url}")
+
+    if engine in ("auto", "playwright"):
+        if _screenshot_playwright(url, output_path):
+            print_success(f"Screenshot saved (Playwright): {output_path}")
+            return output_path
+        if engine == "playwright":
+            return None
+
+    if _screenshot_selenium(url, output_path):
+        print_success(f"Screenshot saved (Selenium): {output_path}")
+        return output_path
+    return None
+
+
+# ---------------------------------------------------------------------------
+# Deep scraping (JS-rendered DOM)
+# ---------------------------------------------------------------------------
+
+def get_dynamic_text_from_url(url: str) -> str | None:
+    """
+    Extracts text from a webpage after JavaScript execution.
+    Essential for SPAs and lazy-loaded content.
+    """
+    try:
+        from selenium import webdriver
+        from selenium.webdriver.firefox.options import Options
+        from selenium.webdriver.firefox.service import Service
+    except ImportError:
+        print_error("Selenium is not installed — cannot deep-scrape.")
+        return None
+
     options = Options()
     options.add_argument("--headless")
-    
+
     geckodriver_path = "/data/data/com.termux/files/usr/bin/geckodriver"
     service = Service(executable_path=geckodriver_path) if os.path.exists(geckodriver_path) else None
 
     driver = None
     try:
-        console.print(f"[yellow]Starting Deep Scraping on {url}...[/yellow]")
-        if service:
-            driver = webdriver.Firefox(options=options, service=service)
-        else:
-            driver = webdriver.Firefox(options=options)
-            
+        print_info(f"Deep scraping: {url}")
+        driver = webdriver.Firefox(options=options, service=service) if service \
+            else webdriver.Firefox(options=options)
         driver.set_page_load_timeout(45)
         driver.get(url)
-        
-        # Dispatch synthetic scroll events to trigger dynamic content hydration
-        console.print("[cyan]Scrolling to force dynamic content load...[/cyan]")
+
         last_height = driver.execute_script("return document.body.scrollHeight")
         for _ in range(3):
             driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
             time.sleep(2)
             new_height = driver.execute_script("return document.body.scrollHeight")
-            # Break early if the DOM height stabilizes
             if new_height == last_height:
                 break
             last_height = new_height
-        
-        # Retrieve the fully mutated DOM source
+
         html = driver.page_source
-        
-        # Leverage BeautifulSoup to strip non-textual nodes
-        soup = BeautifulSoup(html, 'html.parser')
-        
-        for script_or_style in soup(["script", "style"]):
-            script_or_style.decompose()
-            
-        text = soup.get_text()
-        
-        # Clean and normalize the text payload
+        soup = BeautifulSoup(html, "html.parser")
+        for tag in soup(["script", "style", "noscript"]):
+            tag.decompose()
+
+        text = soup.get_text(separator="\n")
         lines = (line.strip() for line in text.splitlines())
-        chunks = (phrase.strip() for line in lines for phrase in line.split("  "))
-        clean_text = '\n'.join(chunk for chunk in chunks if chunk)
-        
-        return clean_text
+        return "\n".join(line for line in lines if line)
 
     except Exception as e:
-        console.print(f"[bold red]Error during deep scraping:[/bold red] {e}")
+        print_error(f"Deep scraping failed: {e}")
         return None
     finally:
         if driver:
             driver.quit()
 
 
-def check_wayback_machine(url):
+# ---------------------------------------------------------------------------
+# Wayback Machine — CDX timeline
+# ---------------------------------------------------------------------------
+
+_CDX_ENDPOINT = "https://web.archive.org/cdx/search/cdx"
+
+
+def _format_cdx_timestamp(ts: str) -> str:
+    """YYYYMMDDhhmmss → YYYY-MM-DD HH:MM:SS"""
+    if len(ts) >= 14:
+        return f"{ts[0:4]}-{ts[4:6]}-{ts[6:8]} {ts[8:10]}:{ts[10:12]}:{ts[12:14]}"
+    if len(ts) >= 8:
+        return f"{ts[0:4]}-{ts[4:6]}-{ts[6:8]}"
+    return ts
+
+
+def check_wayback_machine(url: str, limit: int = 20,
+                          from_year: int | None = None,
+                          to_year: int | None = None) -> list[dict] | None:
     """
-    Queries the Internet Archive Availability API to check for historical snapshots of the target URL.
-    
+    Queries the Wayback Machine **CDX** API for the full snapshot timeline.
+
     Args:
-        url (str): The target URL to query.
-    
+        url:       Target URL.
+        limit:     Max snapshots to render (negative → most recent first).
+        from_year: Optional lower bound (e.g. 2015).
+        to_year:   Optional upper bound (e.g. 2024).
+
     Returns:
-        dict: Snapshot metadata (URL and timestamp) if found, otherwise None.
+        List of snapshot dicts ``{'timestamp', 'date', 'status', 'mime', 'url'}``,
+        or None on failure. The full list is returned even when ``limit`` caps
+        the rendered preview.
     """
-    console.print(f"\n[yellow]Querying Wayback Machine for: {url}[/yellow]")
-    # Interface with the Wayback Machine Availability API
-    api_url = f"http://archive.org/wayback/available?url={url}"
-    
+    params = {
+        "url":    url,
+        "output": "json",
+        "fl":     "timestamp,original,mimetype,statuscode,digest",
+        "filter": "statuscode:200",
+        "collapse": "digest",          # collapse identical captures
+    }
+    if from_year:
+        params["from"] = str(from_year)
+    if to_year:
+        params["to"] = str(to_year)
+    # Negative limit means "last N" on the CDX API
+    params["limit"] = str(-abs(limit)) if limit else "-20"
+
+    print_info(f"Querying Wayback CDX for: {url}")
     try:
-        response = requests.get(api_url, timeout=10)
+        response = requests.get(_CDX_ENDPOINT, params=params, timeout=20)
         response.raise_for_status()
         data = response.json()
-        
-        # Traverse the JSON schema for the 'closest' available snapshot
-        archived_snapshots = data.get("archived_snapshots", {})
-        if "closest" in archived_snapshots:
-            closest = archived_snapshots["closest"]
-            if closest.get("available"):
-                archive_url = closest.get("url")
-                timestamp = closest.get("timestamp", "")
-                
-                # Normalize raw timestamp (YYYYMMDDhhmmss) to YYYY-MM-DD
-                formatted_date = timestamp
-                if len(timestamp) >= 8:
-                    formatted_date = f"{timestamp[:4]}-{timestamp[4:6]}-{timestamp[6:8]}"
-                
-                console.print(f"[bold green]URL found in Wayback Machine![/bold green]")
-                console.print(f"  [cyan]Date:[/cyan] {formatted_date}")
-                console.print(f"  [cyan]Archive URL:[/cyan] {archive_url}")
-                
-                return {
-                    "url": archive_url,
-                    "date": formatted_date
-                }
-        
-        console.print("[yellow]The URL has no recent snapshots in the Wayback Machine.[/yellow]")
-        return None
-        
     except requests.exceptions.RequestException as e:
-        console.print(f"[bold red]Error communicating with the Wayback Machine API:[/bold red] {e}")
+        print_error(f"CDX network error: {e}")
         return None
+    except ValueError:
+        print_error("CDX returned invalid JSON.")
+        return None
+
+    if not data or len(data) < 2:
+        print_warn("No snapshots found in the Wayback Machine.")
+        return []
+
+    # First row is the column header
+    header, *rows = data
+    idx = {col: i for i, col in enumerate(header)}
+
+    snapshots: list[dict] = []
+    for row in rows:
+        ts = row[idx["timestamp"]]
+        original = row[idx["original"]]
+        archive_url = f"https://web.archive.org/web/{ts}/{original}"
+        snapshots.append({
+            "timestamp": ts,
+            "date":      _format_cdx_timestamp(ts),
+            "status":    row[idx["statuscode"]],
+            "mime":      row[idx["mimetype"]],
+            "url":       archive_url,
+        })
+
+    # Render a Rich timeline table (most recent first)
+    snapshots_sorted = sorted(snapshots, key=lambda s: s["timestamp"], reverse=True)
+    preview = snapshots_sorted[:limit] if limit else snapshots_sorted
+
+    tbl = make_table(
+        f"Wayback Timeline  [{THEME['DIM']}]{len(snapshots)} snapshots[/]",
+        ("Date",   "green"),
+        ("Status", THEME["DIM"]),
+        ("MIME",   THEME["DIM"]),
+        ("Archive URL", THEME["LINK"]),
+        show_lines=False,
+    )
+    for snap in preview:
+        tbl.add_row(snap["date"], snap["status"], snap["mime"], snap["url"])
+
+    console.print()
+    console.print(tbl)
+    if len(snapshots) > len(preview):
+        console.print(f"  [{THEME['DIM']}](+{len(snapshots) - len(preview)} older snapshots not shown)[/]")
+
+    return snapshots_sorted

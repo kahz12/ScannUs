@@ -56,7 +56,7 @@ def main():
 
     # Route: Reverse Image Search payload processing
     if args.reverse:
-        do_reverse_image_search()
+        do_reverse_image_search(args.reverse)
         sys.exit(0)
 
     # Route: Media scraping from a target URL

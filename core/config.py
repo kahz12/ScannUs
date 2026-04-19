@@ -41,7 +41,7 @@ def _prompt(label: str, hint: str = "") -> str:
     """Styled credential prompt with optional hint line."""
     if hint:
         console.print(f"  [{THEME['DIM']}]{hint}[/]")
-    return input(f"  [{THEME['INPUT']}]❯[/] {label}: ").strip()
+    return console.input(f"  [{THEME['INPUT']}]❯[/] {label}: ").strip()
 
 
 def env_config():

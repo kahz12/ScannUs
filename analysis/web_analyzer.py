@@ -7,9 +7,8 @@ Key improvements:
     overlapping chunks and the partial summaries are merged for a final answer
 """
 
-import requests
-import time
 import os
+import requests
 from bs4 import BeautifulSoup
 from pyvis.network import Network
 
@@ -26,35 +25,93 @@ _HEADERS = {
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
         "AppleWebKit/537.36 (KHTML, like Gecko) "
         "Chrome/124.0.0.0 Safari/537.36"
-    )
+    ),
+    "Accept": "text/html,application/xhtml+xml;q=0.9,*/*;q=0.8",
+    "Accept-Language": "en;q=0.9, es;q=0.8",
 }
+
+# Optional dependencies — imported lazily so the module still works without them.
+try:
+    import trafilatura  # type: ignore
+    _HAS_TRAFILATURA = True
+except Exception:
+    _HAS_TRAFILATURA = False
+
+try:
+    from readability import Document  # readability-lxml
+    _HAS_READABILITY = True
+except Exception:
+    _HAS_READABILITY = False
+
+
+def _soup_fallback(html: str) -> str:
+    """Last-resort extraction when no readability library is available."""
+    soup = BeautifulSoup(html, "html.parser")
+    for tag in soup(["script", "style", "noscript", "header", "footer", "nav", "aside", "form"]):
+        tag.decompose()
+    raw = soup.get_text(separator="\n")
+    lines = (line.strip() for line in raw.splitlines())
+    return "\n".join(line for line in lines if line)
 
 
 def get_text_from_url(url: str) -> str | None:
     """
-    Downloads a webpage and returns its sanitised visible text.
+    Downloads a webpage and returns its main readable text.
 
-    Strips <script>, <style>, and other non-content tags, then
-    normalises whitespace for clean downstream processing.
+    Extraction strategy (first available wins):
+      1. **trafilatura** — best-in-class boilerplate removal
+      2. **readability-lxml** — Arc90 port, extracts the article body
+      3. **BeautifulSoup** — strips non-content tags as a last resort
+
+    The response is validated:
+      - raises non-2xx via ``raise_for_status``
+      - rejects non-HTML Content-Type (e.g. PDFs, images, JSON)
 
     Args:
         url: Target web address.
 
     Returns:
-        Sanitised text string, or None if extraction fails.
+        Clean article text, or None if extraction fails.
     """
     try:
-        response = requests.get(url, headers=_HEADERS, timeout=15)
+        response = requests.get(url, headers=_HEADERS, timeout=15, allow_redirects=True)
         response.raise_for_status()
 
-        soup = BeautifulSoup(response.text, "html.parser")
-        for tag in soup(["script", "style", "noscript", "header", "footer", "nav"]):
-            tag.decompose()
+        # Validate Content-Type: only parse HTML/XHTML
+        ctype = response.headers.get("content-type", "").lower()
+        if ctype and not any(t in ctype for t in ("text/html", "application/xhtml", "text/plain", "application/xml")):
+            print_warn(f"Skipping non-HTML content ({ctype.split(';')[0]}) at {url}")
+            return None
 
-        raw = soup.get_text()
-        lines  = (line.strip() for line in raw.splitlines())
-        chunks = (phrase.strip() for line in lines for phrase in line.split("  "))
-        return "\n".join(chunk for chunk in chunks if chunk)
+        html = response.text
+        if not html.strip():
+            return None
+
+        # Tier 1 — trafilatura
+        if _HAS_TRAFILATURA:
+            extracted = trafilatura.extract(
+                html, url=url,
+                favor_recall=True,
+                include_comments=False,
+                include_tables=True,
+                no_fallback=False,
+            )
+            if extracted and len(extracted) > 80:
+                return extracted
+
+        # Tier 2 — readability-lxml (article body, then clean text)
+        if _HAS_READABILITY:
+            try:
+                doc = Document(html)
+                summary_html = doc.summary(html_partial=True)
+                text = _soup_fallback(summary_html)
+                if text and len(text) > 80:
+                    return text
+            except Exception:
+                pass
+
+        # Tier 3 — BeautifulSoup fallback
+        return _soup_fallback(html) or None
 
     except requests.exceptions.RequestException as e:
         print_error(f"Network error fetching {url}: {e}")

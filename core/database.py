@@ -11,7 +11,7 @@ Improvements:
 import sqlite3
 import os
 import json
-from datetime import datetime
+from datetime import datetime, timezone
 from cli.ui import console, THEME
 from core.config import DIR_CASES
 
@@ -120,7 +120,7 @@ class DBManager:
                     return False, f"No case named '{name}' found."
 
                 case_id = row[0]
-                now = datetime.utcnow().isoformat()
+                now = datetime.now(timezone.utc).isoformat()
 
                 conn.execute(
                     "UPDATE cases SET query_data = ?, updated_at = ? WHERE id = ?",
