@@ -181,6 +181,211 @@ def _extract_phones_from_html(text: str) -> set[str]:
 
 
 # ---------------------------------------------------------------------------
+# IBAN — ISO 13616 format + mod-97 checksum
+# ---------------------------------------------------------------------------
+
+# Per-country IBAN length map (partial — covers the most common jurisdictions).
+_IBAN_LENGTHS = {
+    "AD": 24, "AE": 23, "AL": 28, "AT": 20, "AZ": 28, "BA": 20, "BE": 16,
+    "BG": 22, "BH": 22, "BR": 29, "BY": 28, "CH": 21, "CR": 22, "CY": 28,
+    "CZ": 24, "DE": 22, "DK": 18, "DO": 28, "EE": 20, "EG": 29, "ES": 24,
+    "FI": 18, "FO": 18, "FR": 27, "GB": 22, "GE": 22, "GI": 23, "GL": 18,
+    "GR": 27, "GT": 28, "HR": 21, "HU": 28, "IE": 22, "IL": 23, "IQ": 23,
+    "IS": 26, "IT": 27, "JO": 30, "KW": 30, "KZ": 20, "LB": 28, "LC": 32,
+    "LI": 21, "LT": 20, "LU": 20, "LV": 21, "MC": 27, "MD": 24, "ME": 22,
+    "MK": 19, "MR": 27, "MT": 31, "MU": 30, "NL": 18, "NO": 15, "PK": 24,
+    "PL": 28, "PS": 29, "PT": 25, "QA": 29, "RO": 24, "RS": 22, "SA": 24,
+    "SC": 31, "SE": 24, "SI": 19, "SK": 24, "SM": 27, "ST": 25, "SV": 28,
+    "TL": 23, "TN": 24, "TR": 26, "UA": 29, "VA": 22, "VG": 24, "XK": 20,
+}
+
+
+def _iban_is_valid(candidate: str) -> bool:
+    """Validates an IBAN string via ISO 13616 country-length + mod-97 checksum."""
+    raw = re.sub(r"\s+", "", candidate).upper()
+    if len(raw) < 15 or not raw[:2].isalpha() or not raw[2:4].isdigit():
+        return False
+    expected = _IBAN_LENGTHS.get(raw[:2])
+    if expected and len(raw) != expected:
+        return False
+    # Rearrange: move the first four chars to the end, then map letters → digits.
+    rearranged = raw[4:] + raw[:4]
+    numeric = "".join(
+        ch if ch.isdigit() else str(ord(ch) - 55) for ch in rearranged
+    )
+    try:
+        return int(numeric) % 97 == 1
+    except ValueError:
+        return False
+
+
+def _extract_ibans(text: str) -> set[str]:
+    """Finds IBAN candidates and returns only those that pass the checksum."""
+    pattern = re.compile(
+        r"\b([A-Z]{2}\d{2}(?:[ ]?[A-Z0-9]{4}){3,8}(?:[ ]?[A-Z0-9]{1,4})?)\b"
+    )
+    found: set[str] = set()
+    for m in pattern.finditer(text):
+        candidate = m.group(1)
+        if _iban_is_valid(candidate):
+            found.add(re.sub(r"\s+", "", candidate).upper())
+    return found
+
+
+# ---------------------------------------------------------------------------
+# Credit cards — Luhn-verified
+# ---------------------------------------------------------------------------
+
+def _luhn_ok(number: str) -> bool:
+    """Returns True if ``number`` (digits-only) passes the Luhn checksum."""
+    total = 0
+    reverse_digits = number[::-1]
+    for i, ch in enumerate(reverse_digits):
+        n = int(ch)
+        if i % 2 == 1:
+            n *= 2
+            if n > 9:
+                n -= 9
+        total += n
+    return total % 10 == 0
+
+
+def _extract_credit_cards(text: str) -> set[str]:
+    """
+    Extracts credit/debit card numbers from text.
+
+    Candidates are 13–19 digit sequences (with optional spaces or hyphens)
+    that pass the Luhn checksum. Returns digit-only canonical forms.
+    """
+    pattern = re.compile(r"(?<!\d)(?:\d[ -]?){12,18}\d(?!\d)")
+    found: set[str] = set()
+    for m in pattern.finditer(text):
+        digits = re.sub(r"\D", "", m.group(0))
+        if 13 <= len(digits) <= 19 and _luhn_ok(digits):
+            found.add(digits)
+    return found
+
+
+# ---------------------------------------------------------------------------
+# Country-specific identifiers: CUIT (AR), DNI (ES/AR), RFC (MX)
+# ---------------------------------------------------------------------------
+
+def _cuit_is_valid(digits: str) -> bool:
+    """Argentine CUIT/CUIL — 11 digits with mod-11 check digit."""
+    if len(digits) != 11 or not digits.isdigit():
+        return False
+    weights = [5, 4, 3, 2, 7, 6, 5, 4, 3, 2]
+    total = sum(int(d) * w for d, w in zip(digits[:10], weights))
+    rem = total % 11
+    check = 0 if rem == 0 else (11 - rem)
+    if check == 10:
+        check = 9
+    return check == int(digits[-1])
+
+
+def _extract_cuit(text: str) -> set[str]:
+    """Extracts Argentine CUIT/CUIL identifiers in ``XX-XXXXXXXX-X`` form."""
+    pattern = re.compile(r"\b(\d{2}[- ]?\d{8}[- ]?\d)\b")
+    found: set[str] = set()
+    for m in pattern.finditer(text):
+        digits = re.sub(r"\D", "", m.group(1))
+        if _cuit_is_valid(digits):
+            found.add(f"{digits[:2]}-{digits[2:10]}-{digits[10]}")
+    return found
+
+
+def _dni_es_is_valid(candidate: str) -> bool:
+    """Spanish DNI — 8 digits + letter from the mod-23 alphabet."""
+    letters = "TRWAGMYFPDXBNJZSQVHLCKE"
+    if len(candidate) != 9 or not candidate[:8].isdigit() or not candidate[8].isalpha():
+        return False
+    return candidate[8].upper() == letters[int(candidate[:8]) % 23]
+
+
+def _extract_dni(text: str) -> set[str]:
+    """
+    Extracts DNI-style identifiers.
+
+    - Spanish DNI: 8 digits + mod-23 check letter (validated).
+    - Argentine DNI: 7–8 bare digits preceded by a ``DNI``/``D.N.I.`` marker.
+    """
+    found: set[str] = set()
+
+    for m in re.finditer(r"\b(\d{8}[A-HJ-NP-TV-Z])\b", text, re.IGNORECASE):
+        cand = m.group(1).upper()
+        if _dni_es_is_valid(cand):
+            found.add(cand)
+
+    for m in re.finditer(
+        r"\bD\.?N\.?I\.?[:\s-]*([0-9]{1,3}(?:[.\s][0-9]{3}){1,2}|\d{7,8})\b",
+        text, re.IGNORECASE,
+    ):
+        digits = re.sub(r"\D", "", m.group(1))
+        if 7 <= len(digits) <= 8:
+            found.add(digits)
+
+    return found
+
+
+def _extract_rfc(text: str) -> set[str]:
+    """
+    Extracts Mexican RFC identifiers (persons and corporations).
+
+    Format:
+      - Person:      4 letters + 6 digits (YYMMDD) + 3 homoclave chars
+      - Corporation: 3 letters + 6 digits (YYMMDD) + 3 homoclave chars
+    """
+    pattern = re.compile(
+        r"\b([A-ZÑ&]{3,4}\d{6}[A-Z0-9]{3})\b",
+        re.IGNORECASE,
+    )
+    found: set[str] = set()
+    for m in pattern.finditer(text):
+        cand = m.group(1).upper()
+        date_part = cand[-9:-3]
+        try:
+            month = int(date_part[2:4])
+            day = int(date_part[4:6])
+        except ValueError:
+            continue
+        if 1 <= month <= 12 and 1 <= day <= 31:
+            found.add(cand)
+    return found
+
+
+# ---------------------------------------------------------------------------
+# Optional Microsoft Presidio integration
+# ---------------------------------------------------------------------------
+
+try:
+    from presidio_analyzer import AnalyzerEngine  # type: ignore
+    _PRESIDIO = AnalyzerEngine()
+    _HAS_PRESIDIO = True
+except Exception:
+    _PRESIDIO = None
+    _HAS_PRESIDIO = False
+
+
+def _extract_presidio_entities(text: str) -> dict[str, list[str]]:
+    """
+    Runs Microsoft Presidio (if installed) and returns a dict keyed by entity
+    type with deduplicated match strings. Returns an empty dict if Presidio
+    is not available or the analyzer fails.
+    """
+    if not _HAS_PRESIDIO or not text:
+        return {}
+    try:
+        results = _PRESIDIO.analyze(text=text, language="en")
+    except Exception:
+        return {}
+
+    grouped: dict[str, set[str]] = {}
+    for r in results:
+        grouped.setdefault(r.entity_type, set()).add(text[r.start:r.end])
+    return {k: sorted(v) for k, v in grouped.items()}
+
+
+# ---------------------------------------------------------------------------
 # Main extraction entry point
 # ---------------------------------------------------------------------------
 
@@ -241,6 +446,36 @@ def extract_information(text: str) -> dict:
     }
     if usernames:
         extracted['usernames'] = sorted(usernames)
+
+    # --- IBAN (mod-97 validated) ---
+    ibans = _extract_ibans(text)
+    if ibans:
+        extracted['ibans'] = sorted(ibans)
+
+    # --- Credit cards (Luhn validated) ---
+    cards = _extract_credit_cards(text)
+    if cards:
+        extracted['credit_cards'] = sorted(cards)
+
+    # --- CUIT/CUIL (Argentina) ---
+    cuits = _extract_cuit(text)
+    if cuits:
+        extracted['cuit'] = sorted(cuits)
+
+    # --- DNI (Spain / Argentina) ---
+    dnis = _extract_dni(text)
+    if dnis:
+        extracted['dni'] = sorted(dnis)
+
+    # --- RFC (Mexico) ---
+    rfcs = _extract_rfc(text)
+    if rfcs:
+        extracted['rfc'] = sorted(rfcs)
+
+    # --- Optional: Microsoft Presidio entities ---
+    presidio = _extract_presidio_entities(text)
+    if presidio:
+        extracted['presidio'] = presidio
 
     return extracted
 

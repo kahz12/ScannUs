@@ -12,14 +12,15 @@ from search.smart_search import SmartSearch
 from utils.results_parse import ResultsParser
 
 
-def do_reverse_image_search() -> None:
+def do_reverse_image_search(image_url: str | None = None) -> None:
     """
-    Prompts for an image URL, runs a Yandex reverse image search via
-    Selenium, and renders the results in a styled Rich table.
+    Runs a Yandex reverse image search via Selenium and renders results.
+    Prompts for the URL if not supplied (e.g. when launched from the TUI).
     """
-    image_url = console.input(
-        f"  [{THEME['DIM']}]Image URL for reverse search:[/] [{THEME['INPUT']}]❯[/] "
-    ).strip()
+    if not image_url:
+        image_url = console.input(
+            f"  [{THEME['DIM']}]Image URL for reverse search:[/] [{THEME['INPUT']}]❯[/] "
+        ).strip()
 
     if not image_url:
         print_error("Image URL cannot be empty.")

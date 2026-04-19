@@ -46,17 +46,24 @@ class GoogleSearch:
         if cached is not None:
             return cached
 
+        base_url = "https://www.googleapis.com/customsearch/v1"
+
         for page in range(pages):
-            # Calculate the 'start' query parameter. 
+            # Calculate the 'start' query parameter.
             # It represents the 1-based index of the first result to return.
             # Page 1 = start 1, Page 2 = start 11, etc.
             start_index = (start_page - 1) * results_per_page + 1 + (page * results_per_page)
-            
-            # API endpoint construction with mandatory auth and query params
-            url = f"https://www.googleapis.com/customsearch/v1?key={self.api_key}&cx={self.engine_id}&q={query}&start={start_index}&lr={lang}"
-            
+
+            params = {
+                "key":   self.api_key,
+                "cx":    self.engine_id,
+                "q":     query,
+                "start": start_index,
+                "lr":    lang,
+            }
+
             try:
-                response = requests.get(url, timeout=10)
+                response = requests.get(base_url, params=params, timeout=10)
                 # Ensure we catch 4xx/5xx errors (e.g., quota exceeded, invalid API key)
                 response.raise_for_status()
                 

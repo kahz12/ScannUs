@@ -1,177 +1,251 @@
-# -*- coding: utf-8 -*-
+"""
+utils/file_download.py — Artifact retrieval and metadata extraction.
 
-# Standard and third-party library imports
+Supported metadata extractors:
+  - PDF   → ``pypdf`` (falls back to ``PyPDF2`` if ``pypdf`` is absent)
+  - DOCX  → ``python-docx`` core properties
+  - XLSX  → ``openpyxl`` workbook properties
+  - Images → ``exifread`` EXIF
+"""
+
 import os
-import requests
 import datetime
-from PyPDF2 import PdfReader
-from rich.console import Console
+import hashlib
+import requests
+from urllib.parse import urlparse
 from rich.table import Table
 import exifread
+
+from cli.ui import console, THEME, print_success, print_error, print_warn, print_info
 from core.config import DIR_DOWNLOADS
+
+
+# ---------------------------------------------------------------------------
+# PDF backend — prefer ``pypdf``, fall back to ``PyPDF2``
+# ---------------------------------------------------------------------------
+
+try:
+    from pypdf import PdfReader as _PdfReader  # modern replacement
+    _PDF_BACKEND = "pypdf"
+except ImportError:
+    try:
+        from PyPDF2 import PdfReader as _PdfReader  # legacy
+        _PDF_BACKEND = "PyPDF2"
+    except ImportError:
+        _PdfReader = None
+        _PDF_BACKEND = None
+
+
+# ---------------------------------------------------------------------------
+# Optional metadata backends
+# ---------------------------------------------------------------------------
+
+try:
+    from docx import Document as _DocxDocument  # python-docx
+    _HAS_DOCX = True
+except ImportError:
+    _HAS_DOCX = False
+
+try:
+    import openpyxl  # already in requirements for Excel export
+    _HAS_OPENPYXL = True
+except ImportError:
+    _HAS_OPENPYXL = False
+
+
+# ---------------------------------------------------------------------------
+# FileDownload service
+# ---------------------------------------------------------------------------
 
 class FileDownload:
     """
-    Service layer for artifact retrieval and post-download processing.
-    Handles chunked HTTP streaming, destination scaffolding, and 
-    automated metadata extraction for PDF and image (EXIF) payloads.
+    Service layer for artifact retrieval and metadata extraction.
     """
 
-    def __init__(self, directorio_destino=DIR_DOWNLOADS):
-        """
-        Initializes the download context.
-
-        Args:
-            directorio_destino (str): Target directory for persisted artifacts.
-        """
+    def __init__(self, directorio_destino: str = DIR_DOWNLOADS):
         self.directorio = directorio_destino
-        self.crear_directorio() 
-        self.console = Console()
+        os.makedirs(self.directorio, exist_ok=True)
 
-    def crear_directorio(self):
-        """
-        Idempotent directory initialization for the download dropzone.
-        """
-        if not os.path.exists(self.directorio):
-            os.makedirs(self.directorio)
+    # ---------------------- Metadata extractors ----------------------------
 
-    def _extract_pdf_metadata(self, file_path):
-        """
-        Specialized parser for PDF document properties.
+    def _render_table(self, title: str, rows: list[tuple[str, str]]) -> None:
+        if not rows:
+            console.print(f"  [{THEME['WARN']}]⚠[/]  No metadata found ({title}).")
+            return
+        tbl = Table(title=title, show_header=False, box=None)
+        tbl.add_column("Field", style=THEME["PRIMARY"])
+        tbl.add_column("Value", style="green")
+        for k, v in rows:
+            tbl.add_row(str(k), str(v))
+        console.print(tbl)
 
-        Args:
-            file_path (str): Pointer to the local PDF artifact.
-        """
+    def _extract_pdf_metadata(self, file_path: str) -> None:
+        if _PdfReader is None:
+            print_warn("No PDF backend installed (pypdf / PyPDF2).")
+            return
         try:
-            with open(file_path, 'rb') as f:
-                reader = PdfReader(f)
-                meta = reader.metadata
+            reader = _PdfReader(file_path)
+            meta = reader.metadata or {}
+            pages = len(reader.pages)
 
-                if not meta:
-                    self.console.print("  [yellow]No metadata found in the PDF.[/yellow]")
-                    return
+            rows: list[tuple[str, str]] = [("Pages", str(pages))]
+            meta_map = {
+                "/Author": "Author",
+                "/Creator": "Creator (Software)",
+                "/Producer": "Producer (Software)",
+                "/Subject": "Subject",
+                "/Title": "Title",
+                "/Keywords": "Keywords",
+                "/CreationDate": "Creation Date",
+                "/ModDate": "Modification Date",
+            }
+            # meta supports both dict and attribute access depending on version
+            for key, label in meta_map.items():
+                value = None
+                try:
+                    value = meta.get(key) if hasattr(meta, "get") else None
+                except Exception:
+                    value = None
+                if value:
+                    rows.append((label, str(value)))
 
-                # Render extracted properties in a Rich table
-                table = Table(title=f"Metadata for {os.path.basename(file_path)}", show_header=False, box=None)
-                table.add_column("Field", style="cyan")
-                table.add_column("Value", style="green")
-
-                # Map PDF internal keys to human-readable descriptors
-                meta_map = {
-                    '/Author': 'Author',
-                    '/Creator': 'Creator (Software)',
-                    '/Producer': 'Producer (Software)',
-                    '/Subject': 'Subject',
-                    '/Title': 'Title',
-                    '/CreationDate': 'Creation Date',
-                    '/ModDate': 'Modification Date'
-                }
-
-                for key, readable_name in meta_map.items():
-                    if key in meta:
-                        table.add_row(readable_name, str(meta[key]))
-
-                self.console.print(table)
-
+            self._render_table(
+                f"PDF Metadata — {os.path.basename(file_path)} (via {_PDF_BACKEND})",
+                rows,
+            )
         except Exception as e:
-            self.console.print(f"  [bold red]Error extracting PDF metadata:[/bold red] {e}")
+            print_error(f"PDF metadata error: {e}")
 
-    def _extract_exif_metadata(self, file_path):
-        """
-        Specialized parser for image EXIF telemetry.
-        """
+    def _extract_exif_metadata(self, file_path: str) -> None:
         try:
-            with open(file_path, 'rb') as f:
-                # detail=False suppresses high-volume binary blobs
+            with open(file_path, "rb") as f:
                 tags = exifread.process_file(f, details=False)
-                
-                if not tags:
-                    self.console.print("  [yellow]No EXIF metadata found in the image.[/yellow]")
-                    return
-
-                table = Table(title=f"EXIF Metadata for {os.path.basename(file_path)}", show_header=False, box=None)
-                table.add_column("Field", style="cyan")
-                table.add_column("Value", style="green")
-
-                # Filter out raw thumbnails and proprietary maker notes to reduce noise
-                for tag, value in tags.items():
-                    if tag not in ('JPEGThumbnail', 'TIFFThumbnail', 'Filename', 'EXIF MakerNote'):
-                        table.add_row(tag, str(value))
-                        
-                self.console.print(table)
+            skip = {"JPEGThumbnail", "TIFFThumbnail", "Filename", "EXIF MakerNote"}
+            rows = [(tag, str(value)) for tag, value in tags.items() if tag not in skip]
+            self._render_table(f"EXIF — {os.path.basename(file_path)}", rows)
         except Exception as e:
-            self.console.print(f"  [bold red]Error extracting EXIF metadata:[/bold red] {e}")
+            print_error(f"EXIF metadata error: {e}")
 
-    def extract_metadata(self, file_path):
-        """
-        Dispatches the file to the appropriate metadata extraction pipeline
-        based on its file extension.
+    def _extract_docx_metadata(self, file_path: str) -> None:
+        if not _HAS_DOCX:
+            print_warn("python-docx not installed — cannot read DOCX metadata.")
+            return
+        try:
+            doc = _DocxDocument(file_path)
+            props = doc.core_properties
+            rows = [
+                ("Title",            props.title or ""),
+                ("Author",           props.author or ""),
+                ("Last modified by", props.last_modified_by or ""),
+                ("Created",          str(props.created) if props.created else ""),
+                ("Modified",         str(props.modified) if props.modified else ""),
+                ("Subject",          props.subject or ""),
+                ("Keywords",         props.keywords or ""),
+                ("Category",         props.category or ""),
+                ("Comments",         props.comments or ""),
+                ("Revision",         str(props.revision) if props.revision else ""),
+                ("Paragraphs",       str(len(doc.paragraphs))),
+            ]
+            rows = [(k, v) for k, v in rows if v]
+            self._render_table(f"DOCX — {os.path.basename(file_path)}", rows)
+        except Exception as e:
+            print_error(f"DOCX metadata error: {e}")
 
-        Args:
-            file_path (str): Path to the artifact on disk.
-        """
-        self.console.print(f"\n--- Extracting metadata for: [cyan]{os.path.basename(file_path)}[/cyan] ---")
+    def _extract_xlsx_metadata(self, file_path: str) -> None:
+        if not _HAS_OPENPYXL:
+            print_warn("openpyxl not installed — cannot read XLSX metadata.")
+            return
+        try:
+            wb = openpyxl.load_workbook(file_path, read_only=True, data_only=True)
+            props = wb.properties
+            rows = [
+                ("Title",    props.title or ""),
+                ("Author",   props.creator or ""),
+                ("Last modified by", props.lastModifiedBy or ""),
+                ("Created",  str(props.created) if props.created else ""),
+                ("Modified", str(props.modified) if props.modified else ""),
+                ("Subject",  props.subject or ""),
+                ("Keywords", props.keywords or ""),
+                ("Description", props.description or ""),
+                ("Category", props.category or ""),
+                ("Company",  getattr(props, "company", "") or ""),
+                ("Sheets",   ", ".join(wb.sheetnames)),
+            ]
+            rows = [(k, v) for k, v in rows if v]
+            self._render_table(f"XLSX — {os.path.basename(file_path)}", rows)
+        except Exception as e:
+            print_error(f"XLSX metadata error: {e}")
 
-        _, extension = os.path.splitext(file_path)
+    def _extract_basic_metadata(self, file_path: str) -> None:
+        try:
+            stat = os.stat(file_path)
+            size_kb = stat.st_size / 1024
+            mtime = datetime.datetime.fromtimestamp(stat.st_mtime).isoformat(timespec="seconds")
+            # Hash first 1 MB for quick fingerprint
+            sha = hashlib.sha256()
+            with open(file_path, "rb") as f:
+                sha.update(f.read(1024 * 1024))
+            rows = [
+                ("Size",         f"{size_kb:,.1f} KB ({stat.st_size:,} bytes)"),
+                ("Modified",     mtime),
+                ("SHA-256 (1M)", sha.hexdigest()),
+            ]
+            self._render_table(f"Filesystem — {os.path.basename(file_path)}", rows)
+        except Exception as e:
+            print_error(f"Basic metadata error: {e}")
 
-        if extension.lower() == '.pdf':
+    def extract_metadata(self, file_path: str) -> None:
+        """Dispatches the file to the matching metadata pipeline."""
+        console.print(f"\n  [{THEME['PRIMARY']}]→[/] Extracting metadata: "
+                      f"[cyan]{os.path.basename(file_path)}[/cyan]")
+        ext = os.path.splitext(file_path)[1].lower()
+
+        if ext == ".pdf":
             self._extract_pdf_metadata(file_path)
-        elif extension.lower() in ['.jpg', '.jpeg', '.png', '.tiff']:
+        elif ext in (".jpg", ".jpeg", ".png", ".tiff", ".tif", ".heic", ".webp"):
             self._extract_exif_metadata(file_path)
+        elif ext == ".docx":
+            self._extract_docx_metadata(file_path)
+        elif ext == ".xlsx":
+            self._extract_xlsx_metadata(file_path)
         else:
-            # Fallback to filesystem-level stat metadata for unsupported formats
-            self.console.print(f"  [yellow]No specialized metadata extractor available for '{extension}' files.[/yellow]")
-            try:
-                stat = os.stat(file_path)
-                self.console.print(f"  -> Size: {stat.st_size} bytes")
-                self.console.print(f"  -> Last Modification: {datetime.datetime.fromtimestamp(stat.st_mtime)}")
-            except Exception as e:
-                self.console.print(f"[bold red]Error during basic filesystem metadata extraction:[/bold red] {e}")
+            print_warn(f"No specialised extractor for '{ext}' — showing filesystem info.")
+            self._extract_basic_metadata(file_path)
 
-    def descargar_archivo(self, url, extract_metadata=False):
+    # ---------------------- Downloading -----------------------------------
+
+    def descargar_archivo(self, url: str, extract_metadata: bool = False) -> str | None:
         """
-        Performs a chunked binary download from a target URL.
-
-        Args:
-            url (str): Source URI.
-            extract_metadata (bool): If True, triggers post-download metadata analysis.
+        Streams a binary file to disk. Returns the local path on success.
         """
         try:
-            from urllib.parse import urlparse
-            parsed_url = urlparse(url)
-            nombre_archivo = os.path.basename(parsed_url.path)
+            parsed = urlparse(url)
+            filename = os.path.basename(parsed.path)
+            if not filename:
+                filename = hashlib.md5(url.encode()).hexdigest() + ".bin"
+                print_warn(f"No filename in URL — using hash: {filename}")
 
-            # Fallback name synthesis for endpoints without a direct path-to-filename mapping
-            if not nombre_archivo:
-                import hashlib
-                hash_object = hashlib.md5(url.encode())
-                nombre_archivo = hash_object.hexdigest() + ".bin" 
-                self.console.print(f"[yellow]Warning: Could not determine filename from URL. Using hash:[/yellow] {nombre_archivo}")
+            full_path = os.path.join(self.directorio, filename)
+            print_info(f"Downloading [green]{filename}[/green] from {url}")
 
-            ruta_completa = os.path.join(self.directorio, nombre_archivo)
+            resp = requests.get(url, stream=True, timeout=15)
+            resp.raise_for_status()
 
-            self.console.print(f"Downloading '[green]{nombre_archivo}[/green]' from '{url}'...")
-
-            # Execute streaming GET to handle large binary artifacts without memory spikes
-            respuesta = requests.get(url, stream=True, timeout=15)
-            respuesta.raise_for_status()
-
-            # Iterate over the response stream in 8KB buffers
-            with open(ruta_completa, "wb") as archivo:
-                for chunk in respuesta.iter_content(chunk_size=8192):
-                    archivo.write(chunk)
-            self.console.print(f"Success! File [green]{nombre_archivo}[/green] downloaded to [cyan]{ruta_completa}[/cyan]")
+            with open(full_path, "wb") as f:
+                for chunk in resp.iter_content(chunk_size=8192):
+                    f.write(chunk)
+            print_success(f"Saved: {full_path}")
 
             if extract_metadata:
-                self.extract_metadata(ruta_completa)
+                self.extract_metadata(full_path)
+            return full_path
 
         except requests.exceptions.RequestException as e:
-            self.console.print(f"[bold red]Network or HTTP error downloading {url}:[/bold red] {e}")
+            print_error(f"Network error downloading {url}: {e}")
         except Exception as e:
-            self.console.print(f"[bold red]Unexpected error downloading {url}:[/bold red] {e}")
+            print_error(f"Unexpected error downloading {url}: {e}")
+        return None
 
-    def descargar_archivo_directo(self, url, extract_metadata=False):
-        """
-        Exposes a simplified interface for direct file downloads.
-        """
-        self.descargar_archivo(url, extract_metadata)
+    def descargar_archivo_directo(self, url: str, extract_metadata: bool = False) -> str | None:
+        """Alias preserved for backward compatibility."""
+        return self.descargar_archivo(url, extract_metadata)

@@ -6,9 +6,6 @@ Uses the shared theme from cli.ui for visual consistency.
 from urllib.parse import urlparse
 from rich.panel import Panel
 from rich.table import Table
-from rich.text import Text
-from rich.columns import Columns
-from rich import box
 
 from cli.ui import (
     console, THEME, PROMPT,
