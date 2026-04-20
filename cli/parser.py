@@ -154,6 +154,10 @@ def get_parser() -> argparse.ArgumentParser:
                         help="Recursively analyse each result URL for PII.")
     search.add_argument("-rev", "--reverse", metavar="URL",
                         help="Image URL to submit for Yandex reverse image search.")
+    search.add_argument("--username-enum", metavar="HANDLE",
+                        help="Enumerate accounts for a username via Sherlock/Maigret (400+ sites).")
+    search.add_argument("--enum-backend", type=str, default="auto", metavar="ENGINE",
+                        help="Username enumeration backend: auto | sherlock | maigret (default: auto).")
     search.add_argument("--start-page",    type=int, default=1, metavar="N",
                         help="Starting SERP page index (default: 1).")
     search.add_argument("--pages",         type=int, default=1, metavar="N",

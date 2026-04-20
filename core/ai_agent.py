@@ -81,21 +81,28 @@ class OpenAIGenerator:
     Supports both buffered and streaming generation.
     """
 
-    def __init__(self, model_name: str = "gpt-4o"):
+    def __init__(self, model_name: str = "gpt-4o", timeout: float = 60.0):
         self.model_name = model_name
+        self.timeout = timeout
         from openai import OpenAI as _OpenAI
-        self.client = _OpenAI()
+        self.client = _OpenAI(timeout=timeout)
+
+    def _open_stream(self, prompt: str):
+        return self.client.chat.completions.create(
+            model=self.model_name,
+            messages=[{"role": "user", "content": prompt}],
+            stream=True,
+            timeout=self.timeout,
+        )
 
     def generate(self, prompt: str) -> str:
-        """
-        Sends a prompt and returns the full response as a single string.
-        Uses streaming internally and renders a live token feed in the terminal.
-        """
+        """Buffered call that internally streams + renders to the terminal."""
         return "".join(self.stream(prompt, render=True))
 
-    def stream(self, prompt: str, render: bool = False):
+    def stream(self, prompt: str, render: bool = False) -> Iterator[str]:
         """
-        Streams the model response token-by-token.
+        Streams the model response token-by-token, with retry/backoff on
+        transient provider errors.
 
         Args:
             prompt: The instruction for the model.
@@ -108,32 +115,20 @@ class OpenAIGenerator:
             f"  [{THEME['DIM']}]⟳ Generating with OpenAI ({self.model_name})…[/]"
         )
 
-        stream = self.client.chat.completions.create(
-            model=self.model_name,
-            messages=[{"role": "user", "content": prompt}],
-            stream=True,
+        stream = _retry_with_backoff(
+            self._open_stream, prompt, label=f"OpenAI {self.model_name}",
         )
 
-        buffer = []
         if render:
-            # Live streaming: print each token without newlines until done
             console.print()
-            for chunk in stream:
-                delta = chunk.choices[0].delta.content or ""
-                if delta:
+        for chunk in stream:
+            delta = chunk.choices[0].delta.content or ""
+            if delta:
+                if render:
                     print(delta, end="", flush=True)
-                    buffer.append(delta)
-            print()  # Final newline after stream ends
-        else:
-            for chunk in stream:
-                delta = chunk.choices[0].delta.content or ""
-                if delta:
-                    buffer.append(delta)
-                    yield delta
-
+                yield delta
         if render:
-            # When render=True, yield the full buffered result
-            yield "".join(buffer)
+            print()
 
 
 # ---------------------------------------------------------------------------
@@ -146,8 +141,9 @@ class GeminiGenerator:
     Supports buffered and streaming generation.
     """
 
-    def __init__(self, model_name: str = "gemini-2.0-flash"):
+    def __init__(self, model_name: str = "gemini-2.0-flash", timeout: float = 60.0):
         self.model_name = model_name
+        self.timeout = timeout
         self.client = None
         self._initialize_client()
 
@@ -161,66 +157,66 @@ class GeminiGenerator:
             except Exception as e:
                 console.print(f"  [{THEME['ERROR']}]✘[/]  Gemini init error: {e}")
 
+    def _open_stream(self, prompt: str):
+        return self.client.models.generate_content_stream(
+            model=self.model_name,
+            contents=prompt,
+        )
+
     def generate(self, prompt: str) -> str:
+        """Streams the response, rendering tokens live; returns full text."""
+        return "".join(self.stream(prompt, render=True))
+
+    def stream(self, prompt: str, render: bool = False) -> Iterator[str]:
         """
-        Sends a prompt and streams the response, rendering tokens live.
-        Returns the full response as a single string when done.
+        Yields text chunks from the Gemini streaming API with retry/backoff.
+
+        Args:
+            prompt: Prompt text.
+            render:  If True, tokens are printed live to the terminal.
         """
         if not self.client:
             self._initialize_client()
             if not self.client:
-                return "Error: Gemini client not initialized — check GOOGLE_API_KEY_FOR_GEMINI."
+                yield "Error: Gemini client not initialized — check GOOGLE_API_KEY_FOR_GEMINI."
+                return
 
         console.print(
             f"  [{THEME['DIM']}]⟳ Generating with Gemini ({self.model_name})…[/]"
         )
 
         try:
-            chunks = []
-            console.print()
-            # generate_content_stream yields incremental response parts
-            for chunk in self.client.models.generate_content_stream(
-                model=self.model_name,
-                contents=prompt,
-            ):
-                text = chunk.text or ""
-                if text:
-                    print(text, end="", flush=True)
-                    chunks.append(text)
-            print()  # Final newline
-            return "".join(chunks)
-
+            stream = _retry_with_backoff(
+                self._open_stream, prompt, label=f"Gemini {self.model_name}",
+            )
         except AttributeError:
-            # Fallback: SDK version without streaming — use buffered call
             try:
-                response = self.client.models.generate_content(
-                    model=self.model_name,
-                    contents=prompt,
+                response = _retry_with_backoff(
+                    self.client.models.generate_content,
+                    model=self.model_name, contents=prompt,
+                    label=f"Gemini {self.model_name}",
                 )
-                return response.text or ""
+                text = response.text or ""
+                if render:
+                    print(text, flush=True)
+                yield text
             except Exception as e:
-                return f"Error during Gemini generation: {e}"
+                yield f"[Gemini error: {e}]"
+            return
         except Exception as e:
-            return f"Error during Gemini generation: {e}"
+            yield f"[Gemini error: {e}]"
+            return
 
-    def stream(self, prompt: str):
-        """
-        Yields text chunks from the Gemini streaming API.
-        Does NOT print to the terminal — caller decides how to consume.
-        """
-        if not self.client:
-            self._initialize_client()
-
-        try:
-            for chunk in self.client.models.generate_content_stream(
-                model=self.model_name,
-                contents=prompt,
-            ):
-                text = chunk.text or ""
-                if text:
-                    yield text
-        except Exception as e:
-            yield f"[Streaming error: {e}]"
+        if render:
+            console.print()
+        for chunk in stream:
+            text = chunk.text or ""
+            if text:
+                if render:
+                    print(text, end="", flush=True)
+                yield text
+        if render:
+            print()
 
 
 # ---------------------------------------------------------------------------
@@ -239,16 +235,35 @@ class IAAgent:
     def generate_gdork(self, description: str) -> str | None:
         """
         Synthesizes an optimized Google Dork from a natural-language description.
+        Streams tokens live to the terminal (real token-by-token rendering)
+        and returns the assembled dork. Retries automatically on transient
+        provider errors via the underlying generator.
 
         Args:
             description: Human-readable target description.
 
         Returns:
-            The generated dork string, or None on failure.
+            The generated dork string (stripped), or None on failure.
         """
         prompt = self._build_prompt(description)
         try:
-            return self.generator.generate(prompt)
+            buffer: list[str] = []
+            console.print()
+            for token in self.generator.stream(prompt, render=False):
+                if not token:
+                    continue
+                print(token, end="", flush=True)
+                buffer.append(token)
+            print()
+            result = "".join(buffer).strip()
+            return result or None
+        except TypeError:
+            # Generator.stream() may not accept the render kwarg in older versions.
+            try:
+                return self.generator.generate(prompt)
+            except Exception as e:
+                console.print(f"  [{THEME['ERROR']}]✘[/]  Error generating dork: {e}")
+                return None
         except Exception as e:
             console.print(f"  [{THEME['ERROR']}]✘[/]  Error generating dork: {e}")
             return None

@@ -23,6 +23,7 @@ from analysis.web_analyzer import (
 )
 from analysis.advanced_osint import take_screenshot, check_wayback_machine, get_dynamic_text_from_url
 from search.smart_search import extract_information
+from search.username_enum import username_enum
 from utils.file_download import FileDownload
 from utils.media_downloader import download_media
 from utils.results_parse import ResultsParser
@@ -450,9 +451,10 @@ _MAIN_MENU_ITEMS = [
     ("3", "AI Dork Generator",      "LLM-assisted dork creation",       "magenta"),
     ("4", "Reverse Image Lookup",   "Yandex visual search",             "blue"),
     ("5", "Web Technology Scan",    "Tech stack fingerprinting",         "blue"),
-    ("6", "Load Saved Case",        "Resume investigation",             "green"),
-    ("7", "Configure API Keys",     "Edit .env credentials",            "yellow"),
-    ("8", "Exit",                   "",                                 "red"),
+    ("6", "Username Enumeration",   "Sherlock / Maigret · 400+ sites",   "blue"),
+    ("7", "Load Saved Case",        "Resume investigation",             "green"),
+    ("8", "Configure API Keys",     "Edit .env credentials",            "yellow"),
+    ("9", "Exit",                   "",                                 "red"),
 ]
 
 
@@ -547,19 +549,34 @@ def show_main_menu() -> None:
             else:
                 print_error("URL cannot be empty.")
 
-        # --- Option 6: Load Saved Case ---
+        # --- Option 6: Username Enumeration ---
         elif choice == "6":
+            print_section("Username Enumeration")
+            handle = _ask("Username / handle")
+            if not handle:
+                print_error("Username cannot be empty.")
+                continue
+            backend = _ask("Backend (auto/sherlock/maigret) [auto]").lower() or "auto"
+            timeout_str = _ask("Per-site timeout in seconds [20]") or "20"
+            try:
+                timeout = max(5, int(timeout_str))
+            except ValueError:
+                timeout = 20
+            username_enum(handle, backend=backend, timeout=timeout)
+
+        # --- Option 7: Load Saved Case ---
+        elif choice == "7":
             ia_agent = select_ia_agent()
             if ia_agent and cargar_caso():
                 interactive_analysis_menu(state.ULTIMOS_RESULTADOS, ia_agent)
 
-        # --- Option 7: Configure API Keys ---
-        elif choice == "7":
+        # --- Option 8: Configure API Keys ---
+        elif choice == "8":
             env_config()
             openai_config()
 
-        # --- Option 8: Exit ---
-        elif choice == "8":
+        # --- Option 9: Exit ---
+        elif choice == "9":
             console.print()
             console.print(
                 Panel(
@@ -571,4 +588,4 @@ def show_main_menu() -> None:
             break
 
         else:
-            print_warn("Invalid option — choose a number from 1 to 8.")
+            print_warn("Invalid option — choose a number from 1 to 9.")

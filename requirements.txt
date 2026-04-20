@@ -1,15 +1,45 @@
+# --- Core HTTP & async ---
+requests
+aiohttp                          # async media downloads
+
+# --- AI providers ---
 openai
 google-genai
-python-dotenv
-requests
-PyPDF2
-rich
-beautifulsoup4
-webtech
-google-api-python-client
-selenium
-openpyxl
-exifread
-pyvis
-yt-dlp
 
+# --- Configuration ---
+python-dotenv
+
+# --- TUI / rendering ---
+rich
+pyvis                            # interactive HTML graphs
+
+# --- HTML / web extraction ---
+beautifulsoup4
+trafilatura                      # main-content extraction (preferred)
+readability-lxml                 # main-content extraction (fallback)
+
+# --- Browser automation ---
+selenium
+playwright                       # full-page screenshot engine
+
+# --- Search / scraping helpers ---
+google-api-python-client
+yt-dlp                           # video extraction across 1000+ sites
+
+# --- Document / file metadata ---
+pypdf                            # modern PDF metadata (preferred)
+PyPDF2                           # legacy PDF metadata (fallback)
+python-docx                      # DOCX core properties
+openpyxl                         # XLSX workbook properties + Excel export
+exifread                         # image EXIF tags
+
+# --- Web fingerprinting ---
+python-Wappalyzer                # tech fingerprinting (preferred)
+webtech                          # tech fingerprinting (fallback)
+
+# --- PII detection (optional) ---
+presidio-analyzer                # Microsoft Presidio entity detection
+
+# --- Username enumeration (optional — install one) ---
+sherlock-project                 # 400+ social sites
+# maigret                        # 3000+ social sites (alternative)
