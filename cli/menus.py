@@ -1,15 +1,25 @@
 """
-cli/menus.py — All interactive TUI menus for ScannUs.
-Uses the shared theme from cli.ui for visual consistency.
+cli/menus.py — Interactive TUI menus for ScannUs.
+
+All user interaction flows through the design-system helpers in ``cli.ui``:
+  - ``select_menu``  → arrow-key navigable menus (graceful numeric fallback)
+  - ``confirm``      → Y/N prompts
+  - ``ask``          → free-text prompts with default-value hints
+  - ``header_bar``   → screen-level title bar
+  - ``status_footer``→ bottom context strip
 """
 
+import os
 from urllib.parse import urlparse
+
 from rich.panel import Panel
-from rich.table import Table
 
 from cli.ui import (
-    console, THEME, PROMPT,
-    print_success, print_error, print_warn, print_info, print_section, make_table,
+    console, THEME,
+    ask, confirm, select_menu,
+    header_bar, status_footer, panel,
+    print_success, print_error, print_warn, print_info, print_section,
+    make_table,
 )
 from core import state
 from core.case_manager import guardar_caso, cargar_caso
@@ -28,22 +38,58 @@ from utils.file_download import FileDownload
 from utils.media_downloader import download_media
 from utils.results_parse import ResultsParser
 import cli.actions
-import os
 
 
 # ---------------------------------------------------------------------------
-# Helpers
+# Common selection helpers
 # ---------------------------------------------------------------------------
 
-def _ask(label: str = "") -> str:
-    """Styled inline prompt using console.input() so Rich markup renders."""
-    prefix = f"  {label} " if label else "  "
-    return console.input(f"{prefix}{PROMPT}").strip()
+_ENGINE_CHOICES = [
+    ("DuckDuckGo",  "duckduckgo", "privacy-friendly · default"),
+    ("Google",      "google",     "broadest coverage · API key"),
+    ("Brave",       "brave",      "independent index"),
+]
+
+_MEDIA_CHOICES = [
+    ("All media",   "all",    "images · videos · audio"),
+    ("Images only", "images", "jpg · png · webp · gif"),
+    ("Videos only", "videos", "mp4 · webm · m3u8"),
+    ("Audio only",  "audio",  "mp3 · ogg · wav"),
+]
+
+_ENUM_BACKEND_CHOICES = [
+    ("Auto-detect", "auto",     "prefer Sherlock if available"),
+    ("Sherlock",    "sherlock", "pure-Python · works on Termux"),
+    ("Maigret",     "maigret",  "3000+ sites · Linux/macOS only"),
+]
 
 
-def _choose(options: list[str], label: str = "Select") -> str:
-    """Generic styled choice prompt."""
-    return console.input(f"  [{THEME['DIM']}]{label}[/] {PROMPT}").strip()
+def _select_engine(default: str = "duckduckgo") -> str:
+    """Arrow-key engine picker with safe fallback."""
+    return select_menu(
+        "Select search engine",
+        _ENGINE_CHOICES,
+        default=default,
+    ) or default
+
+
+def _current_case_label() -> str:
+    """Short label describing the loaded case for the status footer."""
+    terms = state.CASO_ACTUAL.get("terminos") if isinstance(state.CASO_ACTUAL, dict) else None
+    if not terms:
+        return "none"
+    value = terms.get("value", "")
+    if not value or value == "N/A":
+        return terms.get("type", "manual")
+    return value[:32] + ("…" if len(value) > 32 else "")
+
+
+def _agent_label(ia_agent) -> str:
+    if ia_agent is None:
+        return "none"
+    gen = getattr(ia_agent, "generator", None)
+    name = type(gen).__name__ if gen else "unknown"
+    return name.replace("Generator", "")
 
 
 # ---------------------------------------------------------------------------
@@ -51,33 +97,31 @@ def _choose(options: list[str], label: str = "Select") -> str:
 # ---------------------------------------------------------------------------
 
 def select_ia_agent():
-    """
-    Presents a styled panel for AI provider selection and initialises the agent.
-    """
-    console.print()
-    console.print(
-        Panel(
-            f"  [{THEME['PRIMARY']}]ge[/]  →  Google Gemini\n"
-            f"  [{THEME['PRIMARY']}]op[/]  →  OpenAI (GPT-4o)",
-            title=f"[{THEME['ACCENT']}]Select AI Provider[/]",
-            border_style="bright_black",
-            padding=(0, 2),
-        )
+    """Arrow-key picker for the AI provider, returning an initialised IAAgent."""
+    header_bar("AI Provider", "Pick the LLM used for summarisation and dorking")
+
+    choice = select_menu(
+        "Select AI provider",
+        [
+            ("Google Gemini",    "ge", "gemini-2.0-flash · free tier"),
+            ("OpenAI GPT-4o",    "op", "paid · high quality"),
+            ("Cancel",           "cancel", ""),
+        ],
+        default="ge",
     )
 
-    respuesta = ""
-    while respuesta.lower() not in ("ge", "op"):
-        respuesta = _ask("Provider (ge / op)")
+    if choice in (None, "cancel"):
+        return None
 
-    if respuesta.lower() == "ge":
+    if choice == "ge":
         if not os.getenv("GOOGLE_API_KEY_FOR_GEMINI"):
-            print_error("GOOGLE_API_KEY_FOR_GEMINI not found in .env — run option 7.")
+            print_error("GOOGLE_API_KEY_FOR_GEMINI is missing from .env — configure it first.")
             return None
         print_success("Gemini selected.")
         return IAAgent(GeminiGenerator())
 
     if not os.getenv("OPENAI_API_KEY"):
-        print_warn("OpenAI API Key is not configured — launching setup…")
+        print_warn("OpenAI API key not configured — launching setup…")
         openai_config()
     print_success("OpenAI selected.")
     return IAAgent(OpenAIGenerator(model_name="gpt-4o"))
@@ -87,48 +131,37 @@ def select_ia_agent():
 # URL analysis sub-menu
 # ---------------------------------------------------------------------------
 
-_URL_ACTIONS = [
-    ("1",  "Summarize content",           "AI", "green"),
-    ("2",  "Extract PII",                 "Regex", "green"),
-    ("3",  "Scan web technologies",       "", "green"),
-    ("4",  "Download file",               "Direct", "cyan"),
-    ("5",  "Download media",              "Images/Video/Audio", "cyan"),
-    ("6",  "Capture screenshot",          "Headless", "magenta"),
-    ("7",  "Wayback Machine history",     "Archive.org", "magenta"),
-    ("8",  "Deep AI analysis",            "AI", "yellow"),
-    ("9",  "Entity relationship graph",   "AI + Pyvis", "yellow"),
-    ("10", "Deep scraping",               "JS Render", "blue"),
-    ("0",  "Back to results",             "", "red"),
+_URL_ACTION_CHOICES = [
+    ("Summarize content",          "summarize",    "AI"),
+    ("Extract PII",                "pii",          "Regex + Presidio"),
+    ("Scan web technologies",      "tech",         "Wappalyzer"),
+    ("Download file",              "file",         "Direct HTTP"),
+    ("Download media",             "media",        "Images · Video · Audio"),
+    ("Capture screenshot",         "screenshot",   "Headless browser"),
+    ("Wayback Machine history",    "wayback",      "Archive.org"),
+    ("Deep AI analysis",           "deep-ai",      "LLM"),
+    ("Entity relationship graph",  "graph",        "AI + Pyvis"),
+    ("Deep scraping",              "deep-scrape",  "JS render"),
+    ("Back to results",            "back",         ""),
 ]
 
 
 def process_selected_url(url: str, ia_agent=None) -> None:
-    """TUI menu for deep analysis of a specific search result URL."""
-
+    """Deep-analysis menu for a single result URL."""
     while True:
-        # Build action panel
-        tbl = Table(box=None, show_header=False, padding=(0, 2), border_style="bright_black")
-        tbl.add_column("Key",   style=THEME["PRIMARY"], width=4)
-        tbl.add_column("Label", style="white")
-        tbl.add_column("Tag",   style=THEME["DIM"])
+        short_url = url if len(url) <= 70 else url[:67] + "…"
+        header_bar("URL Analysis", short_url, glyph="🔗")
 
-        for key, label, tag, _ in _URL_ACTIONS:
-            tbl.add_row(key, label, f"[{THEME['DIM']}]{tag}[/]" if tag else "")
-
-        console.print()
-        console.print(
-            Panel(
-                tbl,
-                title=f"[{THEME['PRIMARY']}]🔗 {url[:70]}{'…' if len(url) > 70 else ''}[/]",
-                subtitle=f"[{THEME['DIM']}]URL Analysis[/]",
-                border_style="bright_black",
-                padding=(0, 1),
-            )
+        action = select_menu(
+            "Pick an action",
+            _URL_ACTION_CHOICES,
+            default="summarize",
         )
-        action = _ask()
 
-        # --- Actions ---
-        if action == "1":
+        if action in (None, "back"):
+            break
+
+        if action == "summarize":
             if not ia_agent:
                 print_warn("AI needed — let's set it up first.")
                 ia_agent = select_ia_agent()
@@ -138,38 +171,42 @@ def process_selected_url(url: str, ia_agent=None) -> None:
                 page_text = get_text_from_url(url)
             if page_text:
                 summary = summarize_text_with_ia(page_text, ia_agent)
-                console.print(Panel(summary, title=f"[{THEME['SUCCESS']}]Summary[/]",
-                                    border_style="green", padding=(1, 2)))
+                panel(summary, title="Summary", border="green")
 
-        elif action == "2":
+        elif action == "pii":
             with console.status(f"[{THEME['PRIMARY']}]Extracting PII…[/]", spinner="dots2"):
                 page_text = get_text_from_url(url)
             if page_text:
                 data = extract_information(page_text)
                 if data:
-                    tbl2 = make_table("Extracted PII",
-                                      ("Category", THEME["PRIMARY"]), ("Values", "white"),
-                                      show_lines=True)
+                    tbl = make_table(
+                        "Extracted PII",
+                        ("Category", THEME["PRIMARY"]), ("Values", "white"),
+                        show_lines=True,
+                    )
                     for key, values in data.items():
-                        tbl2.add_row(key.replace("_", " ").capitalize(), "\n".join(values))
-                    console.print(tbl2)
+                        tbl.add_row(key.replace("_", " ").capitalize(), "\n".join(values))
+                    console.print(tbl)
                 else:
                     print_info("No extractable identifiers found.")
 
-        elif action == "3":
+        elif action == "tech":
             tech_scan(url)
 
-        elif action == "4":
+        elif action == "file":
             print_info("Attempting direct download…")
-            fdownloader = FileDownload()
-            fdownloader.descargar_archivo_directo(url, extract_metadata=True)
+            FileDownload().descargar_archivo_directo(url, extract_metadata=True)
 
-        elif action == "5":
-            media_type = _ask("Media type (images/videos/audio/all) [all]").lower() or "all"
-            if media_type not in ("images", "videos", "audio", "all"):
-                media_type = "all"
-            use_js = _ask("Use Selenium for JS-rendered content? (y/n) [n]").lower()
-            use_selenium = use_js in ("y", "s")
+        elif action == "media":
+            media_type = select_menu(
+                "Media type",
+                _MEDIA_CHOICES,
+                default="all",
+            ) or "all"
+            use_selenium = confirm(
+                "Use Selenium for JavaScript-rendered pages?",
+                default=False,
+            )
             domain = urlparse(url).netloc.replace(".", "_")
             zip_name = f"{domain}_{media_type}_media.zip"
             try:
@@ -177,26 +214,25 @@ def process_selected_url(url: str, ia_agent=None) -> None:
             except Exception as e:
                 print_error(str(e))
 
-        elif action == "6":
+        elif action == "screenshot":
             take_screenshot(url)
 
-        elif action == "7":
+        elif action == "wayback":
             check_wayback_machine(url)
 
-        elif action == "8":
+        elif action == "deep-ai":
             if not ia_agent:
                 print_warn("AI needed — let's set it up first.")
                 ia_agent = select_ia_agent()
             if not ia_agent:
                 continue
-            with console.status(f"[{THEME['PRIMARY']}]Fetching content for deep analysis…[/]", spinner="dots2"):
+            with console.status(f"[{THEME['PRIMARY']}]Fetching for deep analysis…[/]", spinner="dots2"):
                 page_text = get_text_from_url(url)
             if page_text:
                 analysis = translate_and_analyze_with_ia(page_text, ia_agent)
-                console.print(Panel(analysis, title=f"[{THEME['SUCCESS']}]AI Deep Analysis[/]",
-                                    border_style="yellow", padding=(1, 2)))
+                panel(analysis, title="AI Deep Analysis", border="yellow")
 
-        elif action == "9":
+        elif action == "graph":
             if not ia_agent:
                 print_warn("AI needed — let's set it up first.")
                 ia_agent = select_ia_agent()
@@ -211,39 +247,35 @@ def process_selected_url(url: str, ia_agent=None) -> None:
                 if result_file:
                     print_success(f"Relationship graph saved: {result_file}")
 
-        elif action == "10":
+        elif action == "deep-scrape":
             with console.status(f"[{THEME['PRIMARY']}]Deep scraping (JS)…[/]", spinner="dots2"):
                 page_text = get_dynamic_text_from_url(url)
             if page_text:
                 print_success(f"Retrieved {len(page_text):,} characters.")
                 data = extract_information(page_text)
                 if data:
-                    tbl3 = make_table("Extracted Information (Deep)",
-                                      ("Category", THEME["PRIMARY"]), ("Values", "white"),
-                                      show_lines=True)
+                    tbl = make_table(
+                        "Extracted Information (Deep)",
+                        ("Category", THEME["PRIMARY"]), ("Values", "white"),
+                        show_lines=True,
+                    )
                     for key, values in data.items():
-                        tbl3.add_row(key.replace("_", " ").capitalize(), "\n".join(values))
-                    console.print(tbl3)
+                        tbl.add_row(key.replace("_", " ").capitalize(), "\n".join(values))
+                    console.print(tbl)
                 else:
                     print_info("No identifiers found in deep content.")
-
-        elif action == "0":
-            break
-        else:
-            print_warn("Invalid option — enter a number from the list.")
 
 
 # ---------------------------------------------------------------------------
 # Results analysis menu
 # ---------------------------------------------------------------------------
 
-PAGE_SIZE = 10  # results shown per page
+PAGE_SIZE = 10
 
 
 def _render_results_page(results: list, page: int) -> None:
-    """Renders a single page of the results table with a navigation footer."""
     total   = len(results)
-    pages   = max(1, -(-total // PAGE_SIZE))   # ceiling division
+    pages   = max(1, -(-total // PAGE_SIZE))
     start   = page * PAGE_SIZE
     end     = min(start + PAGE_SIZE, total)
     page_items = results[start:end]
@@ -262,7 +294,6 @@ def _render_results_page(results: list, page: int) -> None:
     console.print()
     console.print(tbl)
 
-    # Navigation hint
     nav_parts = []
     if page > 0:
         nav_parts.append(f"[{THEME['PRIMARY']}]p[/] prev")
@@ -270,7 +301,6 @@ def _render_results_page(results: list, page: int) -> None:
         nav_parts.append(f"[{THEME['PRIMARY']}]n[/] next")
     nav_parts.append(f"[{THEME['DIM']}]j <N>[/] jump")
     nav_parts.append(f"[{THEME['DIM']}]all[/] full list")
-
     nav_str = "  ·  ".join(nav_parts)
 
     commands_text = (
@@ -279,23 +309,18 @@ def _render_results_page(results: list, page: int) -> None:
         f"[{THEME['WARN']}]save[/]  ·  "
         f"[green]excel[/]  ·  [red]exit[/]"
     )
-    console.print(Panel(commands_text, border_style="bright_black", padding=(0, 1)))
+    console.print(Panel(commands_text, border_style=THEME["BORDER"], padding=(0, 1)))
 
 
 def interactive_analysis_menu(resultados: list, ia_agent=None) -> None:
     """
-    Main interactive results loop with pagination.
+    Interactive results loop with pagination.
 
-    Navigation commands:
-      n          → next page
-      p          → previous page
-      j <N>      → jump to page N
-      all        → display all results (no pagination)
-      <ID>       → analyse result by ID
-      media      → batch media download for selected IDs
-      save       → persist current case to DB
-      excel      → export to Excel
-      exit       → return to main menu
+    Typed commands:
+      n / p / j <N> / all / page   → navigation
+      <ID>                         → analyse result by number
+      media                        → batch media download
+      save · excel · exit          → case/export/quit
     """
     state.ULTIMOS_RESULTADOS = resultados
 
@@ -315,12 +340,17 @@ def interactive_analysis_menu(resultados: list, ia_agent=None) -> None:
     all_results = state.CASO_ACTUAL["resultados"]
     total_pages = max(1, -(-len(all_results) // PAGE_SIZE))
     current_page = 0
-    show_all = False   # when True, bypass pagination and render everything
+    show_all = False
 
     while True:
-        # --- Display ---
+        header_bar("Search Results", f"{len(all_results)} entries")
+        status_footer([
+            ("case",  _current_case_label(),              "info"),
+            ("agent", _agent_label(ia_agent),             "on" if ia_agent else "off"),
+            ("page",  f"{current_page + 1}/{total_pages}", "info"),
+        ])
+
         if show_all or len(all_results) <= PAGE_SIZE:
-            # Render all results as a single table
             tbl = make_table(
                 f"Search Results  [{THEME['DIM']}]({len(all_results)} total)[/]",
                 ("#",     THEME["DIM"]),
@@ -337,14 +367,14 @@ def interactive_analysis_menu(resultados: list, ia_agent=None) -> None:
                     f"  ID to analyse  ·  [{THEME['PRIMARY']}]page[/] back to paginated view\n"
                     f"  [{THEME['ACCENT']}]media[/] download  ·  "
                     f"[{THEME['WARN']}]save[/]  ·  [green]excel[/]  ·  [red]exit[/]",
-                    border_style="bright_black",
+                    border_style=THEME["BORDER"],
                     padding=(0, 1),
                 )
             )
         else:
             _render_results_page(all_results, current_page)
 
-        choice = _ask().lower().strip()
+        choice = ask().lower().strip()
 
         # ── Navigation ────────────────────────────────────────────────
         if choice == "n":
@@ -392,23 +422,27 @@ def interactive_analysis_menu(resultados: list, ia_agent=None) -> None:
             continue
 
         elif choice == "excel":
-            filename = _ask("Excel filename [results.xlsx]") or "results.xlsx"
+            filename = ask("Excel filename", default="results.xlsx")
             if not filename.endswith(".xlsx"):
                 filename += ".xlsx"
             ResultsParser(all_results).exportar_excel(filename)
             continue
 
         elif choice == "media":
-            ids_str = _ask("Result IDs (comma-separated, e.g. 1,3,5)")
+            ids_str = ask("Result IDs (comma-separated, e.g. 1,3,5)")
             ids = [int(x.strip()) for x in ids_str.split(",") if x.strip().isdigit()]
             if not ids:
                 print_error("No valid IDs provided.")
                 continue
-            media_type = (_ask("Media type (images/videos/audio/all) [all]").lower() or "all")
-            if media_type not in ("images", "videos", "audio", "all"):
-                media_type = "all"
-            use_js = _ask("Use Selenium for JS-rendered content? (y/n) [n]").lower()
-            use_selenium = use_js in ("y", "s")
+            media_type = select_menu(
+                "Media type",
+                _MEDIA_CHOICES,
+                default="all",
+            ) or "all"
+            use_selenium = confirm(
+                "Use Selenium for JavaScript-rendered pages?",
+                default=False,
+            )
 
             for idx in ids:
                 if 0 < idx <= len(all_results):
@@ -439,153 +473,141 @@ def interactive_analysis_menu(resultados: list, ia_agent=None) -> None:
                 )
 
 
-
 # ---------------------------------------------------------------------------
 # Main menu
 # ---------------------------------------------------------------------------
 
-
-_MAIN_MENU_ITEMS = [
-    ("1", "Guided Search",          "Name · Username · Email · Phone", "cyan"),
-    ("2", "Direct Search",          "Raw query / Google Dork",         "cyan"),
-    ("3", "AI Dork Generator",      "LLM-assisted dork creation",       "magenta"),
-    ("4", "Reverse Image Lookup",   "Yandex visual search",             "blue"),
-    ("5", "Web Technology Scan",    "Tech stack fingerprinting",         "blue"),
-    ("6", "Username Enumeration",   "Sherlock / Maigret · 400+ sites",   "blue"),
-    ("7", "Load Saved Case",        "Resume investigation",             "green"),
-    ("8", "Configure API Keys",     "Edit .env credentials",            "yellow"),
-    ("9", "Exit",                   "",                                 "red"),
+_MAIN_MENU_CHOICES = [
+    ("Guided Search",          "guided",   "Name · Username · Email · Phone"),
+    ("Direct Search",          "direct",   "Raw query or Google Dork"),
+    ("AI Dork Generator",      "dork",     "LLM-assisted dork creation"),
+    ("Reverse Image Lookup",   "reverse",  "Yandex visual search"),
+    ("Web Technology Scan",    "tech",     "Tech stack fingerprinting"),
+    ("Username Enumeration",   "user-enum","Sherlock · 400+ sites"),
+    ("Load Saved Case",        "load",     "Resume a previous investigation"),
+    ("Configure API Keys",     "config",   "Edit .env credentials"),
+    ("Exit",                   "exit",     ""),
 ]
+
+
+def _run_guided_search() -> None:
+    header_bar("Guided Search", "Compose an AND-query from target attributes")
+    nombre   = ask("Full name         (optional)")
+    usuario  = ask("Username / handle (optional)")
+    email    = ask("Email address     (optional)")
+    telefono = ask("Phone number      (optional)")
+    buscar   = ask("General term      (optional)")
+
+    parts = []
+    if nombre:   parts.append(f'"{nombre}"')
+    if usuario:  parts.append(f'"{usuario}"')
+    if email:    parts.append(f'"{email}"')
+    if telefono: parts.append(f'"{telefono}"')
+    if buscar:   parts.append(f'"{buscar}"')
+
+    if not parts:
+        print_error("At least one search term is required.")
+        return
+
+    query  = " AND ".join(parts)
+    engine = _select_engine()
+
+    if email or telefono:
+        print_info("PII detected — switching to deep extraction mode…")
+        cli.actions.do_deep_search(query, engine, pages=1, start_page=1, lang="lang_es")
+    else:
+        cli.actions.do_search(query, engine, pages=1, start_page=1,
+                              lang="lang_es", interactive=False, ia_agent=None)
+        if state.ULTIMOS_RESULTADOS:
+            interactive_analysis_menu(state.ULTIMOS_RESULTADOS, ia_agent=None)
+
+
+def _run_direct_search() -> None:
+    header_bar("Direct Search", "Raw query or Google-style Dork")
+    query = ask("Search query / dork")
+    if not query:
+        print_error("Query cannot be empty.")
+        return
+    engine = _select_engine()
+    cli.actions.do_search(query, engine, pages=1, start_page=1,
+                          lang="lang_es", interactive=False, ia_agent=None)
+    if state.ULTIMOS_RESULTADOS:
+        interactive_analysis_menu(state.ULTIMOS_RESULTADOS, ia_agent=None)
+
+
+def _run_tech_scan() -> None:
+    header_bar("Web Technology Scan", "Fingerprint the target's stack")
+    url = ask("Target URL")
+    if url:
+        tech_scan(url)
+    else:
+        print_error("URL cannot be empty.")
+
+
+def _run_username_enum() -> None:
+    header_bar("Username Enumeration", "Check 400+ social networks")
+    handle = ask("Username / handle")
+    if not handle:
+        print_error("Username cannot be empty.")
+        return
+    backend = select_menu(
+        "Enumeration backend",
+        _ENUM_BACKEND_CHOICES,
+        default="auto",
+    ) or "auto"
+    timeout_str = ask("Per-site timeout in seconds", default="20")
+    try:
+        timeout = max(5, int(timeout_str))
+    except ValueError:
+        timeout = 20
+    username_enum(handle, backend=backend, timeout=timeout)
 
 
 def show_main_menu() -> None:
     """Root navigation menu for ScannUs."""
     while True:
-        # Build menu table
-        tbl = Table(box=None, show_header=False, padding=(0, 2))
-        tbl.add_column("Key",   style=THEME["PRIMARY"], width=4, no_wrap=True)
-        tbl.add_column("Label", style="bold white",     no_wrap=True)
-        tbl.add_column("Desc",  style=THEME["DIM"],     no_wrap=False)
+        header_bar("ScannUs", "Advanced OSINT & Search Framework")
+        status_footer([
+            ("env",    ".env" if os.path.exists(".env") else "missing",
+                       "on" if os.path.exists(".env") else "off"),
+            ("case",   _current_case_label(),    "info"),
+        ])
 
-        for key, label, desc, colour in _MAIN_MENU_ITEMS:
-            tbl.add_row(
-                f"[{colour}]{key}[/]",
-                f"[{colour}]{label}[/]",
-                desc,
-            )
-
-        console.print()
-        console.print(
-            Panel(
-                tbl,
-                title=f"[{THEME['PRIMARY']}]⬡  ScannUs[/]",
-                subtitle=f"[{THEME['DIM']}]Advanced OSINT & Search Framework[/]",
-                border_style="bright_black",
-                padding=(1, 2),
-            )
+        choice = select_menu(
+            "Main menu",
+            _MAIN_MENU_CHOICES,
+            default="guided",
         )
 
-        choice = _ask()
-
-        # --- Option 1: Guided Search ---
-        if choice == "1":
-            print_section("Guided Search")
-            nombre   = _ask("Full name         (optional)")
-            usuario  = _ask("Username / handle (optional)")
-            email    = _ask("Email address     (optional)")
-            telefono = _ask("Phone number      (optional)")
-            buscar   = _ask("General term      (optional)")
-
-            parts = []
-            if nombre:   parts.append(f'"{nombre}"')
-            if usuario:  parts.append(f'"{usuario}"')
-            if email:    parts.append(f'"{email}"')
-            if telefono: parts.append(f'"{telefono}"')
-            if buscar:   parts.append(f'"{buscar}"')
-
-            if not parts:
-                print_error("At least one search term is required.")
-                continue
-
-            query  = " AND ".join(parts)
-            engine = _ask("Engine (google/duckduckgo/brave) [duckduckgo]").lower() or "duckduckgo"
-
-            if email or telefono:
-                print_info("PII detected — switching to deep extraction mode…")
-                cli.actions.do_deep_search(query, engine, pages=1, start_page=1, lang="lang_es")
-            else:
-                cli.actions.do_search(query, engine, pages=1, start_page=1,
-                                      lang="lang_es", interactive=False, ia_agent=None)
-                if state.ULTIMOS_RESULTADOS:
-                    interactive_analysis_menu(state.ULTIMOS_RESULTADOS, ia_agent=None)
-
-        # --- Option 2: Direct Search ---
-        elif choice == "2":
-            print_section("Direct Search")
-            query = _ask("Search query / dork")
-            if not query:
-                print_error("Query cannot be empty.")
-                continue
-            engine = _ask("Engine (google/duckduckgo/brave) [duckduckgo]").lower() or "duckduckgo"
-            cli.actions.do_search(query, engine, pages=1, start_page=1,
-                                  lang="lang_es", interactive=False, ia_agent=None)
-            if state.ULTIMOS_RESULTADOS:
-                interactive_analysis_menu(state.ULTIMOS_RESULTADOS, ia_agent=None)
-
-        # --- Option 3: AI Dork Generator ---
-        elif choice == "3":
-            cli.actions.do_generate_dork_ia()
-
-        # --- Option 4: Reverse Image Lookup ---
-        elif choice == "4":
-            do_reverse_image_search()
-
-        # --- Option 5: Web Technology Scan ---
-        elif choice == "5":
-            print_section("Web Technology Scan")
-            url = _ask("Target URL")
-            if url:
-                tech_scan(url)
-            else:
-                print_error("URL cannot be empty.")
-
-        # --- Option 6: Username Enumeration ---
-        elif choice == "6":
-            print_section("Username Enumeration")
-            handle = _ask("Username / handle")
-            if not handle:
-                print_error("Username cannot be empty.")
-                continue
-            backend = _ask("Backend (auto/sherlock/maigret) [auto]").lower() or "auto"
-            timeout_str = _ask("Per-site timeout in seconds [20]") or "20"
-            try:
-                timeout = max(5, int(timeout_str))
-            except ValueError:
-                timeout = 20
-            username_enum(handle, backend=backend, timeout=timeout)
-
-        # --- Option 7: Load Saved Case ---
-        elif choice == "7":
-            ia_agent = select_ia_agent()
-            if ia_agent and cargar_caso():
-                interactive_analysis_menu(state.ULTIMOS_RESULTADOS, ia_agent)
-
-        # --- Option 8: Configure API Keys ---
-        elif choice == "8":
-            env_config()
-            openai_config()
-
-        # --- Option 9: Exit ---
-        elif choice == "9":
+        if choice in (None, "exit"):
             console.print()
-            console.print(
-                Panel(
-                    f"[{THEME['SUCCESS']}]Session closed. Stay curious.[/]",
-                    border_style="green",
-                    padding=(0, 4),
-                )
+            panel(
+                f"[{THEME['SUCCESS']}]Session closed. Stay curious.[/]",
+                border="green",
+                padding=(0, 4),
             )
             break
 
-        else:
-            print_warn("Invalid option — choose a number from 1 to 9.")
+        if choice == "guided":
+            _run_guided_search()
+        elif choice == "direct":
+            _run_direct_search()
+        elif choice == "dork":
+            header_bar("AI Dork Generator", "Turn a natural-language brief into a Google Dork")
+            cli.actions.do_generate_dork_ia()
+        elif choice == "reverse":
+            header_bar("Reverse Image Lookup", "Yandex visual search")
+            do_reverse_image_search()
+        elif choice == "tech":
+            _run_tech_scan()
+        elif choice == "user-enum":
+            _run_username_enum()
+        elif choice == "load":
+            header_bar("Load Case", "Restore a saved investigation")
+            ia_agent = select_ia_agent()
+            if ia_agent and cargar_caso():
+                interactive_analysis_menu(state.ULTIMOS_RESULTADOS, ia_agent)
+        elif choice == "config":
+            header_bar("API Credentials", "Update .env file")
+            env_config()
+            openai_config()
