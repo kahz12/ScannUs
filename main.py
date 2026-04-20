@@ -59,6 +59,13 @@ def main():
         do_reverse_image_search(args.reverse)
         sys.exit(0)
 
+    # Route: Username enumeration via Sherlock / Maigret (400+ sites)
+    if getattr(args, "username_enum", None):
+        from search.username_enum import username_enum
+        username_enum(args.username_enum,
+                      backend=getattr(args, "enum_backend", "auto"))
+        sys.exit(0)
+
     # Route: Media scraping from a target URL
     if args.media_scrape:
         zip_file_name = "downloaded_media.zip"
