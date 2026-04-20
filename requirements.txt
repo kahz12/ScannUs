@@ -40,6 +40,9 @@ webtech                          # tech fingerprinting (fallback)
 # --- PII detection (optional) ---
 presidio-analyzer                # Microsoft Presidio entity detection
 
-# --- Username enumeration (optional — install one) ---
-sherlock-project                 # 400+ social sites
-# maigret                        # 3000+ social sites (alternative)
+# --- Username enumeration ---
+sherlock-project                 # 400+ social sites — pure-Python, works everywhere
+# maigret                        # 3000+ sites — DO NOT enable on Termux / Python 3.13.
+                                 # Pins aiohttp==3.8.x which has no aarch64-android wheels;
+                                 # source build requires the full Rust toolchain (maturin).
+                                 # Install on Linux/macOS only:  pip install maigret
