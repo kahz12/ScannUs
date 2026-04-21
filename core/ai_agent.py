@@ -11,9 +11,13 @@ Both generators implement a consistent interface:
 """
 
 import os
+import re
+import json
 import time
 import random
-from typing import Callable, Iterator
+from dataclasses import dataclass, field, asdict
+from typing import Any, Callable, Iterator
+
 from cli.ui import console, THEME
 
 
@@ -220,6 +224,265 @@ class GeminiGenerator:
 
 
 # ---------------------------------------------------------------------------
+# Query Planner — dataclasses, tool catalog, dispatchers
+# ---------------------------------------------------------------------------
+
+@dataclass
+class PlanStep:
+    """One atomic step in an executable OSINT plan."""
+    tool: str
+    args: dict = field(default_factory=dict)
+    rationale: str = ""
+    expected: str = ""
+
+    def to_dict(self) -> dict:
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "PlanStep":
+        return cls(
+            tool=str(d.get("tool", "")).strip(),
+            args=dict(d.get("args") or {}),
+            rationale=str(d.get("rationale", "")).strip(),
+            expected=str(d.get("expected", "")).strip(),
+        )
+
+
+@dataclass
+class QueryPlan:
+    """LLM-synthesised investigation plan for a natural-language goal."""
+    goal: str
+    summary: str = ""
+    steps: list[PlanStep] = field(default_factory=list)
+
+    def to_dict(self) -> dict:
+        return {
+            "goal":    self.goal,
+            "summary": self.summary,
+            "steps":   [s.to_dict() for s in self.steps],
+        }
+
+    @classmethod
+    def from_dict(cls, d: dict, goal: str = "") -> "QueryPlan":
+        steps_raw = d.get("steps") or []
+        return cls(
+            goal=d.get("goal") or goal or "",
+            summary=str(d.get("summary", "")).strip(),
+            steps=[PlanStep.from_dict(s) for s in steps_raw if isinstance(s, dict)],
+        )
+
+
+# Whitelisted, read-only OSINT tools the planner may choose from.
+TOOL_CATALOG: dict[str, dict] = {
+    "search": {
+        "desc": "Run a SERP search and return the list of titles/URLs/snippets.",
+        "args": {
+            "query":  "str (required) — search string, Google-Dork operators welcome",
+            "engine": "str — duckduckgo | google | brave (default: duckduckgo)",
+            "pages":  "int — SERP pages to retrieve (default: 1)",
+        },
+    },
+    "deep_search": {
+        "desc": "Search, then crawl each URL and extract PII (emails, phones, IBANs, "
+                "credit cards, DNIs, CUITs, RFCs).",
+        "args": {
+            "query":  "str (required)",
+            "engine": "str (default: duckduckgo)",
+        },
+    },
+    "extract_pii": {
+        "desc": "Fetch a single URL and extract identifiers (emails, phones, IBANs, "
+                "credit cards, DNIs, CUITs, RFCs).",
+        "args": {"url": "str (required)"},
+    },
+    "tech_scan": {
+        "desc": "Fingerprint the web-technology stack of a URL (CMS, frameworks, "
+                "analytics, CDNs).",
+        "args": {"url": "str (required)"},
+    },
+    "username_enum": {
+        "desc": "Enumerate social-network accounts for a handle via Sherlock/Maigret "
+                "(400+ sites).",
+        "args": {
+            "username": "str (required)",
+            "backend":  "str — auto | sherlock | maigret (default: auto)",
+        },
+    },
+    "screenshot": {
+        "desc": "Capture a full-page screenshot of a URL using a headless browser.",
+        "args": {"url": "str (required)"},
+    },
+    "wayback": {
+        "desc": "Look up the URL's history on the Wayback Machine.",
+        "args": {"url": "str (required)"},
+    },
+    "summarize_url": {
+        "desc": "Fetch a URL's main content and ask the LLM to summarise it.",
+        "args": {"url": "str (required)"},
+    },
+}
+
+
+def _truncate(value: Any, limit: int = 220) -> str:
+    text = str(value)
+    return text if len(text) <= limit else text[: limit - 1] + "…"
+
+
+def _format_catalog_for_prompt() -> str:
+    """Human-readable tool catalog embedded into the planner prompt."""
+    lines: list[str] = []
+    for name, meta in TOOL_CATALOG.items():
+        lines.append(f"- {name}: {meta['desc']}")
+        for arg_name, arg_desc in meta["args"].items():
+            lines.append(f"    · {arg_name}: {arg_desc}")
+    return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
+# Tool dispatchers — lazy imports to avoid circular deps at import-time
+# ---------------------------------------------------------------------------
+
+def _dispatch_search(args: dict, ia_agent) -> dict:
+    from cli.actions import _get_search_engine
+    query = (args.get("query") or "").strip()
+    if not query:
+        return {"status": "error", "summary": "search: missing 'query'"}
+    engine = (args.get("engine") or "duckduckgo").lower()
+    try:
+        pages = int(args.get("pages") or 1)
+    except (TypeError, ValueError):
+        pages = 1
+    try:
+        results = _get_search_engine(engine, pages, 1, "lang_es", query)
+    except Exception as e:
+        return {"status": "error", "summary": f"search failed: {e}"}
+    top = [r.get("title", "") for r in results[:5]]
+    links = [r.get("link", "") for r in results[:5]]
+    return {
+        "status":  "ok",
+        "summary": f"{len(results)} hits · top: " + " | ".join(_truncate(t, 60) for t in top),
+        "data":    {"results": results, "top_links": links},
+    }
+
+
+def _dispatch_deep_search(args: dict, ia_agent) -> dict:
+    from cli.actions import do_deep_search
+    from core import state
+    query = (args.get("query") or "").strip()
+    if not query:
+        return {"status": "error", "summary": "deep_search: missing 'query'"}
+    engine = (args.get("engine") or "duckduckgo").lower()
+    try:
+        do_deep_search(query, engine, pages=1, start_page=1, lang="lang_es")
+    except Exception as e:
+        return {"status": "error", "summary": f"deep_search failed: {e}"}
+    count = len(state.ULTIMOS_RESULTADOS or [])
+    return {
+        "status":  "ok",
+        "summary": f"deep search over {count} URLs complete",
+        "data":    {"count": count},
+    }
+
+
+def _dispatch_extract_pii(args: dict, ia_agent) -> dict:
+    from analysis.web_analyzer import get_text_from_url
+    from search.smart_search import extract_information
+    url = (args.get("url") or "").strip()
+    if not url:
+        return {"status": "error", "summary": "extract_pii: missing 'url'"}
+    text = get_text_from_url(url)
+    if not text:
+        return {"status": "error", "summary": f"could not fetch {url}"}
+    data = extract_information(text)
+    if not data:
+        return {"status": "ok", "summary": f"{url}: no identifiers found", "data": {}}
+    counts = {k: len(v) for k, v in data.items()}
+    return {
+        "status":  "ok",
+        "summary": "extracted: " + ", ".join(f"{k}×{n}" for k, n in counts.items()),
+        "data":    {"by_category": data, "counts": counts},
+    }
+
+
+def _dispatch_tech_scan(args: dict, ia_agent) -> dict:
+    from analysis.tech_scanner import tech_scan
+    url = (args.get("url") or "").strip()
+    if not url:
+        return {"status": "error", "summary": "tech_scan: missing 'url'"}
+    try:
+        tech_scan(url)
+    except Exception as e:
+        return {"status": "error", "summary": f"tech_scan failed: {e}"}
+    return {"status": "ok", "summary": f"tech_scan executed for {url}", "data": {}}
+
+
+def _dispatch_username_enum(args: dict, ia_agent) -> dict:
+    from search.username_enum import username_enum
+    username = (args.get("username") or "").strip()
+    if not username:
+        return {"status": "error", "summary": "username_enum: missing 'username'"}
+    backend = (args.get("backend") or "auto").lower()
+    try:
+        username_enum(username, backend=backend)
+    except Exception as e:
+        return {"status": "error", "summary": f"username_enum failed: {e}"}
+    return {"status": "ok", "summary": f"username_enum completed for @{username}", "data": {}}
+
+
+def _dispatch_screenshot(args: dict, ia_agent) -> dict:
+    from analysis.advanced_osint import take_screenshot
+    url = (args.get("url") or "").strip()
+    if not url:
+        return {"status": "error", "summary": "screenshot: missing 'url'"}
+    try:
+        take_screenshot(url)
+    except Exception as e:
+        return {"status": "error", "summary": f"screenshot failed: {e}"}
+    return {"status": "ok", "summary": f"screenshot captured for {url}", "data": {}}
+
+
+def _dispatch_wayback(args: dict, ia_agent) -> dict:
+    from analysis.advanced_osint import check_wayback_machine
+    url = (args.get("url") or "").strip()
+    if not url:
+        return {"status": "error", "summary": "wayback: missing 'url'"}
+    try:
+        check_wayback_machine(url)
+    except Exception as e:
+        return {"status": "error", "summary": f"wayback failed: {e}"}
+    return {"status": "ok", "summary": f"wayback lookup completed for {url}", "data": {}}
+
+
+def _dispatch_summarize_url(args: dict, ia_agent) -> dict:
+    from analysis.web_analyzer import get_text_from_url, summarize_text_with_ia
+    url = (args.get("url") or "").strip()
+    if not url:
+        return {"status": "error", "summary": "summarize_url: missing 'url'"}
+    if ia_agent is None:
+        return {"status": "error", "summary": "summarize_url: no AI agent available"}
+    text = get_text_from_url(url)
+    if not text:
+        return {"status": "error", "summary": f"could not fetch {url}"}
+    try:
+        summary = summarize_text_with_ia(text, ia_agent)
+    except Exception as e:
+        return {"status": "error", "summary": f"summarize failed: {e}"}
+    return {"status": "ok", "summary": _truncate(summary, 240), "data": {"full": summary}}
+
+
+TOOL_DISPATCH: dict[str, Callable[..., dict]] = {
+    "search":         _dispatch_search,
+    "deep_search":    _dispatch_deep_search,
+    "extract_pii":    _dispatch_extract_pii,
+    "tech_scan":      _dispatch_tech_scan,
+    "username_enum":  _dispatch_username_enum,
+    "screenshot":     _dispatch_screenshot,
+    "wayback":        _dispatch_wayback,
+    "summarize_url":  _dispatch_summarize_url,
+}
+
+
+# ---------------------------------------------------------------------------
 # Strategy-based orchestrator
 # ---------------------------------------------------------------------------
 
@@ -295,3 +558,212 @@ Now, generate the Google Dork for the following description:
 
 User description: "{description}"
 """
+
+    # -----------------------------------------------------------------------
+    # Query Planner — ReAct-style plan generation + execution
+    # -----------------------------------------------------------------------
+
+    def plan(
+        self,
+        goal: str,
+        prior_observations: list[dict] | None = None,
+    ) -> "QueryPlan":
+        """
+        Ask the LLM for a structured investigation plan for the given goal.
+
+        Args:
+            goal:              Natural-language description of what to investigate.
+            prior_observations: If provided, the planner is told about previous
+                                step outcomes and is asked to refine the remaining plan.
+
+        Returns:
+            A QueryPlan with steps that reference only whitelisted tools.
+            Unknown tools are silently dropped.
+        """
+        prompt = self._planner_prompt(goal, prior_observations)
+        try:
+            buffer: list[str] = []
+            for token in self.generator.stream(prompt, render=False):
+                if token:
+                    buffer.append(token)
+            raw = "".join(buffer).strip()
+        except Exception as e:
+            console.print(f"  [{THEME['ERROR']}]✘[/]  Planner generation failed: {e}")
+            return QueryPlan(goal=goal)
+
+        parsed = self._parse_plan_json(raw)
+        if not parsed:
+            console.print(f"  [{THEME['ERROR']}]✘[/]  Could not parse plan JSON from LLM output.")
+            return QueryPlan(goal=goal)
+
+        plan = QueryPlan.from_dict(parsed, goal=goal)
+        # Safety: drop any step referencing a tool outside the whitelist
+        plan.steps = [s for s in plan.steps if s.tool in TOOL_DISPATCH]
+        return plan
+
+    def execute_plan(
+        self,
+        plan: "QueryPlan",
+        *,
+        interactive: bool = True,
+        confirm_each: bool = True,
+    ) -> list[dict]:
+        """
+        Execute the plan step-by-step. Returns a list of observations:
+          {step, tool, args, status, summary, data}
+        where status ∈ {"ok", "skip", "error"}.
+        """
+        observations: list[dict] = []
+        confirm_fn = None
+        if interactive and confirm_each:
+            try:
+                from cli.ui import confirm as _confirm
+                confirm_fn = _confirm
+            except Exception:
+                confirm_fn = None
+
+        total = len(plan.steps)
+        for idx, step in enumerate(plan.steps, start=1):
+            console.print()
+            console.rule(
+                f"[{THEME['PRIMARY']}]Step {idx}/{total} · {step.tool}[/]",
+                style=THEME["DIM"],
+            )
+            if step.rationale:
+                console.print(f"  [{THEME['DIM']}]why:[/]      {step.rationale}")
+            if step.expected:
+                console.print(f"  [{THEME['DIM']}]expect:[/]   {step.expected}")
+            if step.args:
+                console.print(f"  [{THEME['DIM']}]args:[/]     {step.args}")
+
+            if confirm_fn and not confirm_fn("Run this step?", default=True):
+                observations.append({
+                    "step": idx, "tool": step.tool, "args": step.args,
+                    "status": "skip", "summary": "skipped by user", "data": None,
+                })
+                continue
+
+            dispatch = TOOL_DISPATCH.get(step.tool)
+            if not dispatch:
+                observations.append({
+                    "step": idx, "tool": step.tool, "args": step.args,
+                    "status": "error", "summary": f"unknown tool: {step.tool}", "data": None,
+                })
+                continue
+
+            try:
+                result = dispatch(step.args, self)
+            except Exception as e:
+                result = {"status": "error", "summary": f"exception: {e}", "data": None}
+
+            observation = {
+                "step":    idx,
+                "tool":    step.tool,
+                "args":    step.args,
+                "status":  result.get("status", "ok"),
+                "summary": result.get("summary", ""),
+                "data":    result.get("data"),
+            }
+            observations.append(observation)
+            badge = {
+                "ok":    f"[{THEME['SUCCESS']}]✔[/]",
+                "error": f"[{THEME['ERROR']}]✘[/]",
+                "skip":  f"[{THEME['DIM']}]○[/]",
+            }.get(observation["status"], "·")
+            console.print(f"  {badge}  {_truncate(observation['summary'], 180)}")
+        return observations
+
+    def replan(self, goal: str, observations: list[dict]) -> "QueryPlan":
+        """Refine the plan using past observations (ReAct loop)."""
+        return self.plan(goal, prior_observations=observations)
+
+    def _planner_prompt(
+        self,
+        goal: str,
+        prior_observations: list[dict] | None,
+    ) -> str:
+        catalog = _format_catalog_for_prompt()
+
+        history_block = ""
+        if prior_observations:
+            lines = []
+            for obs in prior_observations[-10:]:
+                args_json = json.dumps(obs.get("args", {}), ensure_ascii=False)
+                lines.append(
+                    f"- step {obs.get('step')}: {obs.get('tool')}({args_json}) "
+                    f"→ [{obs.get('status')}] {_truncate(obs.get('summary', ''), 160)}"
+                )
+            history_block = (
+                "\n\nPreviously executed steps and their observed results:\n"
+                + "\n".join(lines)
+                + "\n\nUse these observations to refine the remaining plan. "
+                  "Do not repeat steps that already produced useful output."
+            )
+
+        return f"""You are an OSINT planning agent. Given a goal, produce a concrete,
+executable investigation plan composed of calls to the tools below.
+
+Available tools (use ONLY these names — any other will be rejected):
+{catalog}
+
+Rules:
+1. Decompose the goal into 3 to 8 ordered steps, each a single tool call.
+2. Prefer breadth first (search, username_enum) before depth (extract_pii, tech_scan).
+3. For `search` / `deep_search`, craft the query like a Google Dork when useful
+   (operators: site:, filetype:, intitle:, inurl:, "exact phrase", AND, OR, -exclude).
+4. Every step must be self-contained — results are observed AFTER each call,
+   so do not embed placeholders like {{{{previous_url}}}} in args.
+5. Output ONLY one JSON object. No markdown fences, no prose, no comments.
+
+JSON schema:
+{{
+  "summary": "one or two sentences describing the overall strategy",
+  "steps": [
+    {{
+      "tool": "<tool name from the catalog>",
+      "args": {{ "<arg>": "<value>" }},
+      "rationale": "why this step is included",
+      "expected": "what information we expect to learn"
+    }}
+  ]
+}}
+
+Goal: {goal}{history_block}
+""".strip()
+
+    @staticmethod
+    def _parse_plan_json(raw: str) -> dict | None:
+        """Robustly extract a JSON object from a possibly-messy LLM response."""
+        if not raw:
+            return None
+        cleaned = raw.strip()
+
+        # Strip ```json ... ``` fences if present
+        fence = re.match(r"^```(?:json)?\s*(.*?)\s*```$", cleaned, re.DOTALL)
+        if fence:
+            cleaned = fence.group(1).strip()
+
+        # Direct parse
+        try:
+            return json.loads(cleaned)
+        except json.JSONDecodeError:
+            pass
+
+        # Fall back to the first balanced {...} block
+        start = cleaned.find("{")
+        if start < 0:
+            return None
+        depth = 0
+        for i in range(start, len(cleaned)):
+            ch = cleaned[i]
+            if ch == "{":
+                depth += 1
+            elif ch == "}":
+                depth -= 1
+                if depth == 0:
+                    candidate = cleaned[start : i + 1]
+                    try:
+                        return json.loads(candidate)
+                    except json.JSONDecodeError:
+                        return None
+        return None

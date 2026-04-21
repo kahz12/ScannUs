@@ -481,6 +481,7 @@ _MAIN_MENU_CHOICES = [
     ("Guided Search",          "guided",   "Name · Username · Email · Phone"),
     ("Direct Search",          "direct",   "Raw query or Google Dork"),
     ("AI Dork Generator",      "dork",     "LLM-assisted dork creation"),
+    ("AI Query Planner",       "planner",  "ReAct-style multi-tool plan"),
     ("Reverse Image Lookup",   "reverse",  "Yandex visual search"),
     ("Web Technology Scan",    "tech",     "Tech stack fingerprinting"),
     ("Username Enumeration",   "user-enum","Sherlock · 400+ sites"),
@@ -595,6 +596,8 @@ def show_main_menu() -> None:
         elif choice == "dork":
             header_bar("AI Dork Generator", "Turn a natural-language brief into a Google Dork")
             cli.actions.do_generate_dork_ia()
+        elif choice == "planner":
+            cli.actions.do_query_planner()
         elif choice == "reverse":
             header_bar("Reverse Image Lookup", "Yandex visual search")
             do_reverse_image_search()

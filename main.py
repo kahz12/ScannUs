@@ -66,6 +66,12 @@ def main():
                       backend=getattr(args, "enum_backend", "auto"))
         sys.exit(0)
 
+    # Route: LLM-based query planner (multi-step ReAct investigation)
+    if getattr(args, "plan", None):
+        from cli.actions import do_query_planner
+        do_query_planner(args.plan)
+        sys.exit(0)
+
     # Route: Media scraping from a target URL
     if args.media_scrape:
         zip_file_name = "downloaded_media.zip"
