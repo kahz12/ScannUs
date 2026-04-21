@@ -169,6 +169,8 @@ def get_parser() -> argparse.ArgumentParser:
     ia = parser.add_argument_group("AI & NLP Options")
     ia.add_argument("-gd", "--google-dorks", type=str, metavar='"DESCRIPTION"',
                     help="Generate a Google Dork from a natural-language description via LLM.")
+    ia.add_argument("-p", "--plan", type=str, metavar='"GOAL"',
+                    help="LLM-based OSINT planner: generate + execute a multi-step investigation.")
 
     # ── Media ─────────────────────────────────────────────────────────────
     media = parser.add_argument_group("Media Processing")

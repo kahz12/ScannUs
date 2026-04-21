@@ -160,6 +160,89 @@ def do_search(query: str, engine: str, pages: int, start_page: int,
         _print_results_table(resultados)
 
 
+def do_query_planner(goal: str | None = None) -> None:
+    """
+    LLM-driven OSINT query planner.
+
+    Flow: select AI provider → prompt for goal → LLM generates a structured
+    plan of dork/tool calls → user approves → ReAct-style stepwise execution
+    with per-step confirmation → optional re-plan using observations.
+    """
+    from cli.menus import select_ia_agent
+    from cli.ui import ask, confirm, header_bar, panel
+
+    ia_agent = select_ia_agent()
+    if not ia_agent:
+        return
+
+    if not goal:
+        header_bar("AI Query Planner", "ReAct-style multi-tool investigation")
+        goal = ask("Describe your investigation goal").strip()
+    if not goal:
+        print_error("Goal cannot be empty.")
+        return
+
+    console.print()
+    with console.status(f"[{THEME['PRIMARY']}]Planning investigation…[/]", spinner="dots2"):
+        plan = ia_agent.plan(goal)
+
+    if not plan.steps:
+        print_error("The planner did not return any usable steps. Try rephrasing the goal.")
+        return
+
+    if plan.summary:
+        panel(plan.summary, title="Strategy", border="bright_black")
+
+    tbl = make_table(
+        f"Generated Plan · {len(plan.steps)} steps",
+        ("#",         THEME["DIM"]),
+        ("Tool",      THEME["PRIMARY"]),
+        ("Arguments", "white"),
+        ("Rationale", THEME["DIM"]),
+        show_lines=True,
+    )
+    for i, step in enumerate(plan.steps, 1):
+        args_text = ", ".join(f"{k}={v}" for k, v in step.args.items()) or "—"
+        tbl.add_row(str(i), step.tool, args_text, step.rationale or "—")
+    console.print()
+    console.print(tbl)
+    console.print()
+
+    if not confirm("Execute this plan now?", default=True):
+        return
+
+    confirm_each = confirm("Ask before each step?", default=False)
+    observations = ia_agent.execute_plan(plan, interactive=True, confirm_each=confirm_each)
+
+    console.print()
+    ok   = sum(1 for o in observations if o["status"] == "ok")
+    err  = sum(1 for o in observations if o["status"] == "error")
+    skip = sum(1 for o in observations if o["status"] == "skip")
+    print_success(f"Plan finished — {ok} ok · {err} errors · {skip} skipped")
+
+    if (err or skip) and confirm(
+        "Re-plan with observations to refine the remaining strategy?",
+        default=False,
+    ):
+        console.print()
+        with console.status(f"[{THEME['PRIMARY']}]Re-planning…[/]", spinner="dots2"):
+            new_plan = ia_agent.replan(goal, observations)
+        if new_plan.steps:
+            print_info("Revised plan generated. Invoke the planner again to run it.")
+            tbl2 = make_table(
+                f"Revised Plan · {len(new_plan.steps)} steps",
+                ("#",         THEME["DIM"]),
+                ("Tool",      THEME["PRIMARY"]),
+                ("Arguments", "white"),
+                ("Rationale", THEME["DIM"]),
+                show_lines=True,
+            )
+            for i, step in enumerate(new_plan.steps, 1):
+                args_text = ", ".join(f"{k}={v}" for k, v in step.args.items()) or "—"
+                tbl2.add_row(str(i), step.tool, args_text, step.rationale or "—")
+            console.print(tbl2)
+
+
 def do_generate_dork_ia() -> None:
     """
     NLP-driven Google Dork generation using the configured LLM.
