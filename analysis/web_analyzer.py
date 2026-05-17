@@ -13,7 +13,7 @@ from bs4 import BeautifulSoup
 from pyvis.network import Network
 
 from core.config import DIR_GRAPHS
-from cli.ui import console, THEME, print_info, print_warn, print_error
+from cli.ui import print_info, print_warn, print_error
 
 
 # ---------------------------------------------------------------------------

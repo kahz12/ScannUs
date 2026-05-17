@@ -1,6 +1,4 @@
 import requests
-import json
-import os
 from search.engines.cache import search_cache
 
 class BraveSearch:

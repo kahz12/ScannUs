@@ -11,10 +11,8 @@ import argparse
 from rich.panel import Panel
 from rich.table import Table
 from rich.columns import Columns
-from rich.text import Text
-from rich import box
 
-from cli.ui import console, THEME, make_table
+from cli.ui import console, THEME
 
 
 # ---------------------------------------------------------------------------

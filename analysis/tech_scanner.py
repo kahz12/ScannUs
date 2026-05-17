@@ -12,7 +12,6 @@ Public API:
 """
 
 import os
-import requests
 from cli.ui import console, THEME, print_info, print_warn, print_error, make_table
 
 

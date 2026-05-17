@@ -18,7 +18,7 @@ from cli.ui import (
     console, THEME,
     ask, confirm, select_menu,
     header_bar, status_footer, panel,
-    print_success, print_error, print_warn, print_info, print_section,
+    print_success, print_error, print_warn, print_info,
     make_table,
 )
 from core import state

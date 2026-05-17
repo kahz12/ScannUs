@@ -1,5 +1,4 @@
 import sys
-import argparse
 import os
 
 from core.config import load_environment, env_config, openai_config, init_directories
@@ -46,9 +45,9 @@ def main():
         env_config()
         openai_config()
         print("\n.env configured successfully.")
-        # Exit gracefully if this was just a configuration run
-        if not any(vars(args).values()):
-             sys.exit(0)
+        # Exit gracefully if -c was the only flag passed
+        if all(a in ("-c", "--configure") for a in sys.argv[1:]):
+            sys.exit(0)
     elif not env_exists and not args.help:
         console.print("[bold red]Error: The .env file does not exist or is not configured.[/bold red]")
         console.print("Please run the script with the -c flag or use the interactive menu to configure it.")
@@ -124,7 +123,7 @@ def main():
         sys.exit(1)
 
     # Latent imports to avoid circular dependency cycles
-    from cli.actions import do_search, do_generate_dork_ia, do_deep_search
+    from cli.actions import do_search, do_deep_search
 
     # Dispatch to appropriate search engine or deep analysis pipeline
     if args.deep or args.email or args.telefono:

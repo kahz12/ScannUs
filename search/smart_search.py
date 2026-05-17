@@ -5,6 +5,8 @@ import html
 import argparse
 from urllib.parse import urlparse
 
+import phonenumbers
+
 # Engine-specific imports
 from search.engines.googlesearch import GoogleSearch
 
@@ -114,70 +116,71 @@ def _extract_emails_from_html(text: str) -> set[str]:
 
 
 # ---------------------------------------------------------------------------
-# Phone number extraction helpers
+# Phone number extraction helpers — backed by Google's libphonenumber
 # ---------------------------------------------------------------------------
 
-def _normalize_phone(digits: str) -> str | None:
-    """
-    Strips all non-digit characters from a phone candidate and returns a
-    canonical string only if the digit count is plausible (7–15 digits per
-    ITU-T E.164).  Returns ``None`` for implausible counts.
-    """
-    d = re.sub(r'\D', '', digits)
-    return d if 7 <= len(d) <= 15 else None
+# Regions tried in addition to fully international (``+``-prefixed) numbers.
+# Order matters only for picking which region's parser claims an ambiguous
+# domestic number first; canonical E.164 deduplication handles overlaps.
+_PHONE_REGIONS = ("US", "ES", "MX", "AR", "GB")
+
+
+def _to_e164(num) -> str | None:
+    """Return the E.164 canonical form of *num* if it is a valid number."""
+    if not phonenumbers.is_valid_number(num):
+        return None
+    return phonenumbers.format_number(num, phonenumbers.PhoneNumberFormat.E164)
 
 
 def _extract_phones_from_text(text: str) -> set[str]:
     """
-    Extracts phone numbers from text using a broad international pattern,
-    then normalises each candidate to its digit string for deduplication.
+    Extracts phone numbers from *text* using libphonenumber.
 
-    Handles:
-    - International prefix  ``+1``, ``+57``, ``+34``, …
-    - Common separators     spaces, hyphens, dots, parentheses
-    - North-American        ``(555) 867-5309``, ``555.867.5309``
-    - European              ``+34 912 34 56 78``, ``+44 20 7946 0958``
-    - Local 7-digit         ``867-5309``
+    Strategy:
+      1. Scan for fully-international (``+CC…``) numbers via region ``ZZ``.
+      2. Re-scan under a small set of common regions to catch domestically
+         formatted numbers (``(555) 867-5309``, ``5558675309``,
+         ``912 34 56 78`` …).
+      3. Deduplicate by E.164 canonical form so the same number written in
+         different styles is reported once. The human-readable form is the
+         one originally written in the text.
     """
-    PHONE_RE = re.compile(
-        r'''
-        (?:(?:\+|00)            # International prefix (+ or 00)
-           [\d\s\-\.]{1,4})?   # Country code (up to 4 digits with separators)
-        (?:[\(\[]?\d{2,4}[\)\]]?   # Area code (with optional parentheses)
-           [\s\-\.]?)?
-        \d{3,4}                  # Exchange number
-        [\s\-\.]
-        \d{3,4}                  # Subscriber number segment 1
-        (?:[\s\-\.]\d{2,4})?     # Optional extra segment (European numbers)
-        ''',
-        re.VERBOSE,
-    )
+    seen_canonical: dict[str, str] = {}
 
-    seen_digits: set[str] = set()
-    results: set[str] = set()
+    for region in ("ZZ", *_PHONE_REGIONS):
+        try:
+            matches = phonenumbers.PhoneNumberMatcher(text, region)
+        except Exception:
+            continue
+        for match in matches:
+            canonical = _to_e164(match.number)
+            if not canonical or canonical in seen_canonical:
+                continue
+            seen_canonical[canonical] = text[match.start:match.end].strip()
 
-    for match in PHONE_RE.finditer(text):
-        raw = match.group(0).strip()
-        normalised = _normalize_phone(raw)
-        if normalised and normalised not in seen_digits:
-            seen_digits.add(normalised)
-            # Store the human-readable form (trimmed), not the raw digit string
-            results.add(raw)
-
-    return results
+    return set(seen_canonical.values())
 
 
 def _extract_phones_from_html(text: str) -> set[str]:
     """
-    Extracts phone numbers from ``href="tel:..."`` attributes in HTML source.
+    Extracts phone numbers from ``href="tel:..."`` attributes in HTML source,
+    validated via libphonenumber.
     """
-    found: set[str] = set()
+    seen_canonical: dict[str, str] = {}
+
     for match in re.finditer(r'href=["\']tel:([^"\'?\s]+)', text, re.IGNORECASE):
-        number = match.group(1).strip()
-        norm = _normalize_phone(number)
-        if norm:
-            found.add(number)
-    return found
+        raw = match.group(1).strip()
+        for region in ("ZZ", *_PHONE_REGIONS):
+            try:
+                num = phonenumbers.parse(raw, region)
+            except phonenumbers.NumberParseException:
+                continue
+            canonical = _to_e164(num)
+            if canonical:
+                seen_canonical.setdefault(canonical, raw)
+                break
+
+    return set(seen_canonical.values())
 
 
 # ---------------------------------------------------------------------------

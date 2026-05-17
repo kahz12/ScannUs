@@ -3,7 +3,6 @@ core/case_manager.py — Save and load investigation sessions from SQLite.
 Uses Rich console helpers for a consistent visual experience.
 """
 
-from rich.panel import Panel
 from cli.ui import console, THEME, print_success, print_error, print_warn, print_info, make_table
 from core import state
 from core.database import DBManager

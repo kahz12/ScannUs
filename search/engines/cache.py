@@ -16,9 +16,7 @@ Usage (inside an engine's search() method):
     return results
 """
 
-from functools import lru_cache
 from collections import OrderedDict
-from typing import Any
 
 
 class SearchCache:
