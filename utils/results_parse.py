@@ -12,12 +12,46 @@ Formats supported:
 import json
 import os
 import csv
+import html
 import openpyxl
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
 from rich.table import Table
-from cli.ui import console, THEME, print_success, print_error, make_table
+from cli.ui import THEME, print_success, print_error, make_table
 from core.config import DIR_REPORTS
+
+
+_HTML_TEMPLATE = """<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>ScannUs — Search Report</title>
+<style>
+  :root { color-scheme: dark; }
+  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+         background: #0f1117; color: #e6e6e6; margin: 0; padding: 2rem; }
+  header { border-bottom: 1px solid #2a2f3a; padding-bottom: 1rem; margin-bottom: 1.5rem; }
+  header h1 { margin: 0 0 .25rem 0; font-size: 1.4rem; color: #00d7ff; letter-spacing: .02em; }
+  header .meta { color: #888; font-size: .9rem; }
+  .resultado { background: #161a23; border: 1px solid #232836; border-radius: 8px;
+               padding: 1rem 1.25rem; margin-bottom: 1rem; }
+  .resultado .indice { color: #ff5fd7; font-size: .75rem; text-transform: uppercase;
+                       letter-spacing: .08em; margin-bottom: .25rem; }
+  .resultado h5 { margin: .1rem 0 .5rem 0; font-size: 1rem; color: #ffffff; }
+  .resultado p  { margin: 0 0 .6rem 0; color: #b8b8b8; line-height: 1.45; }
+  .resultado a  { color: #00d7ff; text-decoration: none; word-break: break-all; }
+  .resultado a:hover { text-decoration: underline; }
+</style>
+</head>
+<body>
+  <header>
+    <h1>⬡  ScannUs — Search Report</h1>
+    <div class="meta">{{ total }} result(s)</div>
+  </header>
+  {{ resultados }}
+</body>
+</html>
+"""
 
 
 class ResultsParser:
@@ -42,31 +76,30 @@ class ResultsParser:
 
     def exportar_html(self, archivo_salida: str) -> None:
         """
-        Exports results into a structured HTML report using the companion template.
+        Exports results into a self-contained, styled HTML report.
         """
         path = self._output_path(archivo_salida)
-        template_path = "html_template.html"
 
         try:
-            if not os.path.exists(template_path):
-                print_error(f"HTML template '{template_path}' not found.")
-                return
-
-            with open(template_path, "r", encoding="utf-8") as f:
-                template = f.read()
-
-            html_fragments = ""
+            fragments = []
             for i, r in enumerate(self.resultados, 1):
-                html_fragments += (
-                    f'<div class="resultado">'
+                title = html.escape(r.get("title") or "No title")
+                description = html.escape(r.get("description") or "No description")
+                link_raw = r.get("link") or ""
+                link_attr = html.escape(link_raw, quote=True) or "#"
+                link_text = html.escape(link_raw) or "No link"
+                fragments.append(
+                    '<div class="resultado">'
                     f'<div class="indice">Result {i}</div>'
-                    f'<h5>{r.get("title", "No title")}</h5>'
-                    f'<p>{r.get("description", "No description")}</p>'
-                    f'<a href="{r.get("link", "#")}" target="_blank">{r.get("link", "No link")}</a>'
-                    f"</div>"
+                    f'<h5>{title}</h5>'
+                    f'<p>{description}</p>'
+                    f'<a href="{link_attr}" target="_blank" rel="noopener noreferrer">{link_text}</a>'
+                    '</div>'
                 )
 
-            report = template.replace("{{ resultados }}", html_fragments)
+            report = _HTML_TEMPLATE.replace("{{ resultados }}", "\n".join(fragments))
+            report = report.replace("{{ total }}", str(len(self.resultados)))
+
             with open(path, "w", encoding="utf-8") as f:
                 f.write(report)
 

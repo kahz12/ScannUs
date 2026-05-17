@@ -1,116 +1,153 @@
+"""
+search/engines/duckduckgosearch.py — DuckDuckGo HTML-endpoint scraper
+with real pagination.
+
+DuckDuckGo's ``html.duckduckgo.com`` endpoint accepts an ``s`` (start)
+parameter that controls the result offset.  Each response also embeds a
+hidden form pointing at the next page, so we can either step incrementally
+(``s=0, 30, 60, …``) or follow the form's own ``s``.  We do the simple
+incremental version, which is enough for OSINT-style pagination.
+"""
+
 import requests
 from bs4 import BeautifulSoup
 from urllib.parse import unquote
+
 from search.engines.cache import search_cache
+
+
+_BASE_URL = "https://html.duckduckgo.com/html/"
+_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/124.0.0.0 Safari/537.36"
+    ),
+    "Accept-Language": "en-US,en;q=0.9",
+}
+
+# DuckDuckGo's HTML endpoint returns approximately this many results per page.
+_PAGE_OFFSET_STEP = 30
+
 
 class DuckDuckGoSearch:
     """
-    Search engine implementation for DuckDuckGo.
-    Utilizes BeautifulSoup to scrape the HTML-only version (non-JS) of DDG.
+    Search engine implementation for DuckDuckGo (HTML endpoint).
+
+    Pagination is driven by the ``s`` (start-offset) form parameter.  The
+    scraper iterates ``pages`` times, advancing the offset by
+    ``_PAGE_OFFSET_STEP`` per request, and stops early if a page yields no
+    new results.
     """
 
     def __init__(self):
-        """
-        Initializes the DuckDuckGo scraper configuration.
-        """
-        self.base_url = "https://html.duckduckgo.com/html/"
+        self.base_url = _BASE_URL
 
-    def search(self, query, pages=1):
+    def search(self, query: str, pages: int = 1) -> list[dict]:
         """
         Executes a search query against DuckDuckGo.
 
         Args:
-            query (str): The search string.
-            pages (int): Parameter maintained for interface parity across engines; 
-                         DDG's HTML version has non-standard pagination and is capped here to 1.
+            query: The search string.
+            pages: Number of result pages to retrieve (default 1, ~30 per page).
 
         Returns:
-            list: Normalized list of result dictionaries (title, description, link).
+            Normalised list of result dictionaries (title, description, link).
         """
-        final_results = []
-
-        # --- In-session cache check ---
+        pages = max(1, int(pages))
         cache_key = search_cache.make_key("duckduckgo", query, pages=pages)
         cached = search_cache.get(cache_key)
         if cached is not None:
             return cached
 
-        headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/58.0.3029.110 Safari/537.3'
-        }
-        
-        params = {
-            'q': query
-        }
+        final_results: list[dict] = []
+        seen_links: set[str] = set()
 
-        try:
-            # The HTML version requires a POST request with the 'q' parameter in the body
-            response = requests.post(self.base_url, headers=headers, data=params, timeout=10)
-            response.raise_for_status()
-            
-            soup = BeautifulSoup(response.text, 'html.parser')
-            
-            # Locate all top-level result containers in the DOM
-            results_container = soup.find_all('div', {'class': 'result'})
+        with requests.Session() as session:
+            session.headers.update(_HEADERS)
+            for page in range(pages):
+                offset = page * _PAGE_OFFSET_STEP
+                params = {"q": query}
+                if offset:
+                    params["s"] = str(offset)
+                    params["dc"] = str(offset)
 
-            for container in results_container:
-                title_element = container.find('h2', {'class': 'result__title'})
-                link_element = container.find('a', {'class': 'result__a'})
-                snippet_element = container.find('a', {'class': 'result__snippet'})
+                try:
+                    response = session.post(self.base_url, data=params, timeout=10)
+                    response.raise_for_status()
+                except requests.exceptions.RequestException as e:
+                    raise RuntimeError(
+                        f"Network error searching DuckDuckGo (page {page + 1}): {e}"
+                    )
 
-                if title_element and link_element and snippet_element:
-                    title = title_element.get_text(strip=True)
-            
-                    # DDG obfuscates destination URLs behind a tracker/redirector
-                    raw_link = link_element['href']
-                    # Extract the canonical URL from the 'uddg' query parameter
-                    parsed_link = self.clean_link(raw_link)
-                    
-                    snippet = snippet_element.get_text(strip=True)
+                page_results = self._parse_results(response.text)
+                if not page_results:
+                    # No more pages with content — stop early.
+                    break
 
-                    if title and parsed_link and snippet:
-                        final_results.append({
-                            "title": title,
-                            "description": snippet,
-                            "link": parsed_link
-                        })
+                new_count = 0
+                for r in page_results:
+                    if r["link"] in seen_links:
+                        continue
+                    seen_links.add(r["link"])
+                    final_results.append(r)
+                    new_count += 1
 
-        except requests.exceptions.RequestException as e:
-            raise RuntimeError(f"Network error searching DuckDuckGo: {e}")
-        except Exception as e:
-            raise RuntimeError(f"Unexpected DOM processing error on DuckDuckGo: {e}")
+                # If a page returns only duplicates, further paging is pointless.
+                if new_count == 0:
+                    break
 
         search_cache.set(cache_key, final_results)
         return final_results
 
-    def clean_link(self, raw_link):
+    def _parse_results(self, html: str) -> list[dict]:
+        """Extracts a single result page into the normalised dict shape."""
+        soup = BeautifulSoup(html, "html.parser")
+        results: list[dict] = []
+
+        for container in soup.find_all("div", {"class": "result"}):
+            title_el   = container.find("h2", {"class": "result__title"})
+            link_el    = container.find("a",  {"class": "result__a"})
+            snippet_el = container.find("a",  {"class": "result__snippet"})
+
+            if not (title_el and link_el and snippet_el):
+                continue
+
+            title = title_el.get_text(strip=True)
+            parsed_link = self.clean_link(link_el["href"])
+            snippet = snippet_el.get_text(strip=True)
+
+            if title and parsed_link and snippet:
+                results.append({
+                    "title":       title,
+                    "description": snippet,
+                    "link":        parsed_link,
+                })
+
+        return results
+
+    def clean_link(self, raw_link: str) -> str | None:
         """
-        Sanitizes DuckDuckGo redirection links to extract the destination URL.
-        Example: /l/?kh=-1&uddg=https%3A%2F%2Fwww.example.com
+        Sanitises DuckDuckGo redirector links to the canonical destination URL.
+        Example: ``/l/?kh=-1&uddg=https%3A%2F%2Fwww.example.com`` → the URL.
         """
         if raw_link.startswith("/l/"):
-            # Target the 'uddg=' substring which contains the encoded destination
-            param = 'uddg='
+            param = "uddg="
             try:
                 start_index = raw_link.index(param) + len(param)
-                # Percent-decode the extracted string
-                url = unquote(raw_link[start_index:])
-                return url
+                # Stop at the next '&' so trailing tracker params (kh=, rut=, …)
+                # are not glued onto the decoded destination URL.
+                tail = raw_link[start_index:].split("&", 1)[0]
+                return unquote(tail)
             except ValueError:
                 return None
         return raw_link
 
 
-if __name__ == '__main__':
-    # Bootstrap check for the DDG scraper
+if __name__ == "__main__":
     ddg = DuckDuckGoSearch()
-    search_results = ddg.search("python web scraping")
-    if search_results:
-        for i, res in enumerate(search_results, 1):
-            print(f"--- Result {i} ---")
-            print(f"Title: {res['title']}")
-            print(f"Description: {res['description']}")
-            print(f"Link: {res['link']}")
-            print()
-    else:
-        print("No results found.")
+    for i, res in enumerate(ddg.search("python web scraping", pages=2), 1):
+        print(f"--- Result {i} ---")
+        print(f"Title:       {res['title']}")
+        print(f"Description: {res['description']}")
+        print(f"Link:        {res['link']}\n")

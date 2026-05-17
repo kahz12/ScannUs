@@ -343,7 +343,7 @@ def _format_catalog_for_prompt() -> str:
 # ---------------------------------------------------------------------------
 
 def _dispatch_search(args: dict, ia_agent) -> dict:
-    from cli.actions import _get_search_engine
+    from cli.actions import get_search_engine
     query = (args.get("query") or "").strip()
     if not query:
         return {"status": "error", "summary": "search: missing 'query'"}
@@ -353,7 +353,7 @@ def _dispatch_search(args: dict, ia_agent) -> dict:
     except (TypeError, ValueError):
         pages = 1
     try:
-        results = _get_search_engine(engine, pages, 1, "lang_es", query)
+        results = get_search_engine(engine, pages, 1, "lang_es", query)
     except Exception as e:
         return {"status": "error", "summary": f"search failed: {e}"}
     top = [r.get("title", "") for r in results[:5]]

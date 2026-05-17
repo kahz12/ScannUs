@@ -2,7 +2,6 @@ import os
 from rich.panel import Panel
 from rich.text import Text
 from cli.ui import console, THEME, print_success, print_error, print_warn, print_info, make_table
-from utils.results_parse import ResultsParser
 from search.engines.duckduckgosearch import DuckDuckGoSearch
 from search.engines.bravesearch import BraveSearch
 from search.engines.googlesearch import GoogleSearch
@@ -15,7 +14,7 @@ from search.smart_search import extract_information
 # Internal helpers
 # ---------------------------------------------------------------------------
 
-def _get_search_engine(engine: str, pages: int, start_page: int, lang: str, query: str):
+def get_search_engine(engine: str, pages: int, start_page: int, lang: str, query: str):
     """
     Instantiates the correct search engine and runs the query.
     Returns a list of result dicts or raises on config error.
@@ -89,7 +88,7 @@ def do_deep_search(query: str, engine: str, pages: int, start_page: int, lang: s
     _print_search_header(engine, query, mode="Deep / PII Extraction")
 
     try:
-        resultados = _get_search_engine(engine, pages, start_page, lang, query)
+        resultados = get_search_engine(engine, pages, start_page, lang, query)
     except Exception as e:
         print_error(str(e))
         return
@@ -140,7 +139,7 @@ def do_search(query: str, engine: str, pages: int, start_page: int,
     _print_search_header(engine, query)
 
     try:
-        resultados = _get_search_engine(engine, pages, start_page, lang, query)
+        resultados = get_search_engine(engine, pages, start_page, lang, query)
     except Exception as e:
         print_error(str(e))
         return

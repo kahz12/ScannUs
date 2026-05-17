@@ -10,7 +10,7 @@ import os
 import time
 import requests
 from bs4 import BeautifulSoup
-from urllib.parse import urlparse, quote_plus
+from urllib.parse import urlparse
 from cli.ui import console, THEME, print_info, print_warn, print_error, print_success, make_table
 from core.config import DIR_SCREENSHOTS
 

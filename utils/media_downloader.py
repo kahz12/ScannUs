@@ -13,12 +13,12 @@ from urllib.parse import urljoin, urlparse
 from bs4 import BeautifulSoup
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from rich.progress import (
-    Progress, BarColumn, DownloadColumn,
+    Progress, BarColumn,
     TransferSpeedColumn, TimeRemainingColumn, TaskProgressColumn, TextColumn
 )
 from rich.table import Table
 from rich.box import ROUNDED
-from cli.ui import console, THEME, print_info, print_warn, print_error, print_success
+from cli.ui import console, THEME, print_info, print_warn, print_success
 from core.config import DIR_MEDIA
 
 # aiohttp is optional — fall back to ThreadPoolExecutor if absent.
@@ -543,8 +543,6 @@ def _extract_video_urls_selenium_interaction(url: str) -> list[str]:
         from selenium.webdriver.firefox.options import Options
         from selenium.webdriver.firefox.service import Service
         from selenium.webdriver.common.by import By
-        from selenium.webdriver.support.ui import WebDriverWait
-        from selenium.webdriver.support import expected_conditions as EC
     except ImportError:
         print_warn("Selenium not available for interactive video extraction.")
         return []
@@ -779,14 +777,14 @@ def _scrape_media_urls_dynamic(url: str, media_type: str) -> list[str]:
     return list(dict.fromkeys(media_urls))
 
 
-def download_media_from_url(
-    url:             str,
-    output_zip_path: str  = "media_download.zip",
-    media_type:      str  = "all",
-    use_selenium:    bool = False,
-    max_workers:     int  = 8,
-    min_size:        int  = MIN_FILE_SIZE_BYTES,
-    use_async:       bool = False,
+def download_media(
+    url:          str,
+    output_path:  str  = "media_download.zip",
+    media_type:   str  = "all",
+    use_selenium: bool = False,
+    max_workers:  int  = 8,
+    min_size:     int  = MIN_FILE_SIZE_BYTES,
+    use_async:    bool = False,
 ) -> None:
     """
     Orchestrates media scraping and parallel downloading from a target URL.
@@ -802,17 +800,17 @@ def download_media_from_url(
     Images and audio use the existing static / Selenium-scroll paths.
 
     Args:
-        url:             Target webpage URL.
-        output_zip_path: Filename for the output ZIP archive.
-        media_type:      'images', 'videos', 'audio', or 'all'.
-        use_selenium:    If True, forces Selenium for non-video scraping.
-        max_workers:     Parallel download threads (applies to image/audio).
-        min_size:        Minimum file size in bytes (default 5 KB).
-        use_async:       If True and ``aiohttp`` is installed, uses an asyncio
-                         downloader instead of ``ThreadPoolExecutor`` for the
-                         image/audio pipeline.
+        url:          Target webpage URL.
+        output_path:  Filename for the output ZIP archive.
+        media_type:   'images', 'videos', 'audio', or 'all'.
+        use_selenium: If True, forces Selenium for non-video scraping.
+        max_workers:  Parallel download threads (applies to image/audio).
+        min_size:     Minimum file size in bytes (default 5 KB).
+        use_async:    If True and ``aiohttp`` is installed, uses an asyncio
+                      downloader instead of ``ThreadPoolExecutor`` for the
+                      image/audio pipeline.
     """
-    output_zip_path = os.path.join(DIR_MEDIA, os.path.basename(output_zip_path))
+    output_zip_path = os.path.join(DIR_MEDIA, os.path.basename(output_path))
 
     headers = {
         "User-Agent": (
@@ -1013,21 +1011,3 @@ def download_media_from_url(
                     zipf.write(full_path, arcname=arcname)
 
         print_success(f"{success_count} file(s) archived → {output_zip_path}")
-
-
-def download_media(url: str, output_path: str, media_type: str = "all",
-                   use_selenium: bool = False, use_async: bool = False) -> None:
-    """
-    Public API wrapper for the media downloader pipeline.
-
-    Args:
-        url:          Target page URL.
-        output_path:  ZIP archive destination filename.
-        media_type:   'images', 'videos', 'audio', or 'all'.
-        use_selenium: Set True to use headless browser for images/audio scraping.
-                      Videos always attempt yt-dlp → Selenium → static.
-        use_async:    Set True to use aiohttp-based async downloader for
-                      images/audio (requires ``aiohttp``).
-    """
-    download_media_from_url(url, output_path, media_type,
-                            use_selenium=use_selenium, use_async=use_async)

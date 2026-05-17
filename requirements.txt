@@ -25,6 +25,7 @@ playwright                       # full-page screenshot engine
 
 # --- Search / scraping helpers ---
 google-api-python-client
+phonenumbers                     # libphonenumber port for PII phone parsing
 yt-dlp                           # video extraction across 1000+ sites
 
 # --- Document / file metadata ---
