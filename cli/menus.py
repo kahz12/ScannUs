@@ -24,7 +24,8 @@ from cli.ui import (
 from core import state
 from core.case_manager import guardar_caso, cargar_caso
 from core.config import env_config, openai_config
-from core.ai_agent import IAAgent, GeminiGenerator, OpenAIGenerator
+from core.ai_agent import (IAAgent, GeminiGenerator, OpenAIGenerator,
+                            AnthropicGenerator, OllamaGenerator)
 from search.reverse_image import do_reverse_image_search
 from analysis.tech_scanner import tech_scan
 from analysis.web_analyzer import (
@@ -32,6 +33,12 @@ from analysis.web_analyzer import (
     translate_and_analyze_with_ia, extract_entities_and_graph,
 )
 from analysis.advanced_osint import take_screenshot, check_wayback_machine, get_dynamic_text_from_url
+from analysis.domain_osint import (
+    domain_recon,
+    whois_lookup, dns_records, email_security,
+    tls_certificate, http_security_headers,
+    subdomains_crtsh, shodan_host, _normalize_target, _resolve_first_ip,
+)
 from search.smart_search import extract_information
 from search.username_enum import username_enum
 from utils.file_download import FileDownload
@@ -103,9 +110,11 @@ def select_ia_agent():
     choice = select_menu(
         "Select AI provider",
         [
-            ("Google Gemini",    "ge", "gemini-2.0-flash · free tier"),
-            ("OpenAI GPT-4o",    "op", "paid · high quality"),
-            ("Cancel",           "cancel", ""),
+            ("Google Gemini",     "ge",     "gemini-2.0-flash · free tier"),
+            ("OpenAI GPT-4o",     "op",     "paid · high quality"),
+            ("Anthropic Claude",  "claude", "claude-sonnet-4-6 · paid"),
+            ("Ollama (local)",    "ollama", "free · runs on your machine"),
+            ("Cancel",            "cancel", ""),
         ],
         default="ge",
     )
@@ -120,11 +129,39 @@ def select_ia_agent():
         print_success("Gemini selected.")
         return IAAgent(GeminiGenerator())
 
-    if not os.getenv("OPENAI_API_KEY"):
-        print_warn("OpenAI API key not configured — launching setup…")
-        openai_config()
-    print_success("OpenAI selected.")
-    return IAAgent(OpenAIGenerator(model_name="gpt-4o"))
+    if choice == "op":
+        if not os.getenv("OPENAI_API_KEY"):
+            print_warn("OpenAI API key not configured — launching setup…")
+            openai_config()
+        print_success("OpenAI selected.")
+        return IAAgent(OpenAIGenerator(model_name="gpt-4o"))
+
+    if choice == "claude":
+        if not os.getenv("ANTHROPIC_API_KEY"):
+            print_error("ANTHROPIC_API_KEY is missing from .env — run `python main.py -c`.")
+            return None
+        try:
+            gen = AnthropicGenerator()
+        except RuntimeError as e:
+            print_error(str(e))
+            return None
+        print_success(f"Claude selected ({gen.model_name}).")
+        return IAAgent(gen)
+
+    if choice == "ollama":
+        try:
+            gen = OllamaGenerator()
+        except Exception as e:
+            print_error(f"Ollama init failed: {e}")
+            return None
+        if not gen._ping():
+            print_error(f"Ollama daemon not reachable at {gen.host}. "
+                        f"Start it with `ollama serve` or set OLLAMA_HOST.")
+            return None
+        print_success(f"Ollama selected ({gen.model_name} @ {gen.host}).")
+        return IAAgent(gen)
+
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -482,13 +519,68 @@ _MAIN_MENU_CHOICES = [
     ("Direct Search",          "direct",   "Raw query or Google Dork"),
     ("AI Dork Generator",      "dork",     "LLM-assisted dork creation"),
     ("AI Query Planner",       "planner",  "ReAct-style multi-tool plan"),
-    ("Reverse Image Lookup",   "reverse",  "Yandex visual search"),
+    ("Reverse Image Lookup",   "reverse",  "TinEye · Bing · Yandex · manual URLs"),
     ("Web Technology Scan",    "tech",     "Tech stack fingerprinting"),
     ("Username Enumeration",   "user-enum","Sherlock · 400+ sites"),
+    ("Domain Recon",           "recon",    "WHOIS · DNS · TLS · headers · subdomains"),
     ("Load Saved Case",        "load",     "Resume a previous investigation"),
     ("Configure API Keys",     "config",   "Edit .env credentials"),
     ("Exit",                   "exit",     ""),
 ]
+
+
+_RECON_CHOICES = [
+    ("Full recon (all tools)",      "full",       "WHOIS+DNS+TLS+headers+subdomains"),
+    ("WHOIS",                       "whois",      "registrar · dates · contacts"),
+    ("DNS records",                 "dns",        "A · AAAA · MX · NS · TXT · SOA · CAA"),
+    ("Email security (SPF/DMARC)",  "email-sec",  "DKIM selector hints included"),
+    ("TLS certificate",             "tls",        "subject · SAN · validity · cipher"),
+    ("HTTP security headers",       "headers",    "HSTS · CSP · COOP · COEP · CORP"),
+    ("Subdomains (crt.sh)",         "subs",       "passive CT-log enumeration"),
+    ("Shodan host lookup",          "shodan",     "needs SHODAN_API_KEY"),
+    ("Back",                        "back",       ""),
+]
+
+
+def _run_domain_recon() -> None:
+    header_bar("Domain Recon", "Pick a primitive or run the full sweep", glyph="🛰")
+    target = ask("Target domain or URL")
+    if not target:
+        print_error("Target cannot be empty.")
+        return
+    domain, url = _normalize_target(target)
+    if not domain:
+        print_error("Could not parse a domain from the input.")
+        return
+
+    while True:
+        action = select_menu(
+            f"Recon tool for {domain}",
+            _RECON_CHOICES,
+            default="full",
+        )
+        if action in (None, "back"):
+            break
+        if action == "full":
+            domain_recon(domain)
+        elif action == "whois":
+            whois_lookup(domain)
+        elif action == "dns":
+            dns_records(domain)
+        elif action == "email-sec":
+            email_security(domain)
+        elif action == "tls":
+            tls_certificate(domain)
+        elif action == "headers":
+            http_security_headers(url or f"https://{domain}")
+        elif action == "subs":
+            subdomains_crtsh(domain)
+        elif action == "shodan":
+            ip = _resolve_first_ip(domain)
+            if ip:
+                shodan_host(ip)
+            else:
+                print_error("Could not resolve target to an IP.")
 
 
 def _run_guided_search() -> None:
@@ -605,6 +697,8 @@ def show_main_menu() -> None:
             _run_tech_scan()
         elif choice == "user-enum":
             _run_username_enum()
+        elif choice == "recon":
+            _run_domain_recon()
         elif choice == "load":
             header_bar("Load Case", "Restore a saved investigation")
             ia_agent = select_ia_agent()

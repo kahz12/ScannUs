@@ -224,6 +224,177 @@ class GeminiGenerator:
 
 
 # ---------------------------------------------------------------------------
+# Anthropic provider
+# ---------------------------------------------------------------------------
+
+class AnthropicGenerator:
+    """
+    Anthropic Claude wrapper via the ``anthropic`` Python SDK.
+
+    Defaults to the latest Sonnet (claude-sonnet-4-6) for a good
+    quality/cost balance. Override with the ``ANTHROPIC_MODEL`` env var or
+    by passing ``model_name`` directly.
+    """
+
+    DEFAULT_MODEL    = "claude-sonnet-4-6"
+    DEFAULT_MAX_TOK  = 4096
+
+    def __init__(self, model_name: str | None = None, timeout: float = 60.0,
+                 max_tokens: int = DEFAULT_MAX_TOK):
+        self.model_name = (model_name
+                           or os.getenv("ANTHROPIC_MODEL")
+                           or self.DEFAULT_MODEL)
+        self.timeout    = timeout
+        self.max_tokens = max_tokens
+        try:
+            from anthropic import Anthropic as _Anthropic
+        except ImportError as e:
+            raise RuntimeError(
+                "anthropic SDK not installed — install with: pip install anthropic"
+            ) from e
+        api_key = os.getenv("ANTHROPIC_API_KEY")
+        if not api_key:
+            raise RuntimeError(
+                "ANTHROPIC_API_KEY not set — run `python main.py -c` to configure."
+            )
+        self.client = _Anthropic(api_key=api_key, timeout=timeout)
+
+    def generate(self, prompt: str) -> str:
+        """Streams the response, rendering tokens live; returns full text."""
+        return "".join(self.stream(prompt, render=True))
+
+    def stream(self, prompt: str, render: bool = False) -> Iterator[str]:
+        """Yields text chunks from Claude's streaming API with retry/backoff."""
+        console.print(
+            f"  [{THEME['DIM']}]⟳ Generating with Claude ({self.model_name})…[/]"
+        )
+
+        def _open():
+            return self.client.messages.stream(
+                model=self.model_name,
+                max_tokens=self.max_tokens,
+                messages=[{"role": "user", "content": prompt}],
+            )
+
+        try:
+            ctx = _retry_with_backoff(_open, label=f"Claude {self.model_name}")
+        except Exception as e:
+            yield f"[Claude error: {e}]"
+            return
+
+        if render:
+            console.print()
+        try:
+            with ctx as stream:
+                for text in stream.text_stream:
+                    if not text:
+                        continue
+                    if render:
+                        print(text, end="", flush=True)
+                    yield text
+        except Exception as e:
+            yield f"[Claude stream error: {e}]"
+        if render:
+            print()
+
+
+# ---------------------------------------------------------------------------
+# Ollama provider — local inference, no API key required
+# ---------------------------------------------------------------------------
+
+class OllamaGenerator:
+    """
+    Ollama HTTP-API wrapper for local model inference.
+
+    No SDK / API key required — talks straight to ``http://localhost:11434``
+    (override with ``OLLAMA_HOST``). The model must already be pulled
+    (``ollama pull <model>``); the default is ``llama3`` but any installed
+    model works via ``OLLAMA_MODEL`` or the constructor.
+    """
+
+    DEFAULT_HOST  = "http://localhost:11434"
+    DEFAULT_MODEL = "llama3"
+
+    def __init__(self, model_name: str | None = None, host: str | None = None,
+                 timeout: float = 120.0):
+        self.model_name = (model_name
+                           or os.getenv("OLLAMA_MODEL")
+                           or self.DEFAULT_MODEL)
+        self.host = (host or os.getenv("OLLAMA_HOST")
+                     or self.DEFAULT_HOST).rstrip("/")
+        self.timeout = timeout
+        # Lazy import so the module load doesn't depend on `requests` here
+        import requests as _requests
+        self._requests = _requests
+
+    def _ping(self) -> bool:
+        """Quick health check; returns True if the daemon answers ``/api/tags``."""
+        try:
+            r = self._requests.get(f"{self.host}/api/tags", timeout=3)
+            return r.status_code == 200
+        except Exception:
+            return False
+
+    def generate(self, prompt: str) -> str:
+        """Streams the response, rendering tokens live; returns full text."""
+        return "".join(self.stream(prompt, render=True))
+
+    def stream(self, prompt: str, render: bool = False) -> Iterator[str]:
+        """
+        Streams from Ollama's ``/api/generate`` endpoint. Each line is a JSON
+        object with a ``response`` token; the final object has ``done: true``.
+        """
+        if not self._ping():
+            yield (f"[Ollama error: daemon not reachable at {self.host}. "
+                   f"Start it with `ollama serve` or set OLLAMA_HOST.]")
+            return
+
+        console.print(
+            f"  [{THEME['DIM']}]⟳ Generating with Ollama "
+            f"({self.model_name} @ {self.host})…[/]"
+        )
+
+        try:
+            response = _retry_with_backoff(
+                self._requests.post,
+                f"{self.host}/api/generate",
+                json={"model": self.model_name, "prompt": prompt, "stream": True},
+                timeout=self.timeout,
+                stream=True,
+                label=f"Ollama {self.model_name}",
+            )
+            response.raise_for_status()
+        except Exception as e:
+            yield f"[Ollama error: {e}]"
+            return
+
+        if render:
+            console.print()
+        try:
+            for raw_line in response.iter_lines(decode_unicode=True):
+                if not raw_line:
+                    continue
+                try:
+                    payload = json.loads(raw_line)
+                except json.JSONDecodeError:
+                    continue
+                if "error" in payload:
+                    yield f"[Ollama error: {payload['error']}]"
+                    break
+                text = payload.get("response", "")
+                if text:
+                    if render:
+                        print(text, end="", flush=True)
+                    yield text
+                if payload.get("done"):
+                    break
+        except Exception as e:
+            yield f"[Ollama stream error: {e}]"
+        if render:
+            print()
+
+
+# ---------------------------------------------------------------------------
 # Query Planner — dataclasses, tool catalog, dispatchers
 # ---------------------------------------------------------------------------
 
@@ -283,16 +454,20 @@ TOOL_CATALOG: dict[str, dict] = {
         },
     },
     "deep_search": {
-        "desc": "Search, then crawl each URL and extract PII (emails, phones, IBANs, "
-                "credit cards, DNIs, CUITs, RFCs).",
+        "desc": "Search, then crawl each URL and extract PII + leaked secrets "
+                "(emails, phones, IBANs, credit cards, DNIs, CUITs, RFCs, SSNs, "
+                "CPF, SIN, AWS/GitHub/Slack/Stripe/Google API keys, JWTs, "
+                "private keys, BTC/ETH wallets, public IPs).",
         "args": {
             "query":  "str (required)",
             "engine": "str (default: duckduckgo)",
         },
     },
     "extract_pii": {
-        "desc": "Fetch a single URL and extract identifiers (emails, phones, IBANs, "
-                "credit cards, DNIs, CUITs, RFCs).",
+        "desc": "Fetch a single URL and extract identifiers + leaked secrets "
+                "(emails, phones, IBANs, credit cards, DNIs, CUITs, RFCs, SSNs, "
+                "CPF, SIN, AWS/GitHub/Slack/Stripe/Google API keys, JWTs, "
+                "private keys, BTC/ETH wallets, public IPs).",
         "args": {"url": "str (required)"},
     },
     "tech_scan": {
@@ -313,12 +488,72 @@ TOOL_CATALOG: dict[str, dict] = {
         "args": {"url": "str (required)"},
     },
     "wayback": {
-        "desc": "Look up the URL's history on the Wayback Machine.",
+        "desc": "Look up the URL's history on the Wayback Machine (CDX timeline).",
         "args": {"url": "str (required)"},
+    },
+    "wayback_fetch": {
+        "desc": "Fetch the raw archived content of a URL at a specific Wayback "
+                "snapshot. Returns the visible text along with status/MIME/size.",
+        "args": {
+            "url":       "str (required)",
+            "timestamp": "str — CDX timestamp or 'latest'|'earliest'|YYYY|YYYY-MM",
+        },
+    },
+    "wayback_extract": {
+        "desc": "Fetch a Wayback snapshot and run the full PII/secret extractor "
+                "on it. Surfaces identifiers/credentials that may have been "
+                "scrubbed from the live site.",
+        "args": {
+            "url":       "str (required)",
+            "timestamp": "str — CDX timestamp or 'latest'|'earliest'|YYYY|YYYY-MM",
+        },
+    },
+    "wayback_diff": {
+        "desc": "Diff two Wayback snapshots of a URL by their visible text. "
+                "Returns added/removed line counts plus a unified diff.",
+        "args": {
+            "url":  "str (required)",
+            "ts_a": "str (required) — CDX timestamp or fuzzy spec",
+            "ts_b": "str (required) — CDX timestamp or fuzzy spec",
+        },
     },
     "summarize_url": {
         "desc": "Fetch a URL's main content and ask the LLM to summarise it.",
         "args": {"url": "str (required)"},
+    },
+    "domain_recon": {
+        "desc": "Full domain recon: WHOIS + DNS + email auth + TLS + HTTP "
+                "security headers + subdomains (crt.sh) [+ Shodan if key set].",
+        "args": {"target": "str (required) — domain or URL"},
+    },
+    "whois": {
+        "desc": "WHOIS lookup: registrar, creation/expiry dates, nameservers, contacts.",
+        "args": {"domain": "str (required)"},
+    },
+    "dns_records": {
+        "desc": "DNS records (A, AAAA, MX, NS, TXT, SOA, CNAME, CAA).",
+        "args": {"domain": "str (required)"},
+    },
+    "tls_certificate": {
+        "desc": "Inspect the TLS certificate of a host: subject, SANs, validity.",
+        "args": {"host": "str (required)", "port": "int (default 443)"},
+    },
+    "http_security_headers": {
+        "desc": "Report which HTTP hardening headers are present/missing on a URL.",
+        "args": {"url": "str (required)"},
+    },
+    "subdomains": {
+        "desc": "Passive subdomain enumeration via Certificate Transparency (crt.sh).",
+        "args": {"domain": "str (required)"},
+    },
+    "reverse_image": {
+        "desc": "Multi-engine reverse image search (TinEye API + Bing Visual "
+                "Search API + Yandex scraping + manual lookup URLs). Every "
+                "engine is independent; the manual-URL tier always returns.",
+        "args": {
+            "url":     "str (required) — public URL of the target image",
+            "engines": "list[str] — optional whitelist: tineye | bing | yandex | manual",
+        },
     },
 }
 
@@ -453,6 +688,175 @@ def _dispatch_wayback(args: dict, ia_agent) -> dict:
     return {"status": "ok", "summary": f"wayback lookup completed for {url}", "data": {}}
 
 
+def _dispatch_domain_recon(args: dict, ia_agent) -> dict:
+    from analysis.domain_osint import domain_recon
+    target = (args.get("target") or args.get("domain") or args.get("url") or "").strip()
+    if not target:
+        return {"status": "error", "summary": "domain_recon: missing 'target'"}
+    try:
+        report = domain_recon(target)
+    except Exception as e:
+        return {"status": "error", "summary": f"domain_recon failed: {e}"}
+    subs = len(report.get("subdomains") or [])
+    hdr  = (report.get("headers") or {}).get("score", "?")
+    return {
+        "status":  "ok",
+        "summary": f"recon complete · {subs} subdomains · headers {hdr}",
+        "data":    report,
+    }
+
+
+def _dispatch_whois(args: dict, ia_agent) -> dict:
+    from analysis.domain_osint import whois_lookup
+    domain = (args.get("domain") or args.get("target") or "").strip()
+    if not domain:
+        return {"status": "error", "summary": "whois: missing 'domain'"}
+    info = whois_lookup(domain)
+    if not info:
+        return {"status": "error", "summary": f"whois: no data for {domain}"}
+    return {"status": "ok",
+            "summary": f"whois {domain}: registrar={info.get('registrar') or '?'}, "
+                       f"expires={info.get('expires') or '?'}",
+            "data":    info}
+
+
+def _dispatch_dns_records(args: dict, ia_agent) -> dict:
+    from analysis.domain_osint import dns_records
+    domain = (args.get("domain") or args.get("target") or "").strip()
+    if not domain:
+        return {"status": "error", "summary": "dns_records: missing 'domain'"}
+    rec = dns_records(domain)
+    if not rec:
+        return {"status": "error", "summary": f"dns: no records for {domain}"}
+    summary = "dns " + ", ".join(f"{k}×{len(v)}" for k, v in rec.items())
+    return {"status": "ok", "summary": summary, "data": rec}
+
+
+def _dispatch_tls_certificate(args: dict, ia_agent) -> dict:
+    from analysis.domain_osint import tls_certificate
+    host = (args.get("host") or args.get("domain") or "").strip()
+    if not host:
+        return {"status": "error", "summary": "tls_certificate: missing 'host'"}
+    try:
+        port = int(args.get("port") or 443)
+    except (TypeError, ValueError):
+        port = 443
+    cert = tls_certificate(host, port=port)
+    if not cert:
+        return {"status": "error", "summary": f"tls: handshake failed for {host}:{port}"}
+    return {"status":  "ok",
+            "summary": f"tls {host}:{port} · expires in "
+                       f"{cert.get('days_left')} days · {cert.get('tls_version')}",
+            "data":    cert}
+
+
+def _dispatch_http_security_headers(args: dict, ia_agent) -> dict:
+    from analysis.domain_osint import http_security_headers
+    url = (args.get("url") or args.get("target") or "").strip()
+    if not url:
+        return {"status": "error", "summary": "http_security_headers: missing 'url'"}
+    data = http_security_headers(url)
+    if not data:
+        return {"status": "error", "summary": f"headers: request failed for {url}"}
+    return {"status":  "ok",
+            "summary": f"headers {data.get('score')} present",
+            "data":    data}
+
+
+def _dispatch_subdomains(args: dict, ia_agent) -> dict:
+    from analysis.domain_osint import subdomains_crtsh
+    domain = (args.get("domain") or args.get("target") or "").strip()
+    if not domain:
+        return {"status": "error", "summary": "subdomains: missing 'domain'"}
+    subs = subdomains_crtsh(domain)
+    return {"status":  "ok",
+            "summary": f"{len(subs)} subdomain(s) from crt.sh",
+            "data":    {"subdomains": subs}}
+
+
+def _dispatch_wayback_fetch(args: dict, ia_agent) -> dict:
+    from analysis.advanced_osint import wayback_fetch_snapshot
+    url = (args.get("url") or "").strip()
+    if not url:
+        return {"status": "error", "summary": "wayback_fetch: missing 'url'"}
+    ts = (args.get("timestamp") or "latest").strip()
+    snap = wayback_fetch_snapshot(url, ts)
+    if not snap:
+        return {"status": "error", "summary": f"wayback_fetch: no snapshot for {url}"}
+    return {
+        "status":  "ok",
+        "summary": f"snapshot {snap['date']} · {snap['mime']} · {snap['size']} bytes",
+        "data":    {
+            "timestamp":   snap["timestamp"],
+            "date":        snap["date"],
+            "archive_url": snap["archive_url"],
+            "mime":        snap["mime"],
+            "size":        snap["size"],
+            "text":        _truncate(snap.get("text") or "", 4000),
+        },
+    }
+
+
+def _dispatch_wayback_extract(args: dict, ia_agent) -> dict:
+    from analysis.advanced_osint import wayback_extract_pii
+    url = (args.get("url") or "").strip()
+    if not url:
+        return {"status": "error", "summary": "wayback_extract: missing 'url'"}
+    ts = (args.get("timestamp") or "latest").strip()
+    result = wayback_extract_pii(url, ts)
+    if not result:
+        return {"status": "error",
+                "summary": f"wayback_extract: no content for {url} @ {ts}"}
+    counts = result.get("counts") or {}
+    summary = ("extracted from " + result["date"] + ": " +
+               (", ".join(f"{k}×{v}" for k, v in counts.items()) or "no identifiers"))
+    return {"status": "ok", "summary": summary, "data": result}
+
+
+def _dispatch_wayback_diff(args: dict, ia_agent) -> dict:
+    from analysis.advanced_osint import wayback_diff
+    url = (args.get("url") or "").strip()
+    ts_a = (args.get("ts_a") or "").strip()
+    ts_b = (args.get("ts_b") or "").strip()
+    if not (url and ts_a and ts_b):
+        return {"status": "error",
+                "summary": "wayback_diff: requires 'url', 'ts_a', 'ts_b'"}
+    result = wayback_diff(url, ts_a, ts_b)
+    if not result:
+        return {"status": "error",
+                "summary": "wayback_diff: could not fetch one or both snapshots"}
+    return {
+        "status":  "ok",
+        "summary": f"{result['date_a']} -> {result['date_b']}: "
+                   f"+{result['added_count']} -{result['removed_count']}"
+                   + (" (identical)" if result["identical"] else ""),
+        "data":    result,
+    }
+
+
+def _dispatch_reverse_image(args: dict, ia_agent) -> dict:
+    from search.reverse_image_engines import reverse_image_aggregate
+    url = (args.get("url") or args.get("image_url") or "").strip()
+    if not url:
+        return {"status": "error", "summary": "reverse_image: missing 'url'"}
+    engines = args.get("engines")
+    if isinstance(engines, str):
+        engines = [e.strip() for e in engines.split(",") if e.strip()]
+    try:
+        results = reverse_image_aggregate(url, engines=engines)
+    except Exception as e:
+        return {"status": "error", "summary": f"reverse_image failed: {e}"}
+    by_engine: dict[str, int] = {}
+    for r in results:
+        by_engine[r.get("engine", "?")] = by_engine.get(r.get("engine", "?"), 0) + 1
+    breakdown = ", ".join(f"{k}×{v}" for k, v in by_engine.items()) or "no results"
+    return {
+        "status":  "ok",
+        "summary": f"reverse_image: {len(results)} entries ({breakdown})",
+        "data":    {"results": results, "by_engine": by_engine},
+    }
+
+
 def _dispatch_summarize_url(args: dict, ia_agent) -> dict:
     from analysis.web_analyzer import get_text_from_url, summarize_text_with_ia
     url = (args.get("url") or "").strip()
@@ -471,14 +875,24 @@ def _dispatch_summarize_url(args: dict, ia_agent) -> dict:
 
 
 TOOL_DISPATCH: dict[str, Callable[..., dict]] = {
-    "search":         _dispatch_search,
-    "deep_search":    _dispatch_deep_search,
-    "extract_pii":    _dispatch_extract_pii,
-    "tech_scan":      _dispatch_tech_scan,
-    "username_enum":  _dispatch_username_enum,
-    "screenshot":     _dispatch_screenshot,
-    "wayback":        _dispatch_wayback,
-    "summarize_url":  _dispatch_summarize_url,
+    "search":                _dispatch_search,
+    "deep_search":           _dispatch_deep_search,
+    "extract_pii":           _dispatch_extract_pii,
+    "tech_scan":             _dispatch_tech_scan,
+    "username_enum":         _dispatch_username_enum,
+    "screenshot":            _dispatch_screenshot,
+    "wayback":               _dispatch_wayback,
+    "wayback_fetch":         _dispatch_wayback_fetch,
+    "wayback_extract":       _dispatch_wayback_extract,
+    "wayback_diff":          _dispatch_wayback_diff,
+    "summarize_url":         _dispatch_summarize_url,
+    "domain_recon":          _dispatch_domain_recon,
+    "whois":                 _dispatch_whois,
+    "dns_records":           _dispatch_dns_records,
+    "tls_certificate":       _dispatch_tls_certificate,
+    "http_security_headers": _dispatch_http_security_headers,
+    "subdomains":            _dispatch_subdomains,
+    "reverse_image":         _dispatch_reverse_image,
 }
 
 

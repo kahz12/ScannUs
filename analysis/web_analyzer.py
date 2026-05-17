@@ -54,25 +54,8 @@ def _soup_fallback(html: str) -> str:
     return "\n".join(line for line in lines if line)
 
 
-def get_text_from_url(url: str) -> str | None:
-    """
-    Downloads a webpage and returns its main readable text.
-
-    Extraction strategy (first available wins):
-      1. **trafilatura** — best-in-class boilerplate removal
-      2. **readability-lxml** — Arc90 port, extracts the article body
-      3. **BeautifulSoup** — strips non-content tags as a last resort
-
-    The response is validated:
-      - raises non-2xx via ``raise_for_status``
-      - rejects non-HTML Content-Type (e.g. PDFs, images, JSON)
-
-    Args:
-        url: Target web address.
-
-    Returns:
-        Clean article text, or None if extraction fails.
-    """
+def _fetch_and_clean(url: str) -> str | None:
+    """Uncached implementation of :func:`get_text_from_url`."""
     try:
         response = requests.get(url, headers=_HEADERS, timeout=15, allow_redirects=True)
         response.raise_for_status()
@@ -119,6 +102,19 @@ def get_text_from_url(url: str) -> str | None:
     except Exception as e:
         print_error(f"Unexpected error processing {url}: {e}")
         return None
+
+
+def get_text_from_url(url: str) -> str | None:
+    """
+    Cached wrapper for the URL text extractor.
+
+    On a cache hit, returns the previously-extracted text without hitting
+    the network. The first call for a given URL pays the full extraction
+    cost (trafilatura -> readability -> BeautifulSoup fallback chain) and
+    persists the result under the ``http_text`` namespace (default TTL: 6h).
+    """
+    from core.cache import cached_call
+    return cached_call("http_text", [url], lambda: _fetch_and_clean(url))
 
 
 # ---------------------------------------------------------------------------

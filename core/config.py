@@ -12,6 +12,7 @@ DIR_MEDIA       = os.path.join(OUTPUT_DIR, "media")
 DIR_REPORTS     = os.path.join(OUTPUT_DIR, "reports")
 DIR_SCREENSHOTS = os.path.join(OUTPUT_DIR, "screenshots")
 DIR_GRAPHS      = os.path.join(OUTPUT_DIR, "graphs")
+DIR_CACHE       = os.path.join(OUTPUT_DIR, "cache")
 
 
 def init_directories():
@@ -20,7 +21,8 @@ def init_directories():
     Silently succeeds if dirs exist; reports any permission errors.
     """
     for directory in [OUTPUT_DIR, DIR_CASES, DIR_DOWNLOADS,
-                      DIR_MEDIA, DIR_REPORTS, DIR_SCREENSHOTS, DIR_GRAPHS]:
+                      DIR_MEDIA, DIR_REPORTS, DIR_SCREENSHOTS, DIR_GRAPHS,
+                      DIR_CACHE]:
         if not os.path.exists(directory):
             try:
                 os.makedirs(directory)
@@ -73,6 +75,28 @@ def env_config():
     os.environ["BRAVE_API_KEY"] = api_key_brave
     if api_key_brave:
         print_success("Brave API Key saved.")
+
+    print_section("Anthropic Claude")
+    api_key_anthropic = _prompt("Anthropic API KEY",
+                                "From console.anthropic.com — optional, for Claude")
+    set_key(".env", "ANTHROPIC_API_KEY", api_key_anthropic)
+    os.environ["ANTHROPIC_API_KEY"] = api_key_anthropic
+    if api_key_anthropic:
+        print_success("Anthropic API Key saved.")
+
+    print_section("Ollama (local LLM)")
+    ollama_host = _prompt("Ollama host URL",
+                          "Default: http://localhost:11434 — leave blank to keep default")
+    ollama_model = _prompt("Default Ollama model",
+                           "Default: llama3 — must already be pulled with `ollama pull`")
+    if ollama_host:
+        set_key(".env", "OLLAMA_HOST", ollama_host)
+        os.environ["OLLAMA_HOST"] = ollama_host
+        print_success("Ollama host saved.")
+    if ollama_model:
+        set_key(".env", "OLLAMA_MODEL", ollama_model)
+        os.environ["OLLAMA_MODEL"] = ollama_model
+        print_success("Ollama default model saved.")
 
 
 def openai_config():
