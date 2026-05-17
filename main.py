@@ -53,9 +53,31 @@ def main():
         console.print("Please run the script with the -c flag or use the interactive menu to configure it.")
         sys.exit(1)
 
+    # Route: Cache management
+    if getattr(args, "cache_stats", False):
+        from core.cache import get_cache
+        stats = get_cache().stats()
+        console.print("  [bold]Cache stats[/bold]")
+        for k, v in stats.items():
+            console.print(f"    {k}: {v}")
+        sys.exit(0)
+    if getattr(args, "cache_clear", None):
+        from core.cache import get_cache
+        ns = None if args.cache_clear == "__ALL__" else args.cache_clear
+        n = get_cache().clear(ns)
+        label = "everything" if ns is None else f"namespace '{ns}'"
+        console.print(f"  Cleared {label}: {n} row(s) removed.")
+        sys.exit(0)
+
     # Route: Reverse Image Search payload processing
     if args.reverse:
         do_reverse_image_search(args.reverse)
+        sys.exit(0)
+
+    # Route: Domain / network OSINT recon
+    if getattr(args, "recon", None):
+        from analysis.domain_osint import domain_recon
+        domain_recon(args.recon)
         sys.exit(0)
 
     # Route: Username enumeration via Sherlock / Maigret (400+ sites)

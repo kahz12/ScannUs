@@ -86,6 +86,8 @@ def show_custom_help(parser: argparse.ArgumentParser) -> None:
          'python main.py -q "target@corp.com" --deep --excel results.xlsx'),
         ("Load saved case",
          'python main.py --load-case'),
+        ("Domain recon (WHOIS+DNS+TLS+headers+subs)",
+         'python main.py --recon example.com'),
     ]
 
     panels = []
@@ -151,7 +153,8 @@ def get_parser() -> argparse.ArgumentParser:
     search.add_argument("--deep",           action="store_true",
                         help="Recursively analyse each result URL for PII.")
     search.add_argument("-rev", "--reverse", metavar="URL",
-                        help="Image URL to submit for Yandex reverse image search.")
+                        help="Multi-engine reverse image search "
+                             "(TinEye → Bing → Yandex → manual URLs).")
     search.add_argument("--username-enum", metavar="HANDLE",
                         help="Enumerate accounts for a username via Sherlock/Maigret (400+ sites).")
     search.add_argument("--enum-backend", type=str, default="auto", metavar="ENGINE",
@@ -174,6 +177,23 @@ def get_parser() -> argparse.ArgumentParser:
     media = parser.add_argument_group("Media Processing")
     media.add_argument("--media-scrape", type=str, metavar="URL",
                        help="Scrape and archive all media assets from a remote URL.")
+
+    # ── Domain / Network OSINT ────────────────────────────────────────────
+    domain = parser.add_argument_group("Domain & Network OSINT")
+    domain.add_argument("--recon", type=str, metavar="DOMAIN|URL",
+                        help="Full domain recon: WHOIS + DNS + TLS + headers + "
+                             "subdomains (crt.sh) + optional Shodan.")
+
+    # ── Cache management ──────────────────────────────────────────────────
+    cache = parser.add_argument_group("Cache Management")
+    cache.add_argument("--cache-stats", action="store_true",
+                       help="Print persistent SQLite cache statistics and exit.")
+    cache.add_argument("--cache-clear", type=str, nargs="?", const="__ALL__",
+                       metavar="NAMESPACE",
+                       help="Clear the persistent cache. Without an argument "
+                            "wipes everything; with one (e.g. 'search', 'whois', "
+                            "'dns', 'http_text', 'wayback') wipes just that "
+                            "namespace.")
 
     # ── Export ────────────────────────────────────────────────────────────
     export = parser.add_argument_group("Export Options")

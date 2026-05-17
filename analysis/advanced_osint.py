@@ -295,3 +295,255 @@ def check_wayback_machine(url: str, limit: int = 20,
         console.print(f"  [{THEME['DIM']}](+{len(snapshots) - len(preview)} older snapshots not shown)[/]")
 
     return snapshots_sorted
+
+
+# ---------------------------------------------------------------------------
+# Wayback Machine — content fetch, PII extraction, snapshot diff
+# ---------------------------------------------------------------------------
+
+import difflib as _difflib
+import hashlib as _hashlib
+
+
+def wayback_resolve_timestamp(url: str, when: str = "latest") -> str | None:
+    """
+    Resolve a fuzzy time spec to a concrete CDX timestamp for *url*.
+
+    Args:
+        when: ``"latest"`` (default), ``"earliest"``, a 4-digit year
+              (e.g. ``"2018"``), or ``"YYYY-MM"``. Anything else is treated
+              as a literal CDX timestamp and returned unchanged.
+
+    Returns:
+        14-digit CDX timestamp (``YYYYMMDDhhmmss``), or ``None`` if no
+        snapshot matches.
+    """
+    when = (when or "latest").strip()
+    if when.isdigit() and len(when) >= 8:
+        return when
+
+    params: dict[str, str] = {
+        "url":    url,
+        "output": "json",
+        "fl":     "timestamp",
+        "filter": "statuscode:200",
+        "limit":  "1",
+    }
+    if when == "latest":
+        params["limit"] = "-1"
+    elif when == "earliest":
+        params["limit"] = "1"
+    elif len(when) == 4 and when.isdigit():
+        params["from"] = when
+        params["to"]   = when
+        params["limit"] = "-1"
+    elif len(when) == 7 and when[4] == "-" and when[:4].isdigit() and when[5:].isdigit():
+        params["from"] = when[:4] + when[5:]
+        params["to"]   = when[:4] + when[5:]
+        params["limit"] = "-1"
+    else:
+        return None
+
+    try:
+        r = requests.get(_CDX_ENDPOINT, params=params, timeout=15)
+        r.raise_for_status()
+        data = r.json()
+    except Exception:
+        return None
+    if not data or len(data) < 2:
+        return None
+    return data[1][0]
+
+
+def _wayback_raw_url(timestamp: str, url: str) -> str:
+    """Build the ``id_`` (raw, un-rewritten) snapshot URL for *url* at *timestamp*."""
+    return f"https://web.archive.org/web/{timestamp}id_/{url}"
+
+
+def _wayback_fetch_uncached(url: str, ts: str) -> dict | None:
+    """Uncached Wayback snapshot fetch + HTML-to-text extraction."""
+    archive_url = _wayback_raw_url(ts, url)
+    try:
+        r = requests.get(archive_url, timeout=30,
+                         headers={"User-Agent": "ScannUs/1.0 (OSINT)"})
+        r.raise_for_status()
+    except Exception as e:
+        print_error(f"Wayback fetch failed: {e}")
+        return None
+
+    mime = r.headers.get("Content-Type", "").split(";")[0].strip().lower()
+    text = ""
+    if mime.startswith("text/html") or mime.endswith("+xml") or mime == "text/xml":
+        try:
+            soup = BeautifulSoup(r.content, "html.parser")
+            for tag in soup(("script", "style", "noscript")):
+                tag.decompose()
+            text = soup.get_text(separator="\n", strip=True)
+        except Exception:
+            text = ""
+    elif mime.startswith("text/"):
+        text = r.text
+
+    # Only the JSON-safe view is cached — raw bytes are dropped on cache hits
+    return {
+        "timestamp":   ts,
+        "date":        _format_cdx_timestamp(ts),
+        "archive_url": archive_url,
+        "status":      r.status_code,
+        "mime":        mime,
+        "size":        len(r.content),
+        "text":        text,
+    }
+
+
+def wayback_fetch_snapshot(url: str, timestamp: str | None = None) -> dict | None:
+    """
+    Fetch the raw archived content of *url* at *timestamp* with persistent
+    SQLite caching (TTL: 30d, since Wayback snapshots are immutable).
+
+    Uses the ``id_`` flag so the response is the original bytes Archive.org
+    captured — no Wayback toolbar injection, no link rewriting.
+
+    Args:
+        url:       The original URL.
+        timestamp: 14-digit CDX timestamp, or a fuzzy spec accepted by
+                   :func:`wayback_resolve_timestamp` (``"latest"``,
+                   ``"earliest"``, a year, or ``YYYY-MM``).
+
+    Returns:
+        ``{"timestamp", "archive_url", "status", "mime", "size", "text"}``
+        on success, ``None`` on failure. ``text`` is the HTML-stripped
+        text (empty for non-HTML payloads). Raw response bytes are not
+        retained across cache hits to keep the DB compact.
+    """
+    from core.cache import cached_call
+
+    ts = wayback_resolve_timestamp(url, timestamp or "latest")
+    if not ts:
+        print_warn(f"No Wayback snapshot found for {url}")
+        return None
+
+    snap = cached_call("wayback", [url, ts],
+                       lambda: _wayback_fetch_uncached(url, ts))
+    if snap:
+        print_info(f"Fetched snapshot {snap['date']} · "
+                   f"{snap['mime']} · {snap['size']} bytes")
+    return snap
+
+
+def wayback_extract_pii(url: str, timestamp: str | None = None) -> dict | None:
+    """
+    Fetch a Wayback snapshot of *url* and run the full PII/secret extractor on it.
+
+    Killer OSINT use case: surfaces identifiers, leaked credentials, and other
+    sensitive strings that may have been scrubbed from the live site.
+
+    Returns:
+        ``{"timestamp", "date", "archive_url", "by_category", "counts"}`` or
+        ``None`` if the snapshot cannot be retrieved or yields no extractable text.
+    """
+    from search.smart_search import extract_information
+
+    snap = wayback_fetch_snapshot(url, timestamp)
+    if not snap or not snap.get("text"):
+        return None
+    data = extract_information(snap["text"])
+    counts = {k: (len(v) if not isinstance(v, dict) else len(v))
+              for k, v in data.items()}
+
+    if data:
+        tbl = make_table(
+            f"Wayback PII  [{THEME['DIM']}]{snap['date']}[/]",
+            ("Category", THEME["PRIMARY"]),
+            ("Count",    THEME["ACCENT"]),
+            ("Sample",   "white"),
+            show_lines=True,
+        )
+        for cat, vals in data.items():
+            if isinstance(vals, dict):
+                sample = ", ".join(f"{k}×{len(v)}" for k, v in list(vals.items())[:3])
+            else:
+                sample = ", ".join(map(str, vals[:3]))
+            tbl.add_row(cat.replace("_", " "), str(counts[cat]), sample)
+        console.print(tbl)
+    else:
+        print_warn("No identifiers extracted from archived content.")
+
+    return {
+        "timestamp":   snap["timestamp"],
+        "date":        snap["date"],
+        "archive_url": snap["archive_url"],
+        "by_category": data,
+        "counts":      counts,
+    }
+
+
+def _stable_lines(text: str) -> list[str]:
+    """Tokenise text to non-empty, stripped lines — stable input for difflib."""
+    return [ln.strip() for ln in (text or "").splitlines() if ln.strip()]
+
+
+def wayback_diff(url: str, ts_a: str, ts_b: str,
+                 context: int = 2, max_lines: int = 80) -> dict | None:
+    """
+    Diff two Wayback snapshots of *url* by their visible text content.
+
+    Args:
+        ts_a, ts_b: Either 14-digit CDX timestamps or fuzzy specs
+                    (``"latest"``, ``"earliest"``, year, or YYYY-MM).
+        context:    Unified-diff context lines.
+        max_lines:  Cap on the rendered diff (full counts always reported).
+
+    Returns:
+        ``{"ts_a", "ts_b", "added_count", "removed_count", "added", "removed",
+        "diff"}`` or ``None`` on failure.
+    """
+    snap_a = wayback_fetch_snapshot(url, ts_a)
+    snap_b = wayback_fetch_snapshot(url, ts_b)
+    if not (snap_a and snap_b):
+        return None
+    if not (snap_a.get("text") and snap_b.get("text")):
+        print_warn("One or both snapshots have no extractable text.")
+        return None
+
+    lines_a = _stable_lines(snap_a["text"])
+    lines_b = _stable_lines(snap_b["text"])
+    diff_lines = list(_difflib.unified_diff(
+        lines_a, lines_b,
+        fromfile=f"@{snap_a['date']}",
+        tofile=f"@{snap_b['date']}",
+        n=context, lineterm="",
+    ))
+
+    added   = [ln[1:] for ln in diff_lines
+               if ln.startswith("+") and not ln.startswith("+++")]
+    removed = [ln[1:] for ln in diff_lines
+               if ln.startswith("-") and not ln.startswith("---")]
+
+    preview = "\n".join(diff_lines[:max_lines])
+
+    h_a = _hashlib.sha256(snap_a["text"].encode("utf-8", errors="ignore")).hexdigest()[:12]
+    h_b = _hashlib.sha256(snap_b["text"].encode("utf-8", errors="ignore")).hexdigest()[:12]
+
+    print_info(f"Diff {snap_a['date']} (sha {h_a}) -> {snap_b['date']} (sha {h_b}): "
+               f"+{len(added)} -{len(removed)}")
+    if h_a == h_b:
+        print_warn("Snapshots are content-identical.")
+    elif preview:
+        console.print(preview)
+    if len(diff_lines) > max_lines:
+        console.print(f"  [{THEME['DIM']}](+{len(diff_lines) - max_lines} "
+                      f"more diff lines not shown)[/]")
+
+    return {
+        "ts_a":          snap_a["timestamp"],
+        "ts_b":          snap_b["timestamp"],
+        "date_a":        snap_a["date"],
+        "date_b":        snap_b["date"],
+        "added_count":   len(added),
+        "removed_count": len(removed),
+        "added":         added,
+        "removed":       removed,
+        "diff":          diff_lines,
+        "identical":     h_a == h_b,
+    }

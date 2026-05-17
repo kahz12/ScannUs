@@ -357,6 +357,275 @@ def _extract_rfc(text: str) -> set[str]:
 
 
 # ---------------------------------------------------------------------------
+# Leaked secrets — high-confidence token signatures
+# ---------------------------------------------------------------------------
+#
+# Each pattern matches a token format whose prefix and length make false
+# positives unlikely. We intentionally do NOT chase generic 32/40-char hex
+# blobs — those flag every commit hash and content-addressed asset in the
+# wild. The dict is keyed by output category; values are compiled regexes.
+
+import base64 as _b64
+import ipaddress as _ipaddr
+import json as _json
+
+_SECRET_PATTERNS: dict[str, "re.Pattern[str]"] = {
+    # AWS — IAM long-lived (AKIA) and STS short-lived (ASIA) access keys
+    "aws_access_keys": re.compile(r"\b((?:AKIA|ASIA)[0-9A-Z]{16})\b"),
+    # GitHub: classic PATs (ghp_/gho_/ghu_/ghs_/ghr_) and fine-grained (github_pat_…)
+    "github_tokens": re.compile(
+        r"\b(gh[pousr]_[A-Za-z0-9]{36,}|github_pat_[A-Za-z0-9_]{82})\b"
+    ),
+    # GitLab personal access token (modern 16+ prefix)
+    "gitlab_tokens": re.compile(r"\b(glpat-[A-Za-z0-9_\-]{20,})\b"),
+    # Slack — bot/user/app/refresh/legacy tokens
+    "slack_tokens": re.compile(r"\b(xox[abprs]-[A-Za-z0-9\-]{10,})\b"),
+    # Stripe — live and test secret/restricted/publishable keys
+    "stripe_keys": re.compile(r"\b((?:sk|rk|pk)_(?:live|test)_[A-Za-z0-9]{16,})\b"),
+    # Google API key — always 39 chars, "AIza" prefix
+    "google_api_keys": re.compile(r"\b(AIza[0-9A-Za-z_\-]{35})\b"),
+    # Discord bot token — three base64-ish parts joined by dots
+    "discord_tokens": re.compile(
+        r"\b([MN][A-Za-z0-9_\-]{23}\.[A-Za-z0-9_\-]{6}\.[A-Za-z0-9_\-]{27,})\b"
+    ),
+    # Telegram bot token — bot_id:35-char secret
+    "telegram_tokens": re.compile(r"\b(\d{8,10}:[A-Za-z0-9_\-]{35})\b"),
+    # PEM-encoded private key (RSA, EC, DSA, OpenSSH, PKCS#8)
+    "private_keys": re.compile(
+        r"-----BEGIN (?:RSA |EC |DSA |OPENSSH |ENCRYPTED |)PRIVATE KEY-----"
+    ),
+}
+
+# JWTs are validated structurally because the regex alone fires on any
+# string starting with "eyJ" — we additionally require the header to decode
+# to JSON containing an "alg" field.
+_JWT_RE = re.compile(r"\b(eyJ[A-Za-z0-9_\-]{8,}\.[A-Za-z0-9_\-]{8,}\.[A-Za-z0-9_\-]{8,})\b")
+
+
+def _looks_like_jwt(token: str) -> bool:
+    """Return True if the token's header decodes to a JSON object with an ``alg`` field."""
+    head = token.split(".", 1)[0]
+    # base64url padding may be missing
+    head_padded = head + "=" * (-len(head) % 4)
+    try:
+        decoded = _b64.urlsafe_b64decode(head_padded.encode("ascii"))
+        payload = _json.loads(decoded)
+    except Exception:
+        return False
+    return isinstance(payload, dict) and "alg" in payload
+
+
+def _extract_secrets(text: str) -> dict[str, set[str]]:
+    """
+    Scan *text* for leaked-token signatures and return a dict keyed by token
+    category, mapping to a set of matched strings.
+
+    Strategy:
+      - Each regex is anchored by a vendor-specific prefix (e.g. ``AKIA``,
+        ``ghp_``, ``AIza``) to suppress noise.
+      - JWTs are post-filtered by structurally decoding the header.
+      - Output categories are independent — a single line may surface in
+        several (e.g. a stripped key embedded inside an env-style file).
+    """
+    found: dict[str, set[str]] = {}
+    for category, rx in _SECRET_PATTERNS.items():
+        for m in rx.finditer(text):
+            value = m.group(1) if m.groups() else m.group(0)
+            found.setdefault(category, set()).add(value.strip())
+
+    jwts = {m.group(1) for m in _JWT_RE.finditer(text) if _looks_like_jwt(m.group(1))}
+    if jwts:
+        found["jwt_tokens"] = jwts
+    return found
+
+
+# ---------------------------------------------------------------------------
+# Cryptocurrency wallet addresses
+# ---------------------------------------------------------------------------
+
+_B58_ALPHABET = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"
+_B58_INDEX = {c: i for i, c in enumerate(_B58_ALPHABET)}
+
+
+def _b58_decode(s: str) -> bytes | None:
+    """Decode a base58-encoded string. Returns None if any character is invalid."""
+    num = 0
+    for ch in s:
+        if ch not in _B58_INDEX:
+            return None
+        num = num * 58 + _B58_INDEX[ch]
+    # Restore leading-zero bytes encoded as leading '1's in base58
+    n_pad = len(s) - len(s.lstrip("1"))
+    body = num.to_bytes((num.bit_length() + 7) // 8, "big") if num else b""
+    return b"\x00" * n_pad + body
+
+
+def _btc_base58check_ok(addr: str) -> bool:
+    """Validate a P2PKH/P2SH Bitcoin address via base58check (double-SHA256 checksum)."""
+    import hashlib
+    raw = _b58_decode(addr)
+    if raw is None or len(raw) != 25:
+        return False
+    payload, checksum = raw[:-4], raw[-4:]
+    return hashlib.sha256(hashlib.sha256(payload).digest()).digest()[:4] == checksum
+
+
+def _extract_btc(text: str) -> set[str]:
+    """
+    Extract Bitcoin addresses (P2PKH/P2SH via base58check, Bech32 by prefix shape).
+    Bech32 is matched structurally only — full checksum validation would require
+    pulling in a dependency for a single feature.
+    """
+    found: set[str] = set()
+    for m in re.finditer(r"\b([13][1-9A-HJ-NP-Za-km-z]{25,34})\b", text):
+        cand = m.group(1)
+        if _btc_base58check_ok(cand):
+            found.add(cand)
+    for m in re.finditer(r"\b(bc1[02-9ac-hj-np-z]{6,87})\b", text):
+        found.add(m.group(1))
+    return found
+
+
+def _eth_eip55_ok(addr: str) -> bool:
+    """
+    Validate an Ethereum address's EIP-55 mixed-case checksum.
+    All-lowercase or all-uppercase addresses pass through (no checksum to verify).
+    Mixed-case addresses are rejected when pycryptodome is available and the
+    Keccak-256 checksum doesn't match; structurally accepted if it isn't.
+    """
+    body = addr[2:]
+    if body == body.lower() or body == body.upper():
+        return True  # no checksum applied — accept structurally
+    # Keccak-256 of the lowercase hex string
+    try:
+        from Crypto.Hash import keccak  # type: ignore
+        h = keccak.new(digest_bits=256)
+        h.update(body.lower().encode("ascii"))
+        digest = h.hexdigest()
+    except Exception:
+        # No keccak available — fall back to structural acceptance
+        return True
+    for i, ch in enumerate(body):
+        if ch.isalpha():
+            should_upper = int(digest[i], 16) >= 8
+            if should_upper != ch.isupper():
+                return False
+    return True
+
+
+def _extract_eth(text: str) -> set[str]:
+    """Extract Ethereum addresses (``0x`` + 40 hex chars), EIP-55 checked when mixed-case."""
+    found: set[str] = set()
+    for m in re.finditer(r"\b(0x[a-fA-F0-9]{40})\b", text):
+        cand = m.group(1)
+        if _eth_eip55_ok(cand):
+            found.add(cand)
+    return found
+
+
+# ---------------------------------------------------------------------------
+# Additional national identifiers: US SSN, BR CPF, CA SIN
+# ---------------------------------------------------------------------------
+
+def _ssn_us_is_valid(area: str, group: str, serial: str) -> bool:
+    """US SSN structural validity: rejects reserved ranges (000/666/9xx area, 00 group, 0000 serial)."""
+    if area in ("000", "666") or area.startswith("9"):
+        return False
+    if group == "00" or serial == "0000":
+        return False
+    return True
+
+
+def _extract_ssn(text: str) -> set[str]:
+    """Extract US SSNs (``###-##-####`` only — bare-digit form is too noisy)."""
+    found: set[str] = set()
+    for m in re.finditer(r"\b(\d{3})-(\d{2})-(\d{4})\b", text):
+        area, group, serial = m.groups()
+        if _ssn_us_is_valid(area, group, serial):
+            found.add(f"{area}-{group}-{serial}")
+    return found
+
+
+def _cpf_is_valid(digits: str) -> bool:
+    """Brazilian CPF — 11 digits with two mod-11 check digits."""
+    if len(digits) != 11 or not digits.isdigit() or digits == digits[0] * 11:
+        return False
+    for length in (9, 10):
+        total = sum(int(digits[i]) * (length + 1 - i) for i in range(length))
+        rem = (total * 10) % 11
+        check = 0 if rem == 10 else rem
+        if check != int(digits[length]):
+            return False
+    return True
+
+
+def _extract_cpf(text: str) -> set[str]:
+    """Extract Brazilian CPF identifiers in ``###.###.###-##`` form."""
+    found: set[str] = set()
+    for m in re.finditer(r"\b(\d{3}\.\d{3}\.\d{3}-\d{2})\b", text):
+        digits = re.sub(r"\D", "", m.group(1))
+        if _cpf_is_valid(digits):
+            found.add(m.group(1))
+    return found
+
+
+def _extract_sin(text: str) -> set[str]:
+    """Extract Canadian SINs (``###-###-###``) — validated via Luhn checksum."""
+    found: set[str] = set()
+    for m in re.finditer(r"\b(\d{3}-\d{3}-\d{3})\b", text):
+        digits = re.sub(r"\D", "", m.group(1))
+        if _luhn_ok(digits):
+            found.add(m.group(1))
+    return found
+
+
+# ---------------------------------------------------------------------------
+# Network identifiers: public IPv4, IPv6, MAC
+# ---------------------------------------------------------------------------
+
+def _extract_ipv4(text: str) -> set[str]:
+    """Extract public IPv4 addresses (filters RFC1918, loopback, link-local, multicast, reserved)."""
+    found: set[str] = set()
+    for m in re.finditer(r"\b((?:\d{1,3}\.){3}\d{1,3})\b", text):
+        try:
+            ip = _ipaddr.IPv4Address(m.group(1))
+        except ValueError:
+            continue
+        if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_multicast \
+                or ip.is_reserved or ip.is_unspecified:
+            continue
+        found.add(str(ip))
+    return found
+
+
+def _extract_ipv6(text: str) -> set[str]:
+    """Extract public IPv6 addresses. Uses the stdlib validator on candidates with ``:``."""
+    found: set[str] = set()
+    # Coarse pre-filter — at least three colons and only IPv6-legal chars
+    for m in re.finditer(r"(?<![0-9A-Fa-f:])([0-9A-Fa-f:]{4,})(?![0-9A-Fa-f:])", text):
+        cand = m.group(1)
+        if cand.count(":") < 2:
+            continue
+        try:
+            ip = _ipaddr.IPv6Address(cand)
+        except ValueError:
+            continue
+        if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_multicast \
+                or ip.is_reserved or ip.is_unspecified:
+            continue
+        found.add(str(ip))
+    return found
+
+
+def _extract_mac(text: str) -> set[str]:
+    """Extract MAC addresses (``XX:XX:XX:XX:XX:XX`` or ``XX-XX-XX-XX-XX-XX``)."""
+    found: set[str] = set()
+    for m in re.finditer(r"\b((?:[0-9A-Fa-f]{2}[:-]){5}[0-9A-Fa-f]{2})\b", text):
+        found.add(m.group(1).lower().replace("-", ":"))
+    return found
+
+
+# ---------------------------------------------------------------------------
 # Optional Microsoft Presidio integration
 # ---------------------------------------------------------------------------
 
@@ -475,6 +744,45 @@ def extract_information(text: str) -> dict:
     if rfcs:
         extracted['rfc'] = sorted(rfcs)
 
+    # --- SSN (United States) ---
+    ssns = _extract_ssn(text)
+    if ssns:
+        extracted['ssn'] = sorted(ssns)
+
+    # --- CPF (Brazil) ---
+    cpfs = _extract_cpf(text)
+    if cpfs:
+        extracted['cpf'] = sorted(cpfs)
+
+    # --- SIN (Canada) ---
+    sins = _extract_sin(text)
+    if sins:
+        extracted['sin'] = sorted(sins)
+
+    # --- Crypto wallets ---
+    btcs = _extract_btc(text)
+    if btcs:
+        extracted['btc_addresses'] = sorted(btcs)
+    eths = _extract_eth(text)
+    if eths:
+        extracted['eth_addresses'] = sorted(eths)
+
+    # --- Leaked tokens / API keys ---
+    for category, values in _extract_secrets(text).items():
+        if values:
+            extracted[category] = sorted(values)
+
+    # --- Network identifiers (public scope only) ---
+    ipv4 = _extract_ipv4(text)
+    if ipv4:
+        extracted['ipv4'] = sorted(ipv4)
+    ipv6 = _extract_ipv6(text)
+    if ipv6:
+        extracted['ipv6'] = sorted(ipv6)
+    macs = _extract_mac(text)
+    if macs:
+        extracted['mac_addresses'] = sorted(macs)
+
     # --- Optional: Microsoft Presidio entities ---
     presidio = _extract_presidio_entities(text)
     if presidio:
@@ -564,85 +872,66 @@ class SmartSearch:
 
     def reverse_image_search(self, image_url):
         """
-        Performs an automated reverse image search using Yandex Images via Selenium.
-        Orchestrates a headless browser to bypass dynamic rendering requirements.
-        
-        Args:
-            image_url (str): Remote URL of the target image payload.
-            
-        Returns:
-            list: Parsed result objects (title, link, description).
+        Yandex reverse image search via Selenium (one of several engines —
+        see ``search.reverse_image_engines`` for the orchestrated fallback chain).
+
+        Returns ``[]`` on any failure (missing browser, geckodriver not found,
+        selector drift, network error) so callers can compose this with other
+        engines without exception handling.
         """
-        # Latent Selenium imports to minimize startup overhead for non-image tasks
-        from selenium import webdriver
-        from selenium.webdriver.firefox.options import Options
-        from selenium.webdriver.common.by import By
-        from selenium.webdriver.support.ui import WebDriverWait
-        from selenium.webdriver.support import expected_conditions as EC
-        from selenium.webdriver.firefox.service import Service
+        try:
+            from selenium import webdriver
+            from selenium.webdriver.firefox.options import Options
+            from selenium.webdriver.common.by import By
+            from selenium.webdriver.support.ui import WebDriverWait
+            from selenium.webdriver.support import expected_conditions as EC
+            from selenium.webdriver.firefox.service import Service
+        except ImportError:
+            return []
 
         options = Options()
         options.add_argument("--headless")
-        
-        # Geckodriver path specifically mapped for Termux environments
-        geckodriver_path = "/data/data/com.termux/files/usr/bin/geckodriver"
-        service = Service(executable_path=geckodriver_path)
+
+        # Resolve geckodriver: prefer PATH (Linux/Windows primary targets),
+        # fall back to the Termux absolute path only if it actually exists.
+        service: "Service | None" = None
+        termux_gecko = "/data/data/com.termux/files/usr/bin/geckodriver"
+        if os.path.exists(termux_gecko):
+            service = Service(executable_path=termux_gecko)
 
         driver = None
         try:
-            print("[bold yellow]Starting Firefox in headless mode for Yandex search...[/bold yellow]")
-            driver = webdriver.Firefox(options=options, service=service)
-            
-            # Construct the direct rpt (report) URL for Yandex image view
+            driver = (webdriver.Firefox(options=options, service=service)
+                      if service else webdriver.Firefox(options=options))
             search_url = f"https://yandex.com/images/search?rpt=imageview&url={image_url}"
             driver.get(search_url)
-
-            print("[bold yellow]Waiting for Yandex results page to render...[/bold yellow]")
-            # Aggressive timeout for high-latency or bot-throttled environments
-            wait = WebDriverWait(driver, 40)
-
-            # Polling for the results list container
-            wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, "li.CbirSites-Item")))
-
+            WebDriverWait(driver, 40).until(
+                EC.presence_of_element_located((By.CSS_SELECTOR, "li.CbirSites-Item"))
+            )
             results = []
-            # Scrape each result container item
-            result_containers = driver.find_elements(By.CSS_SELECTOR, "li.CbirSites-Item")
-
-            print(f"[bold green]Found {len(result_containers)} potential results on Yandex. Processing...[/bold green]")
-
-            for container in result_containers:
+            for container in driver.find_elements(By.CSS_SELECTOR, "li.CbirSites-Item"):
                 try:
-                    title_element = container.find_element(By.CSS_SELECTOR, "div.CbirSites-ItemTitle")
-                    link_element = container.find_element(By.CSS_SELECTOR, "a.CbirSites-ItemLink")
-                    
-                    title = title_element.text
-                    link = link_element.get_attribute('href')
-                    
+                    title = container.find_element(
+                        By.CSS_SELECTOR, "div.CbirSites-ItemTitle").text
+                    link = container.find_element(
+                        By.CSS_SELECTOR, "a.CbirSites-ItemLink").get_attribute("href")
                     if link and title:
                         results.append({
-                            "title": title,
-                            "link": link,
-                            "description": f"Source: {urlparse(link).netloc}"
+                            "title":       title,
+                            "link":        link,
+                            "description": f"Source: {urlparse(link).netloc}",
                         })
                 except Exception:
-                    # Silently skip malformed or dynamic result nodes
                     continue
-            
             return results
-
-        except Exception as e:
-            # Persistent state dump for post-mortem debugging of scraping failures
-            if driver:
-                driver.save_screenshot("debug_yandex.png")
-                with open("debug_yandex.html", "w", encoding="utf-8") as f:
-                    f.write(driver.page_source)
-                print("[bold red]Error during Yandex search. 'debug_yandex.png' and 'debug_yandex.html' saved for analysis.[/bold red]")
-            
-            raise Exception(f"Selenium/Yandex automation failure: {e}")
+        except Exception:
+            return []
         finally:
-            # Critical: Ensure process group teardown to prevent zombie browser instances
             if driver:
-                driver.quit()
+                try:
+                    driver.quit()
+                except Exception:
+                    pass
 
 # --- Testing / CLI Standalone Utility ---
 if __name__ == "__main__":

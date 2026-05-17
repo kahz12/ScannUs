@@ -5,6 +5,8 @@ aiohttp                          # async media downloads
 # --- AI providers ---
 openai
 google-genai
+anthropic                        # Claude (claude-sonnet-4-6 default)
+# Ollama uses plain HTTP — no SDK required, just have `ollama serve` running
 
 # --- Configuration ---
 python-dotenv
@@ -21,12 +23,19 @@ readability-lxml                 # main-content extraction (fallback)
 
 # --- Browser automation ---
 selenium
-playwright                       # full-page screenshot engine
+#playwright                       # full-page screenshot engine
 
 # --- Search / scraping helpers ---
 google-api-python-client
 phonenumbers                     # libphonenumber port for PII phone parsing
 yt-dlp                           # video extraction across 1000+ sites
+
+# --- Domain / network OSINT ---
+dnspython                        # DNS resolver (A/AAAA/MX/TXT/SOA/NS/CAA…)
+python-whois                     # WHOIS registry lookups
+
+# --- Crypto / checksum primitives ---
+pycryptodome                     # Keccak-256 for EIP-55 Ethereum address validation
 
 # --- Document / file metadata ---
 pypdf                            # modern PDF metadata (preferred)
