@@ -10,9 +10,10 @@
 
 **Advanced OSINT & Web Intelligence Framework**
 
-[![Python](https://img.shields.io/badge/Python-3.8%2B-blue?style=flat-square&logo=python)](https://python.org)
+[![Python](https://img.shields.io/badge/Python-3.10%2B-blue?style=flat-square&logo=python)](https://python.org)
 [![License](https://img.shields.io/badge/License-MIT-green?style=flat-square)](LICENSE)
 [![Status](https://img.shields.io/badge/Status-Active-brightgreen?style=flat-square)]()
+[![Platforms](https://img.shields.io/badge/Platforms-Linux%20%7C%20Windows%20%7C%20Termux-orange?style=flat-square)]()
 
 </div>
 
@@ -23,42 +24,40 @@
 1. [Overview](#overview)
 2. [Architecture](#architecture)
 3. [Features](#features)
-4. [Prerequisites](#prerequisites)
-5. [Installation](#installation)
-6. [Configuration](#configuration)
-7. [Usage](#usage)
-   - [Interactive TUI](#interactive-tui)
-   - [Command-Line Interface](#command-line-interface)
-   - [Result Navigation](#result-navigation)
-8. [Project Structure](#project-structure)
-9. [Database Schema](#database-schema)
-10. [Output Directory Layout](#output-directory-layout)
-11. [Disclaimer](#disclaimer)
+4. [Installation](#installation)
+5. [Configuration](#configuration)
+6. [Usage](#usage)
+7. [Project Structure](#project-structure)
+8. [Cache & Storage](#cache--storage)
+9. [Disclaimer](#disclaimer)
 
 ---
 
 ## Overview
 
-**ScannUs** is a modular, open-source **OSINT (Open Source Intelligence) framework** built for investigators, security researchers, and analysts who need to automate intelligence gathering from public web sources.
+**ScannUs** is a modular OSINT framework that unifies multi-engine search, AI-assisted planning, breach-intelligence lookups, domain reconnaissance, deep PII extraction, and evidence collection behind a single interactive terminal.
 
-It unifies multiple search engines, AI assistants, and specialized extraction tools under a single interactive terminal interface, allowing the user to go from a raw query to a structured investigation — complete with exported evidence, entity graphs, and case management — without leaving the terminal.
+It turns a raw lead — an email, a handle, a domain — into a structured, reproducible investigation: cached, exportable, and ready to share.
 
-### What ScannUs solves
+### Highlights
 
-| Problem | ScannUs solution |
+| Capability | What you get |
 |---|---|
-| Manually querying multiple search engines | Unified multi-engine search with session-level LRU cache |
-| Writing Google Dorks by hand | Plain-language AI dork generation (Gemini / GPT-4o) |
-| Extracting emails/phones from pages | Regex + obfuscation decoder covering `[at]`, `(dot)`, HTML entities |
-| Downloading media from diverse platforms | Three-tier strategy: yt-dlp → Selenium → static HTML |
-| Keeping track of multiple investigations | SQLite case management with save / load / update / delete |
-| Producing shareable evidence | Excel, CSV, JSON, and HTML export with one command |
+| **Multi-engine search** | Google CSE · DuckDuckGo · Brave — persistent SQLite cache |
+| **Four AI providers** | Gemini · GPT-4o · Claude Sonnet 4.6 · local Ollama — token-streamed |
+| **AI Query Planner** | ReAct-style multi-step investigation plans using 22 whitelisted tools |
+| **Breach intelligence** | Have I Been Pwned — accounts, domains, breaches, k-anon passwords |
+| **Domain recon** | WHOIS + DNS + TLS + security headers + crt.sh subdomains + Shodan |
+| **PII & secret extraction** | AWS/GitHub/Slack/Stripe keys · JWTs · BTC/ETH · IBANs · SSN/CPF/SIN |
+| **Username enumeration** | Sherlock / Maigret — 400+ social sites |
+| **Wayback Machine** | Snapshot fetch · PII extraction · unified-diff between dates |
+| **Reverse image search** | TinEye + Bing Visual + Yandex + manual fallbacks |
+| **Evidence collection** | Full-page screenshots · media downloader (yt-dlp tier) · file metadata |
+| **Export** | Excel · CSV · JSON · HTML reports — clickable, styled |
 
 ---
 
 ## Architecture
-
-ScannUs follows a **layered, modular architecture**. Each layer has a single responsibility and communicates through well-defined interfaces.
 
 ```
 ┌──────────────────────────────────────────────────────────────────────┐
@@ -67,171 +66,176 @@ ScannUs follows a **layered, modular architecture**. Each layer has a single res
 └────────────────────────────┬─────────────────────────────────────────┘
                              │
           ┌──────────────────▼──────────────────┐
-          │               CLI Layer              │
-          │  parser.py  │  menus.py  │ actions.py│
-          │              ui.py                   │
-          └──────────────────┬──────────────────-┘
+          │              CLI Layer               │
+          │  parser.py  ·  menus.py  ·  ui.py    │
+          │              actions.py              │
+          └──────────────────┬───────────────────┘
                              │
      ┌───────────────────────▼────────────────────────┐
      │                   Core Layer                    │
-     │  config.py │ ai_agent.py │ case_manager.py      │
-     │  database.py │ state.py                         │
+     │  config · ai_agent (4 providers + planner)      │
+     │  cache (SQLite) · case_manager · state          │
      └──────┬───────────────┬──────────────────────────┘
             │               │
-   ┌────────▼──────┐  ┌─────▼──────────────────────┐
-   │  Search Layer │  │       Analysis Layer        │
-   │  engines/     │  │  web_analyzer.py            │
-   │  smart_search │  │  tech_scanner.py            │
-   │  reverse_image│  │  advanced_osint.py          │
-   └───────────────┘  └────────────────┬────────────┘
+   ┌────────▼──────┐  ┌─────▼─────────────────────────┐
+   │  Search Layer │  │       Analysis Layer          │
+   │  engines/     │  │  web_analyzer · tech_scanner  │
+   │  smart_search │  │  advanced_osint · domain_osint│
+   │  reverse_*    │  │  hibp                         │
+   │  username_enum│  │                               │
+   └───────────────┘  └────────────────┬──────────────┘
                                        │
                           ┌────────────▼────────────┐
-                          │       Utils Layer        │
-                          │  media_downloader.py     │
-                          │  results_parse.py        │
-                          │  file_download.py        │
+                          │       Utils Layer       │
+                          │  media_downloader       │
+                          │  results_parse          │
+                          │  file_download          │
                           └─────────────────────────┘
 ```
 
-### Design patterns used
+### Design patterns
 
 | Pattern | Location | Purpose |
-|---------|----------|---------|
-| Strategy | `core/ai_agent.py` | Switchable AI backends (Gemini / OpenAI) |
-| Factory | `search/engines/` | `_get_search_engine()` instantiates correct engine at runtime |
-| DAO | `core/database.py` | Decoupled SQLite access layer |
-| Singleton | `search/engines/cache.py` | Session-scoped LRU cache (128 entries) |
-| State | `core/state.py` | Global runtime state shared across modules |
+|---|---|---|
+| Strategy | `core/ai_agent.py` | Switchable AI backends (Gemini · OpenAI · Claude · Ollama) |
+| ReAct | `IAAgent.plan` / `execute_plan` | Whitelisted tool catalog with iterative re-planning |
+| Factory | `search/engines/` | Engine instantiation at runtime |
+| DAO | `core/database.py` · `core/cache.py` | SQLite case storage + persistent TTL cache |
+| Singleton | `core/cache.get_cache()` | Process-wide cache with WAL journal mode |
+| State | `core/state.py` | Cross-module runtime state |
 
 ---
 
 ## Features
 
-### Search & Intelligence
+### 🔍 Search & Intelligence
 
-- **Multi-Engine Search** — Google Custom Search API, DuckDuckGo (anonymous HTML scraping), and Brave Search API, all behind a session-scoped **LRU cache** (128 entries) that eliminates duplicate API calls within the same session.
-- **Paginated Results** — results displayed 10 per page with keyboard navigation (`n`, `p`, `j <N>`, `all`).
-- **Guided Search** — interactive prompt collects name, username, email, and phone, then assembles an optimised compound query.
-- **AI Dork Generation** — describe your target in natural language; the AI produces precise Google Dork syntax ready to execute.
-- **Reverse Image Search** — headless Selenium drives Yandex Images and returns parsed results.
+- **Multi-engine search** — Google Custom Search, DuckDuckGo (HTML scraper), Brave Search. Persistent SQLite cache with per-namespace TTLs (24h for SERPs, 6h for HTTP text, 7d for WHOIS).
+- **AI Query Planner** — describe a goal; the LLM produces a 3–8 step plan composed only of whitelisted tools. Each step is interactively confirmable, and the planner can re-plan from observations (ReAct).
+- **AI Dork Generator** — natural language → precise Google Dork syntax.
+- **Guided Search** — name · handle · email · phone → compound `AND` query.
+- **Username Enumeration** — Sherlock (pure-Python, 400+ sites) or Maigret (3000+, Linux/macOS only).
+- **Reverse Image Search** — TinEye API → Bing Visual API → Yandex scraping → manual-URL fallback. Multi-tier so something always returns.
 
-### AI Analysis (Streaming)
+### 🤖 AI Analysis (Streaming)
 
-- **Dual AI Backends** — Google Gemini and OpenAI GPT-4o, selectable at runtime; responses stream token-by-token to the terminal.
-- **Webpage Summarisation** — AI reads extracted plain text and produces a concise summary.
-- **Deep OSINT Analysis** — the AI identifies entities, relationships, leads, and key intelligence points from page content.
-- **Long-text Chunking** — texts exceeding 12 KB are split into overlapping 12 KB chunks (500-character overlap) and the AI processes each chunk; results are merged into a single coherent output rather than truncating content.
-- **Entity Relationship Graph** — extracted entities are fed to Pyvis to produce an interactive HTML graph saved in `outputs/graphs/`.
+| Provider | Model | Cost | Use case |
+|---|---|---|---|
+| Google Gemini | `gemini-2.0-flash` | Free tier | Default — fast, free, capable |
+| OpenAI | `gpt-4o` | Paid | Highest quality |
+| Anthropic | `claude-sonnet-4-6` | Paid | Excellent for analytical reasoning |
+| Ollama | `llama3` (configurable) | Free (local) | Air-gapped, privacy-preserving |
 
-### Evidence Collection
+- **Token streaming** — output appears incrementally; no waiting on full completion.
+- **Webpage summarisation & deep OSINT analysis** — entity extraction, relationship discovery, lead generation.
+- **Long-text chunking** — 12 KB overlapping windows for content exceeding model context.
+- **Entity relationship graph** — Pyvis-rendered interactive HTML graph saved to `outputs/graphs/`.
 
-- **Deep Web Scraping (Selenium)** — headless Firefox renders JavaScript, simulates scrolling, and extracts hidden content from Single-Page Applications that static HTTP requests cannot reach.
-- **Screenshot Capture** — saves full-page PNG screenshots via Selenium to `outputs/screenshots/`.
-- **Wayback Machine Lookup** — queries the Internet Archive API for historical snapshots of any URL.
-- **Email & Phone Extraction** — international phone number formats; email obfuscation decoding (`[at]`, `(dot)`, `&#64;`, spaced variants), HTML `mailto:`/`tel:` attribute parsing, and false-positive filtering that excludes `noreply@*`, bots, and test domains.
-- **File Downloads** — batch-downloads PDFs, DOCXs, and other file types discovered in results; extracts EXIF metadata from images and PDF document properties.
+### 🔒 Breach & Leak Intelligence (HIBP)
 
-### Media Downloader — Three-Tier Strategy
+- **Account lookup** — every breach + paste containing an email (paid HIBP key).
+- **Domain breaches** — every breach affecting a domain (free).
+- **Breach details** — full metadata for a single named breach (free).
+- **Pwned Passwords** — k-anonymity SHA-1 lookup; plaintext **never leaves the process** — only the first 5 hex chars are sent.
 
-The media downloader attempts the following methods in order, falling back to the next tier only on failure:
+### 🌐 Domain & Network OSINT
 
-| Tier | Method | Coverage |
-|------|--------|----------|
-| 1st | **yt-dlp** | 1 000+ platforms — YouTube, Vimeo, TikTok, Instagram, Twitter/X, Twitch, HLS/DASH streams |
-| 2nd | **Selenium click-play** | Custom/proprietary players — clicks the play button, waits 2 s for the `src` to populate, then reads `<video src>` |
-| 3rd | **Static HTML** | Direct-linked `<video src="…">` elements that do not require JavaScript |
+- **WHOIS** — registrar, creation/expiry, contacts, nameservers (7-day cache).
+- **DNS records** — A, AAAA, MX, NS, TXT, SOA, CNAME, CAA (1-hour cache).
+- **Email security** — SPF, DMARC, DKIM selector hints.
+- **TLS certificate** — subject, SANs, validity window, cipher suite.
+- **HTTP security headers** — HSTS, CSP, COOP, COEP, CORP scoring.
+- **Subdomain enumeration** — passive via crt.sh Certificate Transparency logs.
+- **Shodan host lookup** — service banners, open ports (optional, needs key).
 
-Additional download features:
-- Concurrent downloads via `ThreadPoolExecutor`
-- MIME-type-aware organisation into `images/`, `videos/`, `audio/` sub-directories
-- 5 KB minimum size filter (eliminates tracking pixels and empty responses)
-- Retry with exponential backoff (3 attempts)
-- Final output packaged as a structured ZIP archive
+### 🕰 Wayback Machine
 
-### Site Analysis
+- **Snapshot timeline** — CDX query for a URL's archive history.
+- **Snapshot fetch** — raw archived content at a specific timestamp.
+- **Snapshot PII extraction** — surface identifiers from old versions that the live site has scrubbed.
+- **Snapshot diff** — unified diff of visible text between two timestamps with SHA-256 fingerprint.
 
-- **Technology Stack Detection** — WebTech fingerprinting identifies CMS, framework, CDN, web server, programming language, and analytics tools.
-- **Metadata Extraction** — EXIF data extracted from downloaded images; document properties from PDFs.
+### 🎯 PII & Secret Extraction
 
-### Case Management
+Detects and validates 25+ identifier types from any page or text:
 
-- Save the current investigation (query, engine, results) to a local **SQLite** database under a named case.
-- **Overwrite protection** — prompts before replacing an existing case name.
-- Load, update, and delete cases from the interactive menu or CLI.
+| Category | Examples |
+|---|---|
+| **Cloud / API keys** | AWS (`AKIA…`), GitHub PAT, GitLab, Slack, Stripe, Google, Discord, Telegram |
+| **Crypto wallets** | Bitcoin (base58check + Bech32), Ethereum (EIP-55 Keccak) |
+| **National IDs** | US SSN, Argentine DNI/CUIT, Mexican RFC, Brazilian CPF (mod-11), Canadian SIN (Luhn) |
+| **Financial** | IBAN, credit card (Luhn) |
+| **Network** | Public IPv4/IPv6 (filtered for private/loopback/multicast), MAC addresses |
+| **Tokens** | JWTs (header-validated), PEM private keys |
+| **Standard PII** | Emails (obfuscation-decoded), phones (international via libphonenumber) |
 
-### Export Formats
+### 🖼 Evidence & Media
 
-| Format | File | Details |
-|--------|------|---------|
-| Excel | `.xlsx` | Styled header row, alternating row colours, clickable hyperlinks, auto-fit column widths |
-| CSV | `.csv` | Plain comma-separated for spreadsheet import |
-| JSON | `.json` | Structured object array for programmatic processing |
-| HTML | `.html` | Self-contained report for sharing |
+- **Three-tier media downloader** — yt-dlp (1000+ platforms) → Selenium click-play → static HTML.
+- **Full-page screenshots** — Playwright (preferred) → Selenium Firefox fallback.
+- **File downloader** — batch by extension; auto extracts PDF/EXIF/DOCX/XLSX metadata.
 
----
+### 📤 Export
 
-## Prerequisites
-
-| Requirement | Notes |
-|-------------|-------|
-| Python 3.8+ | Tested on 3.10 and 3.12 |
-| Firefox | Required for Selenium features: Deep Scraping, Screenshots, Reverse Image Search, Selenium video extraction |
-| pip | For dependency installation |
-| API keys | At least one search engine key; AI features require Gemini or OpenAI key |
+| Format | Details |
+|---|---|
+| **Excel** | Styled header, alternating rows, clickable hyperlinks, auto-fit columns |
+| **CSV** | Plain comma-separated for spreadsheet import |
+| **JSON** | Structured object array for programmatic processing |
+| **HTML** | Self-contained styled report for sharing |
 
 ---
 
 ## Installation
 
 ```bash
-# 1. Clone the repository
+# 1. Clone
 git clone https://github.com/kahz12/scannus.git
 cd scannus
 
-# 2. Create an isolated virtual environment
+# 2. Create venv
 python3 -m venv venv
 source venv/bin/activate          # Windows: venv\Scripts\activate
 
-# 3. Install all dependencies
+# 3. Install
 pip install -r requirements.txt
 ```
 
-> The `requirements.txt` includes: `rich`, `selenium`, `webtech`, `yt-dlp`, `openpyxl`, `pyvis`, `beautifulsoup4`, `requests`, `python-dotenv`, `PyPDF2`, `exifread`, and more.
+### Platform notes
+
+| Platform | Status |
+|---|---|
+| **Linux / Windows** | Primary — all features available |
+| **macOS** | Supported |
+| **Termux / Android (aarch64)** | Alternative — Maigret unavailable (no `aiohttp==3.8.x` wheel); Sherlock works |
+
+**Requirements:** Python 3.10+, Firefox (for Selenium features), Ollama daemon (only if using local LLM).
 
 ---
 
 ## Configuration
 
-ScannUs reads API credentials from a `.env` file in the project root. The quickest way to set it up is the built-in interactive wizard:
+Run the interactive wizard to populate `.env`:
 
 ```bash
 python main.py -c
-```
-
-This prompts for each key and writes them to `.env` automatically. Alternatively, copy the provided template and fill in values manually:
-
-```bash
-cp .env.example .env
 ```
 
 ### Environment variables
 
 | Variable | Service | Required for |
 |---|---|---|
-| `API_KEY_GOOGLE` | Google Cloud Console | Google Custom Search |
-| `SEARCH_ENGINE_ID` | Programmable Search Engine | Google Custom Search |
-| `GOOGLE_API_KEY_FOR_GEMINI` | Google AI Studio | All Gemini AI features |
-| `BRAVE_API_KEY` | Brave Search API | Brave Search engine |
-| `OPENAI_API_KEY` | OpenAI Platform | GPT-4o AI features |
+| `API_KEY_GOOGLE` · `SEARCH_ENGINE_ID` | Google Cloud / Programmable Search | Google Custom Search |
+| `BRAVE_API_KEY` | Brave Search API | Brave engine |
+| `GOOGLE_API_KEY_FOR_GEMINI` | Google AI Studio | Gemini provider |
+| `OPENAI_API_KEY` | OpenAI Platform | GPT-4o provider |
+| `ANTHROPIC_API_KEY` | Anthropic Console | Claude provider |
+| `OLLAMA_HOST` · `OLLAMA_MODEL` | Local Ollama daemon | Ollama provider |
+| `HIBP_API_KEY` | Have I Been Pwned | Account + paste lookups (paid) |
+| `SHODAN_API_KEY` | Shodan | Host service banner lookups |
+| `SCANNUS_CACHE_DISABLE` | — set to `1` to bypass cache | Debugging |
 
-### Obtaining API keys
-
-- **Google Custom Search**: Create a project in [Google Cloud Console](https://console.cloud.google.com/), enable the *Custom Search API*, generate an API key, and create a Programmable Search Engine at [cse.google.com](https://cse.google.com/) to get the `SEARCH_ENGINE_ID`.
-- **Gemini**: Generate a free key at [Google AI Studio](https://aistudio.google.com/).
-- **Brave Search**: Register at [Brave Search API](https://api.search.brave.com/).
-- **OpenAI**: Create a key at [platform.openai.com](https://platform.openai.com/).
-
-> DuckDuckGo does **not** require an API key and is available by default.
+> DuckDuckGo, Pwned Passwords k-anon, domain-only HIBP, crt.sh, and Wayback Machine require **no** keys.
 
 ---
 
@@ -239,129 +243,87 @@ cp .env.example .env
 
 ### Interactive TUI
 
-Launch the full interactive menu (recommended for investigations):
+```bash
+python main.py        # interactive by default
+python main.py -i     # explicit
+```
+
+**Main menu:**
+
+```
+Guided Search           Name · Username · Email · Phone
+Direct Search           Raw query or Google Dork
+AI Dork Generator       LLM-assisted dork creation
+AI Query Planner        ReAct-style multi-tool plan
+Reverse Image Lookup    TinEye · Bing · Yandex · manual URLs
+Web Technology Scan     Tech stack fingerprinting
+Username Enumeration    Sherlock · 400+ sites
+Domain Recon            WHOIS · DNS · TLS · headers · subdomains
+Breach & Leak Check     HIBP: accounts · domains · passwords
+Load Saved Case         Resume a previous investigation
+Configure API Keys      Edit .env credentials
+```
+
+### Command-Line Examples
 
 ```bash
-python main.py        # default interactive mode
-python main.py -i     # explicit flag, identical behaviour
+# Basic & guided search
+python main.py -q 'site:linkedin.com "project manager" "New York"'
+python main.py -n "John Doe" -u "jdoe88" -e "john@corp.com"
+python main.py -gd "Find exposed admin panels on .gov domains"
+
+# AI-driven multi-step investigation
+python main.py -p "Investigate breaches affecting acme.com and dump PII leads"
+
+# Domain reconnaissance
+python main.py --recon example.com
+
+# Breach intelligence
+python main.py --hibp-account target@example.com
+python main.py --hibp-domain example.com
+python main.py --hibp-breach Adobe
+python main.py --hibp-password                # interactive, hidden input
+
+# Wayback Machine
+python main.py -q "site:archive.org"
+# (interactive menu offers snapshot fetch, PII extraction, diff)
+
+# Username enumeration
+python main.py --username-enum jdoe88 --enum-backend sherlock
+
+# Reverse image
+python main.py -rev https://example.com/photo.jpg
+
+# Cache management
+python main.py --cache-stats
+python main.py --cache-clear wayback          # or omit for full wipe
+
+# Export
+python main.py -q "query" --excel out.xlsx --json out.json
 ```
 
-**Main menu options:**
+### Full CLI flag reference
 
-```
-1. Basic Search (DuckDuckGo)
-2. Google Custom Search
-3. Brave Search
-4. Generate Google Dork with AI
-5. Guided Search  (name + username + email + phone)
-6. Reverse Image Search
-7. Configure API Keys
-8. Load Saved Case
-```
+| Group | Flags |
+|---|---|
+| **Main** | `-h` · `-q` · `-c` · `-i` |
+| **Search** | `-n` · `-u` · `-e` · `-t` · `-b` · `--engine` · `--deep` · `--pages` · `--start-page` · `--lang` |
+| **AI / NLP** | `-gd "DESC"` · `-p "GOAL"` |
+| **Recon** | `--recon DOMAIN` · `--username-enum HANDLE` · `--enum-backend` |
+| **Breach (HIBP)** | `--hibp-account` · `--hibp-domain` · `--hibp-breach` · `--hibp-password` |
+| **Media / image** | `--media-scrape URL` · `-rev URL` |
+| **Cache** | `--cache-stats` · `--cache-clear [NS]` |
+| **Cases** | `--load-case` |
+| **Export** | `--excel` · `--csv` · `--json` · `--html` · `--download TYPES` · `--metadata` |
 
-**URL analysis sub-menu** (after selecting a result by ID):
-
-```
-1. Summarise content          (AI)
-2. Extract PII                (email / phone regex)
-3. Scan web technologies      (WebTech fingerprinting)
-4. Download file
-5. Download media             (images / video / audio)
-6. Capture screenshot         (Selenium)
-7. Wayback Machine history
-8. Deep AI analysis           (OSINT mode)
-9. Extract entities & build graph (Pyvis)
-```
-
----
-
-### Command-Line Interface
-
-ScannUs exposes all features via CLI flags for scripting and automation.
-
-#### Query options
-
-```bash
-python main.py -q "site:linkedin.com \"project manager\" \"New York\""
-python main.py -q "OSINT tools" --engine brave --pages 2
-python main.py -n "John Doe" -u "jdoe88" -e "john@corp.com" --engine google
-python main.py -gd "Find exposed admin panels on government domains"
-```
-
-#### Analysis & extraction
-
-```bash
-# Deep extraction — crawl result URLs and extract PII
-python main.py -q "target@corp.com" --deep
-
-# Download media from a URL (three-tier strategy)
-python main.py --media-scrape "https://example.com/gallery"
-
-# Reverse image search
-python main.py --reverse
-```
-
-#### Export
-
-```bash
-python main.py -q "query" --excel results.xlsx
-python main.py -q "query" --csv results.csv
-python main.py -q "query" --json results.json
-python main.py -q "query" --html report.html
-```
-
-#### Case management
-
-```bash
-python main.py --load-case          # list and load a saved case
-python main.py -c                   # configure API credentials
-```
-
-#### Full flag reference
-
-| Flag | Short | Description |
-|------|-------|-------------|
-| `--query TEXT` | `-q` | Direct search query or dork |
-| `--nombre TEXT` | `-n` | Person name (guided search) |
-| `--usuario TEXT` | `-u` | Username |
-| `--email TEXT` | `-e` | Email address |
-| `--telefono TEXT` | `-t` | Phone number |
-| `--buscar TEXT` | `-b` | Additional search term |
-| `--engine ENGINE` | | `google` / `duckduckgo` / `brave` (default: `duckduckgo`) |
-| `--pages N` | | Number of result pages to fetch (default: 1) |
-| `--start-page N` | | First page number (default: 1) |
-| `--lang LANG` | | Language filter, e.g. `lang_es`, `lang_en` |
-| `--interactive` | `-i` | Launch interactive TUI mode |
-| `--deep` | | Deep extraction: crawl result URLs and extract PII |
-| `--google-dorks DESC` | `-gd` | Generate a Google Dork from a natural-language description |
-| `--reverse` | | Launch reverse image search |
-| `--media-scrape URL` | | Download media (images / video / audio) from URL |
-| `--excel FILE` | | Export results to Excel |
-| `--csv FILE` | | Export results to CSV |
-| `--json FILE` | | Export results to JSON |
-| `--html FILE` | | Export results to HTML |
-| `--download TYPES` | | Download files found in results: `pdf`, `docx`, `txt`, `all` |
-| `--metadata` | | Extract PDF and EXIF metadata from downloaded files |
-| `--load-case` | | Load a saved investigation from the database |
-| `--configure` | `-c` | Launch the API key configuration wizard |
-
----
-
-### Result Navigation
-
-Once search results are displayed, the interactive prompt accepts these commands:
+### Result navigation
 
 | Input | Action |
-|-------|--------|
-| `<ID>` | Open analysis sub-menu for result number `<ID>` |
-| `n` | Next page |
-| `p` | Previous page |
-| `j <N>` | Jump to page `<N>` |
-| `all` | Display all results on a single page |
-| `media <ID,…>` | Download media from selected result IDs |
-| `save` | Save the current session as a named case |
-| `excel` | Export current results to Excel |
-| `exit` | Return to the main menu |
+|---|---|
+| `<ID>` | Open per-URL analysis sub-menu |
+| `n` / `p` / `j <N>` / `all` / `page` | Pagination controls |
+| `media <ID,…>` | Batch media download |
+| `save` · `excel` · `exit` | Persist · export · quit |
 
 ---
 
@@ -369,101 +331,90 @@ Once search results are displayed, the interactive prompt accepts these commands
 
 ```
 ScannUs/
-├── main.py                        # Entry point — CLI dispatch & initialisation
-├── requirements.txt               # Python dependencies
-├── .env.example                   # API credentials template
+├── main.py                        # Entry point — CLI dispatch
+├── requirements.txt
 │
 ├── cli/
-│   ├── ui.py                      # Rich theme, console helpers, make_table()
-│   ├── parser.py                  # Argument parser and styled help screen
-│   ├── menus.py                   # Interactive TUI menus with pagination
-│   └── actions.py                 # CLI action handlers (search, deep extraction)
+│   ├── ui.py                      # Rich theme, console helpers
+│   ├── parser.py                  # Argparse + styled help
+│   ├── menus.py                   # Interactive TUI menus
+│   └── actions.py                 # CLI action handlers
 │
 ├── core/
-│   ├── config.py                  # Output directory init, API wizard
-│   ├── ai_agent.py                # Streaming AI — Strategy pattern (Gemini + OpenAI)
+│   ├── config.py                  # Directories, .env wizard
+│   ├── ai_agent.py                # 4 providers + planner + 22 dispatchers
+│   ├── cache.py                   # SQLite cache (WAL, namespaced TTLs)
 │   ├── case_manager.py            # Save / load / update / delete cases
 │   ├── database.py                # SQLite DAO
-│   └── state.py                   # Global runtime state
+│   └── state.py
 │
 ├── search/
-│   ├── smart_search.py            # Email / phone extraction + obfuscation decoder
-│   ├── reverse_image.py           # Yandex reverse image search via Selenium
+│   ├── smart_search.py            # PII + secret extraction (25+ patterns)
+│   ├── reverse_image.py           # Multi-engine orchestrator
+│   ├── reverse_image_engines.py   # TinEye · Bing · Yandex · manual
+│   ├── username_enum.py           # Sherlock / Maigret wrapper
 │   └── engines/
-│       ├── googlesearch.py        # Google Custom Search API client
-│       ├── duckduckgosearch.py    # DuckDuckGo HTML scraper
-│       ├── bravesearch.py         # Brave Search API client
-│       └── cache.py               # Session-scoped LRU cache (128 entries)
+│       ├── googlesearch.py · duckduckgosearch.py · bravesearch.py
+│       └── cache.py               # Backward-compat shim → core/cache
 │
 ├── analysis/
-│   ├── web_analyzer.py            # Text extraction, chunking, AI summarisation
-│   ├── tech_scanner.py            # WebTech fingerprinting with category column
-│   └── advanced_osint.py          # Selenium deep scraping, screenshots, Wayback Machine
+│   ├── web_analyzer.py            # Fetch + clean + chunk + summarise
+│   ├── tech_scanner.py            # Wappalyzer + WebTech fingerprinting
+│   ├── advanced_osint.py          # Screenshots · Wayback fetch/diff
+│   ├── domain_osint.py            # WHOIS · DNS · TLS · headers · crt.sh
+│   └── hibp.py                    # Have I Been Pwned integration
 │
 └── utils/
-    ├── media_downloader.py        # Three-tier video/image downloader (yt-dlp → Selenium → static)
+    ├── media_downloader.py        # yt-dlp → Selenium → static HTML
     ├── results_parse.py           # Excel / CSV / JSON / HTML export
-    └── file_download.py           # Batch file downloader + metadata extraction
+    └── file_download.py           # Batch download + metadata extraction
 ```
 
 ---
 
-## Database Schema
+## Cache & Storage
 
-Cases and results are persisted in a local SQLite database at `outputs/cases/cases.db`.
+### Persistent SQLite cache
 
-```sql
-CREATE TABLE cases (
-    id         INTEGER PRIMARY KEY AUTOINCREMENT,
-    name       TEXT    UNIQUE NOT NULL,
-    query_data TEXT,             -- JSON: {"type": "direct", "value": "..."}
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-);
+All upstream calls flow through `core/cache.py` — a single `cache.db` shared by every namespace, with WAL journal mode for concurrent process access.
 
-CREATE TABLE results (
-    id          INTEGER PRIMARY KEY AUTOINCREMENT,
-    case_id     INTEGER NOT NULL,
-    result_id   INTEGER,
-    title       TEXT,
-    description TEXT,
-    link        TEXT,
-    FOREIGN KEY (case_id) REFERENCES cases (id) ON DELETE CASCADE
-);
-```
+| Namespace | TTL | Contents |
+|---|---|---|
+| `search` | 24h | SERP results |
+| `http_text` | 6h | Cleaned page content |
+| `whois` | 7d | Registry data |
+| `dns` | 1h | DNS records |
+| `wayback` | 30d | Archive snapshots (immutable) |
+| `crtsh` | 24h | CT-log subdomains |
+| `hibp_account` | 12h | Per-email breach lookups |
+| `hibp_breach` | 7d | Breach metadata |
+| `hibp_password` | 30d | k-anonymity ranges |
 
----
-
-## Output Directory Layout
-
-All generated files are written inside the `outputs/` directory, which is created automatically on first run.
+### Output directory
 
 ```
 outputs/
-├── cases/
-│   └── cases.db           # SQLite investigation database
-├── downloads/
-│   ├── images/            # Downloaded images (MIME-sorted)
-│   ├── videos/            # Downloaded video files
-│   ├── audio/             # Downloaded audio files
-│   ├── docs/              # PDFs, DOCXs, and other documents
-│   └── other/             # Files with unrecognised MIME types
-├── media/                 # ZIP archives from --media-scrape
-├── reports/               # Excel / CSV / JSON / HTML exports
-├── screenshots/           # Selenium full-page screenshots (PNG)
-└── graphs/                # Pyvis entity relationship graphs (HTML)
+├── cache/cache.db        # Persistent SQLite cache
+├── cases/cases.db        # Investigation case database
+├── downloads/            # Files by MIME type
+├── media/                # ZIP archives from --media-scrape
+├── reports/              # Excel · CSV · JSON · HTML exports
+├── screenshots/          # Full-page PNG screenshots
+└── graphs/               # Pyvis entity relationship graphs
 ```
 
 ---
 
 ## Disclaimer
 
-ScannUs is intended strictly for **educational purposes, authorised security research, and lawful open-source intelligence gathering**. The user assumes full responsibility for ensuring that all activities performed with this tool comply with applicable local, national, and international laws and regulations.
+ScannUs is intended strictly for **educational purposes, authorised security research, and lawful open-source intelligence gathering**. Users assume full responsibility for compliance with all applicable local, national, and international laws.
 
 **Do not use ScannUs against systems, accounts, or data for which you do not have explicit authorisation.**
 
 ---
 
 <div align="center">
-Developed by Ale
+
+Developed by **Ale**
+
 </div>

@@ -76,6 +76,16 @@ def env_config():
     if api_key_brave:
         print_success("Brave API Key saved.")
 
+    print_section("Have I Been Pwned (HIBP)")
+    api_key_hibp = _prompt("HIBP API KEY",
+                           "From haveibeenpwned.com/API/Key — paid, optional. "
+                           "Without it, only the free domain/breach catalog "
+                           "and Pwned Passwords endpoints work.")
+    set_key(".env", "HIBP_API_KEY", api_key_hibp)
+    os.environ["HIBP_API_KEY"] = api_key_hibp
+    if api_key_hibp:
+        print_success("HIBP API Key saved.")
+
     print_section("Anthropic Claude")
     api_key_anthropic = _prompt("Anthropic API KEY",
                                 "From console.anthropic.com — optional, for Claude")

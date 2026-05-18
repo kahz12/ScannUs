@@ -555,6 +555,46 @@ TOOL_CATALOG: dict[str, dict] = {
             "engines": "list[str] — optional whitelist: tineye | bing | yandex | manual",
         },
     },
+    # --- HIBP tools ----------------------------------------------------------
+    # Have I Been Pwned (hibp_*) tools give the planner breach-intelligence
+    # superpowers. Two are paid (need HIBP_API_KEY), two are free. All results
+    # are cached so the planner can call them repeatedly without hammering Troy.
+    "hibp_account": {
+        "desc": "Have I Been Pwned: list every breach (and optionally pastes) "
+                "containing a target email address. Requires HIBP_API_KEY.",
+        "args": {
+            "email":          "str (required)",
+            "include_pastes": "bool — default true",
+        },
+    },
+    "hibp_domain": {
+        # Free endpoint — no API key needed. Great for a quick first recon step
+        # before deciding whether to invest in the paid per-account lookup.
+        "desc": "Have I Been Pwned: list breaches affecting a domain. "
+                "Free endpoint, no API key required.",
+        "args": {"domain": "str (required)"},
+    },
+    "hibp_breach": {
+        # Useful as a follow-up after hibp_account surfaces a breach name —
+        # drill into the full metadata (data classes, verification status, etc.)
+        # to understand *what* was stolen and calibrate risk.
+        "desc": "Have I Been Pwned: detailed metadata for a single named "
+                "breach (size, data classes, verified flag, description).",
+        "args": {"name": "str (required) — e.g. 'Adobe', 'LinkedIn'"},
+    },
+    "hibp_password": {
+        # k-anonymity means the plaintext never leaves the process — safe to use
+        # in automated investigation plans. Prefer 'sha1' arg in plan steps
+        # so the raw password doesn't appear in execution logs.
+        "desc": "Pwned Passwords k-anonymity lookup: returns how many times "
+                "a password has been seen across known breaches. The plaintext "
+                "never leaves the process — only the first 5 chars of its "
+                "SHA-1 are sent.",
+        "args": {
+            "password": "str — cleartext password (mutually exclusive with sha1)",
+            "sha1":     "str — pre-computed 40-char SHA-1 hex (alternative)",
+        },
+    },
 }
 
 
@@ -874,6 +914,130 @@ def _dispatch_summarize_url(args: dict, ia_agent) -> dict:
     return {"status": "ok", "summary": _truncate(summary, 240), "data": {"full": summary}}
 
 
+def _dispatch_hibp_account(args: dict, ia_agent) -> dict:
+    """AI plan dispatcher for the hibp_account tool.
+
+    Validates args, calls the data + render functions, and packages
+    the result into the standard {status, summary, data} shape that
+    the ReAct executor expects. The ``include_pastes`` arg accepts
+    truthy strings ("true", "yes", "1") as well as booleans because
+    LLMs sometimes serialise booleans as strings. We handle both.
+    """
+    from analysis.hibp import (hibp_breached_account, hibp_pastes_for_account,
+                               render_breached_account, render_pastes_for_account)
+    email = (args.get("email") or "").strip()
+    if not email:
+        # Can't look up an account with no email. Tell the planner to retry.
+        return {"status": "error", "summary": "hibp_account: missing 'email'"}
+    include_pastes = args.get("include_pastes", True)
+    # Handle the case where the LLM passes "false" as a string instead of False.
+    if isinstance(include_pastes, str):
+        include_pastes = include_pastes.strip().lower() not in ("0", "false", "no", "")
+    breaches = hibp_breached_account(email)
+    if breaches is None:
+        # None means the API key is absent or the request failed — not just "no results".
+        return {"status": "error",
+                "summary": "hibp_account: API key missing or request failed"}
+    render_breached_account(email, breaches)
+    pastes: list[dict] = []
+    if include_pastes:
+        pastes_raw = hibp_pastes_for_account(email)
+        if pastes_raw is None:
+            pastes_raw = []  # API key issue for pastes; breaches still valid above
+        render_pastes_for_account(email, pastes_raw)
+        pastes = pastes_raw
+    return {
+        "status":  "ok",
+        "summary": f"{email}: {len(breaches)} breach(es), {len(pastes)} paste(s)",
+        "data":    {
+            "email":        email,
+            "breaches":     breaches,
+            "pastes":       pastes,
+            "breach_count": len(breaches),
+            "paste_count":  len(pastes),
+        },
+    }
+
+
+def _dispatch_hibp_domain(args: dict, ia_agent) -> dict:
+    """AI plan dispatcher for the hibp_domain tool.
+
+    The free HIBP domain endpoint, so no API key gating here.
+    The planner can use this to check whether a target domain has
+    ever suffered a recorded breach without needing credentials.
+    """
+    from analysis.hibp import hibp_breaches_for_domain, render_breaches_for_domain
+    domain = (args.get("domain") or "").strip()
+    if not domain:
+        return {"status": "error", "summary": "hibp_domain: missing 'domain'"}
+    breaches = hibp_breaches_for_domain(domain)
+    render_breaches_for_domain(domain, breaches)
+    return {
+        "status":  "ok",
+        "summary": f"{domain}: {len(breaches)} breach(es) recorded",
+        "data":    {"domain": domain, "breaches": breaches},
+    }
+
+
+def _dispatch_hibp_breach(args: dict, ia_agent) -> dict:
+    """AI plan dispatcher for the hibp_breach tool.
+
+    Fetches the full metadata for a single named breach. Useful when
+    the planner has spotted a breach name (e.g. from hibp_account results)
+    and wants to understand what data classes were exposed before deciding
+    the next investigation step.
+    """
+    from analysis.hibp import hibp_breach
+    name = (args.get("name") or "").strip()
+    if not name:
+        return {"status": "error", "summary": "hibp_breach: missing 'name'"}
+    info = hibp_breach(name)
+    if not info:
+        # 404 from HIBP — name doesn't match any known breach identifier
+        return {"status": "error", "summary": f"hibp_breach: no record for '{name}'"}
+    return {
+        "status":  "ok",
+        # Summary is concise for the ReAct log; full metadata lives in "data".
+        "summary": (f"{info.get('Name')} ({info.get('BreachDate')}): "
+                    f"{info.get('PwnCount', 0):,} accounts, "
+                    f"data classes: {', '.join(info.get('DataClasses') or [])[:80]}"),
+        "data":    info,
+    }
+
+
+def _dispatch_hibp_password(args: dict, ia_agent) -> dict:
+    """AI plan dispatcher for the hibp_password tool.
+
+    Accepts either a ``password`` (cleartext — will be hashed locally before
+    any network call) or a pre-computed ``sha1`` hex string. The ``via`` field
+    in the returned data records which path was taken, useful for audit logs.
+
+    Reminder: this dispatcher should NOT be called with the user's actual
+    password in a plan step that gets logged. Prefer the ``sha1`` arg in
+    automated contexts where the hash can be computed upstream.
+    """
+    from analysis.hibp import (hibp_password_pwned, hibp_password_pwned_hash,
+                               render_password_pwned)
+    password = args.get("password") or ""
+    sha1 = (args.get("sha1") or "").strip()
+    if not (password or sha1):
+        # Neither argument provided — tell the planner it needs one or the other.
+        return {"status": "error",
+                "summary": "hibp_password: provide either 'password' or 'sha1'"}
+    # Prefer sha1 if supplied (avoids re-hashing and is safer in log contexts).
+    count = (hibp_password_pwned_hash(sha1) if sha1
+             else hibp_password_pwned(password))
+    render_password_pwned(count)
+    if count is None:
+        return {"status": "error", "summary": "hibp_password: lookup failed"}
+    return {
+        "status":  "ok",
+        "summary": (f"password seen {count:,} time(s) in HIBP corpus"
+                    if count else "password not in any known HIBP breach"),
+        "data":    {"count": count, "via": "sha1" if sha1 else "password"},
+    }
+
+
 TOOL_DISPATCH: dict[str, Callable[..., dict]] = {
     "search":                _dispatch_search,
     "deep_search":           _dispatch_deep_search,
@@ -893,6 +1057,10 @@ TOOL_DISPATCH: dict[str, Callable[..., dict]] = {
     "http_security_headers": _dispatch_http_security_headers,
     "subdomains":            _dispatch_subdomains,
     "reverse_image":         _dispatch_reverse_image,
+    "hibp_account":          _dispatch_hibp_account,
+    "hibp_domain":           _dispatch_hibp_domain,
+    "hibp_breach":           _dispatch_hibp_breach,
+    "hibp_password":         _dispatch_hibp_password,
 }
 
 

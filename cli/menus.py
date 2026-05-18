@@ -523,10 +523,115 @@ _MAIN_MENU_CHOICES = [
     ("Web Technology Scan",    "tech",     "Tech stack fingerprinting"),
     ("Username Enumeration",   "user-enum","Sherlock · 400+ sites"),
     ("Domain Recon",           "recon",    "WHOIS · DNS · TLS · headers · subdomains"),
+    ("Breach & Leak Check",    "hibp",     "Have I Been Pwned: accounts · domains · passwords"),
     ("Load Saved Case",        "load",     "Resume a previous investigation"),
     ("Configure API Keys",     "config",   "Edit .env credentials"),
     ("Exit",                   "exit",     ""),
 ]
+
+
+# The four HIBP menu options. The description column shows in the picker
+# so users know at a glance whether they need an API key ("free" = no key needed).
+_HIBP_CHOICES = [
+    ("Check email",         "email",    "Breaches + pastes containing this address"),
+    ("Check domain",        "domain",   "Breaches affecting a domain (free)"),
+    ("Breach details",      "breach",   "Full metadata for one named breach"),
+    ("Check password",      "password", "Pwned Passwords k-anonymity (free, safe)"),
+    ("Back",                "back",     ""),
+]
+
+
+def _run_hibp_menu() -> None:
+    """Sub-menu for Have I Been Pwned breach + leak checks.
+
+    Loops until the user picks "Back" or presses Escape, so they can check
+    multiple emails, domains, or passwords in one session without returning
+    to the main menu each time. Lazy-imports analysis.hibp inside each branch
+    so the module (and its ``requests`` dependency) only load when needed.
+    """
+    while True:
+        header_bar("Breach & Leak Check", "Have I Been Pwned", glyph="🔒")
+        action = select_menu(
+            "Pick a HIBP lookup",
+            _HIBP_CHOICES,
+            default="email",
+        )
+        if action in (None, "back"):
+            break  # User escaped or picked Back — return to the main menu
+
+        if action == "email":
+            # Full account check: breaches + optional pastes.
+            # This is the most useful HIBP lookup for person OSINT.
+            # Requires HIBP_API_KEY — if it's missing, analysis.hibp will
+            # print an error message automatically.
+            from analysis.hibp import check_account
+            email = ask("Email address")
+            if not email:
+                print_error("Email cannot be empty.")
+                continue
+            include_pastes = confirm("Also check pastes?", default=True)
+            check_account(email, include_pastes=include_pastes)
+
+        elif action == "domain":
+            # Free endpoint — no key needed. Perfect for a quick company recon:
+            # "Has example.com ever appeared in a HIBP breach?"
+            from analysis.hibp import check_domain
+            domain = ask("Domain (e.g. example.com)")
+            if not domain:
+                print_error("Domain cannot be empty.")
+                continue
+            check_domain(domain)
+
+        elif action == "breach":
+            # Drill into a single breach by its HIBP name (usually the company name).
+            # Builds a key:value table then optionally renders the full description
+            # in a panel — breach descriptions can be quite long (and colourful).
+            from analysis.hibp import hibp_breach
+            name = ask("Breach name (e.g. Adobe, LinkedIn)")
+            if not name:
+                print_error("Breach name cannot be empty.")
+                continue
+            info = hibp_breach(name)
+            if not info:
+                # HIBP returned 404 — name doesn't match any known breach.
+                print_error(f"No record for '{name}'.")
+                continue
+            tbl = make_table(
+                f"Breach: {info.get('Name')}",
+                ("Field", THEME["PRIMARY"]),
+                ("Value", "white"),
+                show_lines=False,
+            )
+            tbl.add_row("Date",         str(info.get("BreachDate") or "?"))
+            tbl.add_row("Domain",       str(info.get("Domain") or "?"))
+            tbl.add_row("Accounts",     f"{int(info.get('PwnCount', 0)):,}")
+            tbl.add_row("Verified",     "yes" if info.get("IsVerified") else "no")
+            tbl.add_row("Sensitive",    "yes" if info.get("IsSensitive") else "no")
+            tbl.add_row("Data classes", ", ".join(info.get("DataClasses") or []))
+            console.print(tbl)
+            desc = (info.get("Description") or "").strip()
+            if desc:
+                # HIBP breach descriptions are prose paragraphs explaining what happened.
+                # Render in a cyan panel to visually separate narrative from tabular data.
+                panel(desc, title="Description", border="cyan")
+
+        elif action == "password":
+            # k-anonymity Pwned Passwords check.
+            # getpass suppresses terminal echo so the password never appears on screen.
+            # Ctrl+C / Ctrl+D is caught gracefully — we just continue the menu loop
+            # rather than blowing up with an unhandled exception.
+            import getpass
+            from analysis.hibp import check_password
+            try:
+                pw = getpass.getpass("  Password (hidden): ")
+            except (KeyboardInterrupt, EOFError):
+                # User changed their mind mid-prompt — that's fine, just loop back.
+                print_warn("Cancelled.")
+                continue
+            if not pw:
+                print_error("Password cannot be empty.")
+                continue
+            check_password(pw)
 
 
 _RECON_CHOICES = [
@@ -699,6 +804,8 @@ def show_main_menu() -> None:
             _run_username_enum()
         elif choice == "recon":
             _run_domain_recon()
+        elif choice == "hibp":
+            _run_hibp_menu()
         elif choice == "load":
             header_bar("Load Case", "Restore a saved investigation")
             ia_agent = select_ia_agent()
