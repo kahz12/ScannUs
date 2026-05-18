@@ -37,13 +37,21 @@ from typing import Any, Iterable
 
 # Per-namespace TTLs (seconds). Override at the call site if needed.
 DEFAULT_TTL: dict[str, int] = {
-    "search":      24 * 60 * 60,        # 24h — SERPs change slowly
-    "http_text":   6  * 60 * 60,        # 6h — page content drifts faster
-    "whois":       7  * 24 * 60 * 60,   # 7d — registry data rarely changes
-    "dns":         1  * 60 * 60,        # 1h — short to honour TTLs
-    "wayback":     30 * 24 * 60 * 60,   # 30d — archives are immutable
-    "crtsh":       24 * 60 * 60,        # 24h — CT logs grow append-only
-    "default":     6  * 60 * 60,
+    "search":        24 * 60 * 60,        # 24h — SERPs change slowly
+    "http_text":     6  * 60 * 60,        # 6h — page content drifts faster
+    "whois":         7  * 24 * 60 * 60,   # 7d — registry data rarely changes
+    "dns":           1  * 60 * 60,        # 1h — short to honour TTLs
+    "wayback":       30 * 24 * 60 * 60,   # 30d — archives are immutable
+    "crtsh":         24 * 60 * 60,        # 24h — CT logs grow append-only
+    "hibp_account":  12 * 60 * 60,        # 12h — HIBP updates breach data daily; 12h
+                                          #       is a polite balance between freshness
+                                          #       and not hammering Troy's servers.
+    "hibp_breach":   7  * 24 * 60 * 60,   # 7d  — Breach metadata (dates, data classes)
+                                          #       almost never changes after ingestion.
+    "hibp_password": 30 * 24 * 60 * 60,   # 30d — k-anon range responses are append-only;
+                                          #       a cached "clean" result stays valid
+                                          #       for a month before we re-check.
+    "default":       6  * 60 * 60,
 }
 
 

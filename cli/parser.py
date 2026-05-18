@@ -88,6 +88,10 @@ def show_custom_help(parser: argparse.ArgumentParser) -> None:
          'python main.py --load-case'),
         ("Domain recon (WHOIS+DNS+TLS+headers+subs)",
          'python main.py --recon example.com'),
+        ("Breach lookup for an email",
+         'python main.py --hibp-account target@example.com'),
+        ("Pwned-password check (interactive)",
+         'python main.py --hibp-password'),
     ]
 
     panels = []
@@ -183,6 +187,26 @@ def get_parser() -> argparse.ArgumentParser:
     domain.add_argument("--recon", type=str, metavar="DOMAIN|URL",
                         help="Full domain recon: WHOIS + DNS + TLS + headers + "
                              "subdomains (crt.sh) + optional Shodan.")
+
+    # ── Breach & leak checks (HIBP) ───────────────────────────────────────
+    # Four flags for Have I Been Pwned integration.
+    # Two require a paid HIBP_API_KEY (account, pastes);
+    # two are free (domain, breach metadata).
+    # The password check uses k-anonymity so the plaintext is never sent anywhere
+    # — which is why it's interactive (getpass) rather than a CLI argument;
+    # you *really* don't want your password in shell history or process listings.
+    hibp = parser.add_argument_group("Breach & Leak Checks (HIBP)")
+    hibp.add_argument("--hibp-account", type=str, metavar="EMAIL",
+                      help="List every Have I Been Pwned breach (and paste) "
+                           "an email address appears in. Requires HIBP_API_KEY.")
+    hibp.add_argument("--hibp-domain", type=str, metavar="DOMAIN",
+                      help="List breaches affecting a domain (free endpoint).")
+    hibp.add_argument("--hibp-breach", type=str, metavar="NAME",
+                      help="Show detailed metadata for a single named breach.")
+    hibp.add_argument("--hibp-password", action="store_true",
+                      help="Interactively prompt for a password and check it "
+                           "against Pwned Passwords via SHA-1 k-anonymity. "
+                           "The plaintext never leaves the process.")
 
     # ── Cache management ──────────────────────────────────────────────────
     cache = parser.add_argument_group("Cache Management")

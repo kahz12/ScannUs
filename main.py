@@ -69,6 +69,69 @@ def main():
         console.print(f"  Cleared {label}: {n} row(s) removed.")
         sys.exit(0)
 
+    # Route: HIBP breach & leak checks
+    # Each of the four --hibp-* flags maps to a specific analysis.hibp function.
+    # They're checked in order of "most likely to be useful first": account is the
+    # richest query, domain is the free overview, breach drills into one event,
+    # and password is the interactive k-anon check.
+
+    if getattr(args, "hibp_account", None):
+        # --hibp-account EMAIL: fetch + render breaches and pastes for an email.
+        # check_account() calls hibp_breached_account + hibp_pastes_for_account
+        # and renders both tables in one shot. Needs HIBP_API_KEY.
+        from analysis.hibp import check_account
+        check_account(args.hibp_account)
+        sys.exit(0)
+
+    if getattr(args, "hibp_domain", None):
+        # --hibp-domain DOMAIN: free endpoint, no API key needed.
+        # Good for a quick "has this company been breached?" check.
+        from analysis.hibp import check_domain
+        check_domain(args.hibp_domain)
+        sys.exit(0)
+
+    if getattr(args, "hibp_breach", None):
+        # --hibp-breach NAME: dump full metadata for a single named breach.
+        # The breach "Name" is HIBP's internal ID (usually the company name).
+        # We render it inline here rather than delegating to a renderer
+        # because the CLI wants a simple key:value display, not a Rich table.
+        from analysis.hibp import hibp_breach
+        info = hibp_breach(args.hibp_breach)
+        if not info:
+            console.print(f"[bold red]No record for breach '{args.hibp_breach}'.[/bold red]")
+        else:
+            console.print(
+                f"\n[bold]{info.get('Name')}[/bold]  ({info.get('BreachDate')})"
+            )
+            console.print(f"  domain      : {info.get('Domain')}")
+            console.print(f"  accounts    : {info.get('PwnCount', 0):,}")
+            console.print(f"  data classes: {', '.join(info.get('DataClasses') or [])}")
+            console.print(f"  verified    : {info.get('IsVerified')}")
+            desc = (info.get('Description') or '').strip()
+            if desc:
+                console.print(f"\n{desc}\n")
+        sys.exit(0)
+
+    if getattr(args, "hibp_password", False):
+        # --hibp-password: interactive hidden prompt + k-anonymity check.
+        # We use getpass (which suppresses echo) so the password never appears
+        # on screen, in shell history, or in process listings (/proc/cmdline).
+        # The plaintext also never hits the network — see analysis/hibp.py for
+        # the k-anon design details.
+        import getpass
+        from analysis.hibp import check_password
+        try:
+            pw = getpass.getpass("  Password (hidden): ")
+        except (KeyboardInterrupt, EOFError):
+            # User hit Ctrl+C or Ctrl+D — exit cleanly, no stack trace.
+            console.print("\n[yellow]Cancelled.[/yellow]")
+            sys.exit(1)
+        if not pw:
+            console.print("[bold red]Password cannot be empty.[/bold red]")
+            sys.exit(1)
+        check_password(pw)
+        sys.exit(0)
+
     # Route: Reverse Image Search payload processing
     if args.reverse:
         do_reverse_image_search(args.reverse)
