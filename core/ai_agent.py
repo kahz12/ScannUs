@@ -483,6 +483,18 @@ TOOL_CATALOG: dict[str, dict] = {
             "backend":  "str — auto | sherlock | maigret (default: auto)",
         },
     },
+    "email_enum": {
+        # Complements hibp_account: HIBP says where an email LEAKED;
+        # email_enum says where it's currently REGISTERED on live services.
+        "desc": "Enumerate service registrations for an email via Holehe "
+                "(~120 sites: Instagram, Twitter, Pinterest, Spotify, etc.). "
+                "Complements hibp_account — HIBP surfaces leaks, email_enum "
+                "surfaces current registrations.",
+        "args": {
+            "email":     "str (required)",
+            "only_used": "bool — show only claimed accounts (default: true)",
+        },
+    },
     "screenshot": {
         "desc": "Capture a full-page screenshot of a URL using a headless browser.",
         "args": {"url": "str (required)"},
@@ -702,6 +714,29 @@ def _dispatch_username_enum(args: dict, ia_agent) -> dict:
     except Exception as e:
         return {"status": "error", "summary": f"username_enum failed: {e}"}
     return {"status": "ok", "summary": f"username_enum completed for @{username}", "data": {}}
+
+
+def _dispatch_email_enum(args: dict, ia_agent) -> dict:
+    from search.email_enum import email_enum, HOLEHE_AVAILABLE
+    email = (args.get("email") or "").strip()
+    if not email:
+        return {"status": "error", "summary": "email_enum: missing 'email'"}
+    if not HOLEHE_AVAILABLE:
+        return {"status": "error",
+                "summary": "email_enum: holehe not installed (pip install holehe)"}
+    only_used = bool(args.get("only_used", True))
+    try:
+        results = email_enum(email, only_used=only_used)
+    except Exception as e:
+        return {"status": "error", "summary": f"email_enum failed: {e}"}
+    if results is None:
+        return {"status": "error", "summary": "email_enum: holehe unavailable"}
+    claimed = sum(1 for r in results if r.get("status") == "claimed")
+    return {
+        "status":  "ok",
+        "summary": f"email_enum: {claimed} service registration(s) found for {email}",
+        "data":    {"claimed": claimed, "total": len(results)},
+    }
 
 
 def _dispatch_screenshot(args: dict, ia_agent) -> dict:
@@ -1044,6 +1079,7 @@ TOOL_DISPATCH: dict[str, Callable[..., dict]] = {
     "extract_pii":           _dispatch_extract_pii,
     "tech_scan":             _dispatch_tech_scan,
     "username_enum":         _dispatch_username_enum,
+    "email_enum":            _dispatch_email_enum,
     "screenshot":            _dispatch_screenshot,
     "wayback":               _dispatch_wayback,
     "wayback_fetch":         _dispatch_wayback_fetch,

@@ -150,6 +150,13 @@ def main():
                       backend=getattr(args, "enum_backend", "auto"))
         sys.exit(0)
 
+    # Route: Email enumeration via Holehe (~120 services)
+    if getattr(args, "email_enum", None):
+        from search.email_enum import email_enum
+        email_enum(args.email_enum,
+                   only_used=not getattr(args, "email_enum_all", False))
+        sys.exit(0)
+
     # Route: LLM-based query planner (multi-step ReAct investigation)
     if getattr(args, "plan", None):
         from cli.actions import do_query_planner

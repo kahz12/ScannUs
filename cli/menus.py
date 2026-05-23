@@ -41,6 +41,7 @@ from analysis.domain_osint import (
 )
 from search.smart_search import extract_information
 from search.username_enum import username_enum
+from search.email_enum import email_enum
 from utils.file_download import FileDownload
 from utils.media_downloader import download_media
 from utils.results_parse import ResultsParser
@@ -522,6 +523,7 @@ _MAIN_MENU_CHOICES = [
     ("Reverse Image Lookup",   "reverse",  "TinEye · Bing · Yandex · manual URLs"),
     ("Web Technology Scan",    "tech",     "Tech stack fingerprinting"),
     ("Username Enumeration",   "user-enum","Sherlock · 400+ sites"),
+    ("Email Enumeration",      "email-enum","Holehe · ~120 services"),
     ("Domain Recon",           "recon",    "WHOIS · DNS · TLS · headers · subdomains"),
     ("Breach & Leak Check",    "hibp",     "Have I Been Pwned: accounts · domains · passwords"),
     ("Load Saved Case",        "load",     "Resume a previous investigation"),
@@ -761,6 +763,24 @@ def _run_username_enum() -> None:
     username_enum(handle, backend=backend, timeout=timeout)
 
 
+def _run_email_enum() -> None:
+    header_bar("Email Enumeration", "Check ~120 services via Holehe")
+    email = ask("Email address")
+    if not email:
+        print_error("Email cannot be empty.")
+        return
+    only_used = confirm(
+        "Show only services where the email is registered?",
+        default=True,
+    )
+    timeout_str = ask("Per-site timeout in seconds", default="10")
+    try:
+        timeout = max(3, int(timeout_str))
+    except ValueError:
+        timeout = 10
+    email_enum(email, only_used=only_used, timeout=timeout)
+
+
 def show_main_menu() -> None:
     """Root navigation menu for ScannUs."""
     while True:
@@ -802,6 +822,8 @@ def show_main_menu() -> None:
             _run_tech_scan()
         elif choice == "user-enum":
             _run_username_enum()
+        elif choice == "email-enum":
+            _run_email_enum()
         elif choice == "recon":
             _run_domain_recon()
         elif choice == "hibp":

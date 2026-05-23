@@ -163,6 +163,10 @@ def get_parser() -> argparse.ArgumentParser:
                         help="Enumerate accounts for a username via Sherlock/Maigret (400+ sites).")
     search.add_argument("--enum-backend", type=str, default="auto", metavar="ENGINE",
                         help="Username enumeration backend: auto | sherlock | maigret (default: auto).")
+    search.add_argument("--email-enum", metavar="EMAIL",
+                        help="Enumerate service registrations for an email via Holehe (~120 sites).")
+    search.add_argument("--email-enum-all", action="store_true",
+                        help="With --email-enum, include services where the email is NOT registered.")
     search.add_argument("--start-page",    type=int, default=1, metavar="N",
                         help="Starting SERP page index (default: 1).")
     search.add_argument("--pages",         type=int, default=1, metavar="N",

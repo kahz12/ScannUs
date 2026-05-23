@@ -51,6 +51,10 @@ DEFAULT_TTL: dict[str, int] = {
     "hibp_password": 30 * 24 * 60 * 60,   # 30d — k-anon range responses are append-only;
                                           #       a cached "clean" result stays valid
                                           #       for a month before we re-check.
+    "email_enum":    12 * 60 * 60,        # 12h — Holehe service-presence checks; matches
+                                          #       hibp_account since both key on email and
+                                          #       services rarely flip overnight. Each run
+                                          #       hits ~120 endpoints, so caching is worth it.
     "default":       6  * 60 * 60,
 }
 

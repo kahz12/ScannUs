@@ -460,6 +460,7 @@ El planificador solo puede invocar herramientas en lista blanca. A la fecha de e
 | `extract_pii` | Rastrear una URL y extraer PII |
 | `tech_scan` | Fingerprinting de tecnologías web |
 | `username_enum` | Enumeración Sherlock/Maigret |
+| `email_enum` | Búsqueda de registros en ~120 servicios vía Holehe |
 | `screenshot` | Captura de página completa |
 | `wayback` | Timeline de capturas |
 | `wayback_fetch` | Obtener contenido archivado en bruto |
@@ -711,6 +712,45 @@ Los resultados se renderizan en una tabla:
 │ Reddit      │ https://reddit.com/user/jperez88  │
 ╰─────────────┴───────────────────────────────────╯
 ```
+
+### 7.1 Enumeración de Emails (Holehe)
+
+El equivalente de Sherlock/Maigret para correos electrónicos. Dado un email,
+**Holehe** sondea ~120 servicios (Instagram, Twitter, Pinterest, Spotify,
+Adobe, Pornhub, …) mediante sus flujos de recuperación de contraseña y
+reporta dónde está registrada la dirección — *sin enviar ningún correo al
+objetivo*.
+
+```bash
+python main.py --email-enum objetivo@example.com              # solo servicios reclamados
+python main.py --email-enum objetivo@example.com --email-enum-all   # reporte completo
+```
+
+TUI: menú principal → **Enumeración de Emails**.
+
+**En qué se diferencia de herramientas relacionadas:**
+
+| Herramienta | Qué responde |
+|---|---|
+| `--hibp-account` | *¿Este email apareció en alguna filtración conocida?* |
+| `--email-enum` (Holehe) | *¿Dónde está registrado este email hoy?* |
+| `-e/--email` (PII profundo) | *¿Qué dice la web sobre este email — páginas, menciones, PII?* |
+
+Los resultados se cachean 12h bajo el namespace `email_enum`, así que reejecutar
+la misma búsqueda es instantáneo.
+
+**Limitaciones:**
+
+- Los detectores por sitio se degradan a medida que los servicios cambian sus
+  flujos de recuperación — espera falsos negativos ocasionales. Fija una
+  versión conocida de `holehe` en `requirements.txt`.
+- Algunos sitios aplican rate-limit silenciosamente; los resultados de una
+  sola ejecución pueden subreportar. Vuelve a intentarlo tras unos minutos
+  si una cuenta conocida no aparece.
+- **No** lo uses para enumeración masiva: los rate limits + captchas te bloquearán.
+
+**Instalación:** `pip install holehe`. Si falta, `--email-enum` imprime una
+sugerencia amistosa de instalación y sale limpiamente.
 
 ---
 

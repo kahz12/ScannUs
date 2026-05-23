@@ -57,3 +57,7 @@ sherlock-project                 # 400+ social sites — pure-Python, works ever
                                  # Pins aiohttp==3.8.x which has no aarch64-android wheels;
                                  # source build requires the full Rust toolchain (maturin).
                                  # Install on Linux/macOS only:  pip install maigret
+
+# --- Email enumeration ---
+holehe                           # ~120 services — checks where an email is registered
+                                 # via password-reset flows. Complements HIBP (leaks).

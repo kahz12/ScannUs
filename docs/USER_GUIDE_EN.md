@@ -460,6 +460,7 @@ The planner can only call whitelisted tools. As of this guide, 22 tools are expo
 | `extract_pii` | Crawl one URL and extract PII |
 | `tech_scan` | Fingerprint web tech |
 | `username_enum` | Sherlock/Maigret enumeration |
+| `email_enum` | Holehe ~120-service registration lookup |
 | `screenshot` | Full-page screenshot |
 | `wayback` | Snapshot timeline |
 | `wayback_fetch` | Fetch raw archived content |
@@ -711,6 +712,42 @@ Results are rendered in a table:
 │ Reddit      │ https://reddit.com/user/jdoe88    │
 ╰─────────────┴───────────────────────────────────╯
 ```
+
+### 7.1 Email Enumeration (Holehe)
+
+The email counterpart to Sherlock/Maigret. Given an email, **Holehe** probes
+~120 services (Instagram, Twitter, Pinterest, Spotify, Adobe, Pornhub, …) via
+their password-reset endpoints and reports where the address is registered —
+*without sending any email to the target*.
+
+```bash
+python main.py --email-enum target@example.com           # claimed services only
+python main.py --email-enum target@example.com --email-enum-all   # full report
+```
+
+TUI: Main menu → **Email Enumeration**.
+
+**How it differs from related tools:**
+
+| Tool | What it answers |
+|---|---|
+| `--hibp-account` | *Has this email been leaked in a known data breach?* |
+| `--email-enum` (Holehe) | *Where is this email currently registered today?* |
+| `-e/--email` (deep PII) | *What does the web say about this email — pages, mentions, PII?* |
+
+Results cache for 12h under the `email_enum` namespace, so re-running on the
+same address is instant.
+
+**Limitations:**
+
+- Per-site detectors rot as services change their reset UX — expect occasional
+  false negatives. Pin a known-good `holehe` version in `requirements.txt`.
+- Some sites silently rate-limit Holehe; results from a single run may
+  under-report. Re-run after a few minutes if a known account isn't surfaced.
+- **Do not** use this for bulk enumeration: rate limits + captchas will block you.
+
+**Install:** `pip install holehe`. If absent, `--email-enum` prints a friendly
+install hint and exits cleanly.
 
 ---
 
