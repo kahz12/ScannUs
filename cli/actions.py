@@ -127,8 +127,8 @@ def do_deep_search(query: str, engine: str, pages: int, start_page: int, lang: s
     else:
         print_warn("No PII or sensitive identifiers extracted from the reviewed links.")
 
-    state.CASO_ACTUAL["terminos"] = {"type": "deep", "value": query}
-    state.ULTIMOS_RESULTADOS = resultados
+    state.CURRENT_CASE["search_params"] = {"type": "deep", "value": query}
+    state.LAST_RESULTS = resultados
 
 
 def do_search(query: str, engine: str, pages: int, start_page: int,
@@ -147,8 +147,8 @@ def do_search(query: str, engine: str, pages: int, start_page: int,
     print_success(f"{len(resultados)} results retrieved.")
     console.print()
 
-    state.CASO_ACTUAL["terminos"] = {"type": "direct", "value": query}
-    state.ULTIMOS_RESULTADOS = resultados
+    state.CURRENT_CASE["search_params"] = {"type": "direct", "value": query}
+    state.LAST_RESULTS = resultados
 
     if interactive:
         if not ia_agent:

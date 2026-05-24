@@ -100,7 +100,8 @@ def _headers(api_key: str | None = None) -> dict:
 
 
 def _get(url: str, *, api_key: str | None = None,
-         timeout: float = _DEFAULT_TIMEOUT) -> tuple[int, Any]:
+         timeout: float = _DEFAULT_TIMEOUT,
+         namespace: str = "hibp_account") -> tuple[int, Any]:
     """
     Perform a GET against HIBP and normalise the response.
 
@@ -112,10 +113,13 @@ def _get(url: str, *, api_key: str | None = None,
     raw text for non-2xx (so we can surface a useful error), or ``status=0``
     on transport failure.
 
-    Rate-limited (per-namespace token bucket, ~1.5 rps for ``hibp_account``)
-    and retried on transient HTTP errors (429/502/503/504) via
-    :func:`core.throttle.retry_http_sync`. ``Retry-After`` is honoured when
-    present so we back off as much as HIBP wants us to.
+    ``namespace`` selects the rate-limit bucket: the paid account/paste
+    endpoints use ``hibp_account`` (~1.5 rps — HIBP throttles those), while
+    the free catalog endpoints pass ``hibp_breach`` (~5 rps — Cloudflare-
+    fronted and far more lenient). Requests are retried on transient HTTP
+    errors (429/502/503/504) via :func:`core.throttle.retry_http_sync`, and
+    ``Retry-After`` is honoured when present so we back off as much as HIBP
+    wants us to.
 
     Why not raise on errors? Because OSINT tools should degrade gracefully —
     a network hiccup shouldn't abort a 30-step investigation plan.
@@ -127,7 +131,7 @@ def _get(url: str, *, api_key: str | None = None,
             return 0, f"transport: {e}", None
         return r.status_code, r, r.headers.get("Retry-After")
 
-    status, body = retry_http_sync(_once, namespace="hibp_account", max_retries=2)
+    status, body = retry_http_sync(_once, namespace=namespace, max_retries=2)
 
     # body is the requests.Response (or the transport-error string for status=0)
     if status == 0:
@@ -259,7 +263,7 @@ def _fetch_breaches_for_domain(domain: str) -> list[dict]:
     Private uncached version.
     """
     url = f"{_HIBP_API}/breaches?domain={quote(domain, safe='')}"
-    status, body = _get(url)
+    status, body = _get(url, namespace="hibp_breach")
     if status == 200 and isinstance(body, list):
         return body
     return []  # On error, return empty rather than crashing
@@ -286,7 +290,7 @@ def _fetch_breach(name: str) -> dict | None:
     for a large compilation breach). Private uncached version.
     """
     url = f"{_HIBP_API}/breach/{quote(name, safe='')}"
-    status, body = _get(url)
+    status, body = _get(url, namespace="hibp_breach")
     if status == 200 and isinstance(body, dict):
         return body
     return None
@@ -313,7 +317,7 @@ def _fetch_all_breaches() -> list[dict]:
     700+ breaches. Great for building dashboards; expensive on first call;
     hence the 7-day cache below. Private uncached version.
     """
-    status, body = _get(f"{_HIBP_API}/breaches")
+    status, body = _get(f"{_HIBP_API}/breaches", namespace="hibp_breach")
     if status == 200 and isinstance(body, list):
         return body
     return []

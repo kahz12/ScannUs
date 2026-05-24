@@ -13,6 +13,7 @@ from bs4 import BeautifulSoup
 from urllib.parse import urlparse
 from cli.ui import console, THEME, print_info, print_warn, print_error, print_success, make_table
 from core.config import DIR_SCREENSHOTS
+from core.throttle import throttled
 
 
 # ---------------------------------------------------------------------------
@@ -210,6 +211,7 @@ def _format_cdx_timestamp(ts: str) -> str:
     return ts
 
 
+@throttled(namespace="wayback")
 def check_wayback_machine(url: str, limit: int = 20,
                           from_year: int | None = None,
                           to_year: int | None = None) -> list[dict] | None:
@@ -305,6 +307,7 @@ import difflib as _difflib
 import hashlib as _hashlib
 
 
+@throttled(namespace="wayback")
 def wayback_resolve_timestamp(url: str, when: str = "latest") -> str | None:
     """
     Resolve a fuzzy time spec to a concrete CDX timestamp for *url*.
@@ -360,8 +363,14 @@ def _wayback_raw_url(timestamp: str, url: str) -> str:
     return f"https://web.archive.org/web/{timestamp}id_/{url}"
 
 
+@throttled(namespace="wayback")
 def _wayback_fetch_uncached(url: str, ts: str) -> dict | None:
-    """Uncached Wayback snapshot fetch + HTML-to-text extraction."""
+    """Uncached Wayback snapshot fetch + HTML-to-text extraction.
+
+    Rate-limited via the shared ``wayback`` bucket. Sits inside
+    ``cached_call`` (see ``wayback_fetch_snapshot``), so only real
+    Archive.org fetches consume a token — cache hits skip it.
+    """
     archive_url = _wayback_raw_url(ts, url)
     try:
         r = requests.get(archive_url, timeout=30,

@@ -49,9 +49,18 @@ class GoogleSearch:
         base_url = "https://www.googleapis.com/customsearch/v1"
 
         for page in range(pages):
-            # Calculate the 'start' query parameter.
-            # It represents the 1-based index of the first result to return.
-            # Page 1 = start 1, Page 2 = start 11, etc.
+            # The Google CSE 'start' parameter is a 1-based result index, not
+            # a page number. Formula breakdown:
+            #   (start_page - 1) * results_per_page   — skip results from any
+            #       pages before our requested start_page (e.g. start_page=2
+            #       skips the first 10 results, landing at index 11).
+            #   + 1                                   — convert to 1-based index.
+            #   + (page * results_per_page)           — advance by full pages
+            #       as the outer loop iterates (page=0 → no skip, page=1 →
+            #       skip 10 more, etc.)
+            # Example: start_page=1, results_per_page=10, page=0 → start=1
+            #          start_page=1, results_per_page=10, page=1 → start=11
+            #          start_page=2, results_per_page=10, page=0 → start=11
             start_index = (start_page - 1) * results_per_page + 1 + (page * results_per_page)
 
             params = {

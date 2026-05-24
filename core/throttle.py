@@ -57,6 +57,17 @@ DEFAULT_RATES: dict[str, float] = {
     "crtsh":          0.5,    # crt.sh frequently returns 502 — be slow + patient
     "shodan":         1.0,    # Shodan free tier docs: 1 rps
     "wayback":        2.0,
+
+    # Subprocess enumerators — each spawn launches a heavy external CLI that
+    # itself probes hundreds–thousands of sites over seconds–minutes. The
+    # bucket throttles how often *we* launch them, giving backpressure when an
+    # agent/batch loop fires them repeatedly. Capacity defaults to 1 token, so
+    # a lone interactive call never waits; only sustained back-to-back launches
+    # get spaced out (≈ 1/rate seconds apart).
+    "sherlock":       0.5,    # ~400 sites; sustained launches spaced ~2s
+    "maigret":        0.2,    # ~3000 sites, very heavy — spaced ~5s
+    "holehe":         0.5,    # ~120 sites
+
     "default":        2.0,
 }
 

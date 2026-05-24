@@ -6,7 +6,7 @@ from cli.ui import console, print_startup_banner
 from cli.parser import get_parser, show_custom_help
 from cli.menus import show_main_menu, select_ia_agent
 from search.reverse_image import do_reverse_image_search
-from core.case_manager import cargar_caso
+from core.case_manager import load_case
 from utils.file_download import FileDownload
 from utils.media_downloader import download_media
 from utils.results_parse import ResultsParser
@@ -179,9 +179,9 @@ def main():
 
     # Route: Reload serialized state from previous investigations
     if args.load_case:
-        if cargar_caso():
+        if load_case():
             from cli.menus import interactive_analysis_menu
-            interactive_analysis_menu(state.ULTIMOS_RESULTADOS, ia_agent)
+            interactive_analysis_menu(state.LAST_RESULTS, ia_agent)
         sys.exit(0)
         
     # Route: LLM-based Google Dork generation
@@ -199,11 +199,11 @@ def main():
     query = args.query
     if not query:
         guided_parts = []
-        if args.nombre: guided_parts.append(f'"{args.nombre}"')
-        if args.usuario: guided_parts.append(f'"{args.usuario}"')
-        if args.email: guided_parts.append(f'"{args.email}"')
-        if args.telefono: guided_parts.append(f'"{args.telefono}"')
-        if args.buscar: guided_parts.append(f'"{args.buscar}"')
+        if args.name:     guided_parts.append(f'"{args.name}"')
+        if args.username: guided_parts.append(f'"{args.username}"')
+        if args.email:    guided_parts.append(f'"{args.email}"')
+        if args.phone:    guided_parts.append(f'"{args.phone}"')
+        if args.search:   guided_parts.append(f'"{args.search}"')
         
         # Aggregate parameters into a logical AND query
         if guided_parts:
@@ -218,31 +218,31 @@ def main():
     from cli.actions import do_search, do_deep_search
 
     # Dispatch to appropriate search engine or deep analysis pipeline
-    if args.deep or args.email or args.telefono:
+    if args.deep or args.email or args.phone:
         do_deep_search(query, args.engine, args.pages, args.start_page, args.lang)
     else:
         do_search(query, args.engine, args.pages, args.start_page, args.lang, args.interactive, ia_agent)
-    
+
     # Post-processing and export logic (active only if not in interactive mode)
-    if not args.interactive and not (args.deep or args.email or args.telefono):
-        resultados = state.ULTIMOS_RESULTADOS 
-        rparser = ResultsParser(resultados)
-        
+    if not args.interactive and not (args.deep or args.email or args.phone):
+        results = state.LAST_RESULTS
+        rparser = ResultsParser(results)
+
         # Batch export results to requested formats
-        if args.html: rparser.exportar_html(args.html)
-        if args.json: rparser.exportar_json(args.json)
-        if args.csv: rparser.exportar_csv(args.csv)
-        if args.excel: rparser.exportar_excel(args.excel)
-        
+        if args.html: rparser.export_html(args.html)
+        if args.json: rparser.export_json(args.json)
+        if args.csv: rparser.export_csv(args.csv)
+        if args.excel: rparser.export_excel(args.excel)
+
         # Execute automated file downloads and metadata extraction
         if args.download:
             file_types = [ft.strip() for ft in args.download.split(',')]
-            urls = [resultado['link'] for resultado in resultados]
+            urls = [r['link'] for r in results]
             fdownloader = FileDownload("Downloads")
             for url in urls:
                 # Filter by file extension or process all if 'all' wildcard is used
                 if any(url.lower().endswith(f".{file_type}") for file_type in file_types) or "all" in file_types:
-                    fdownloader.descargar_archivo(url, args.metadata)
+                    fdownloader.download_file(url, args.metadata)
 
 if __name__ == "__main__":
     main()

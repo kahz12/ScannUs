@@ -8,39 +8,41 @@ from core import state
 from core.database import DBManager
 
 
-def guardar_caso() -> None:
+def save_case() -> None:
     """
-    Saves the current session into the local SQLite database.
-    If a case with the same name already exists, prompts the user to overwrite.
+    Prompts the user for a case name and persists the current session to the
+    local SQLite database. If a case with the same name already exists, offers
+    an overwrite prompt rather than silently failing or duplicating.
     """
-    if not state.CASO_ACTUAL.get("resultados"):
+    if not state.CURRENT_CASE.get("results"):
         print_warn("No results to save — run a search first.")
         return
 
-    nombre_caso = console.input(
+    case_name = console.input(
         f"  [{THEME['DIM']}]Case name (e.g. investigation_z):[/] [{THEME['INPUT']}]❯[/] "
     ).strip()
 
-    if not nombre_caso:
+    if not case_name:
         print_error("Case name cannot be empty.")
         return
 
     db = DBManager()
-    success, message, conflict = db.save_case(nombre_caso, state.CASO_ACTUAL)
+    success, message, conflict = db.save_case(case_name, state.CURRENT_CASE)
 
     if success:
         print_success(message)
         return
 
     if conflict:
-        # Name already exists — offer to overwrite
+        # The name already exists in the DB — ask before overwriting so the
+        # user doesn't accidentally clobber a previous investigation.
         confirm = console.input(
-            f"  [{THEME['WARN']}]⚠[/]  Case '{nombre_caso}' already exists. "
+            f"  [{THEME['WARN']}]⚠[/]  Case '{case_name}' already exists. "
             f"Overwrite? (y/n) [{THEME['INPUT']}]❯[/] "
         ).strip().lower()
 
-        if confirm in ("y", "s"):
-            ok, msg = db.update_case(nombre_caso, state.CASO_ACTUAL)
+        if confirm == "y":
+            ok, msg = db.update_case(case_name, state.CURRENT_CASE)
             if ok:
                 print_success(msg)
             else:
@@ -51,33 +53,33 @@ def guardar_caso() -> None:
         print_error(message)
 
 
-
-def cargar_caso() -> bool:
+def load_case() -> bool:
     """
-    Lists all saved cases in a Rich table, prompts the user to select one,
-    and loads it into global state.
+    Lists all saved cases in a Rich table, prompts the user to select one by
+    number, and restores it into the global session state.
 
     Returns:
-        True if a case was loaded successfully, False otherwise.
+        True if a case was loaded successfully, False otherwise (no cases in
+        the DB, invalid selection, missing data, or empty result set).
     """
     db = DBManager()
-    casos = db.get_all_cases()
+    saved_cases = db.get_all_cases()
 
-    if not casos:
+    if not saved_cases:
         print_warn("No saved cases found — save a search session first (option 'save').")
         return False
 
-    # Render saved cases as a styled table
+    # Render the case list so the user can identify which number to enter.
     tbl = make_table(
-        f"Saved Cases  [{THEME['DIM']}]({len(casos)} total)[/]",
-        ("#",    THEME["DIM"]),
-        ("Name", "bold white"),
+        f"Saved Cases  [{THEME['DIM']}]({len(saved_cases)} total)[/]",
+        ("#",       THEME["DIM"]),
+        ("Name",    "bold white"),
         ("Created", THEME["DIM"]),
         show_lines=False,
     )
-    for i, caso in enumerate(casos, 1):
-        # caso → (id, name, created_at)
-        tbl.add_row(str(i), caso[1], str(caso[2]))
+    for i, row in enumerate(saved_cases, 1):
+        # Each row from get_all_cases() is (id, name, created_at).
+        tbl.add_row(str(i), row[1], str(row[2]))
 
     console.print()
     console.print(tbl)
@@ -86,28 +88,30 @@ def cargar_caso() -> bool:
         f"\n  [{THEME['DIM']}]Select case number to load:[/] [{THEME['INPUT']}]❯[/] "
     ).strip()
 
-    if not choice.isdigit() or not (1 <= int(choice) <= len(casos)):
+    if not choice.isdigit() or not (1 <= int(choice) <= len(saved_cases)):
         print_error(f"'{choice}' is not a valid selection.")
         return False
 
     case_idx  = int(choice) - 1
-    case_id   = casos[case_idx][0]
-    case_name = casos[case_idx][1]
+    case_id   = saved_cases[case_idx][0]
+    case_name = saved_cases[case_idx][1]
 
-    datos_caso = db.get_case_by_id(case_id)
-    if not datos_caso:
+    case_data = db.get_case_by_id(case_id)
+    if not case_data:
         print_error("Could not load case data from the database.")
         return False
 
-    state.CASO_ACTUAL       = datos_caso
-    state.ULTIMOS_RESULTADOS = state.CASO_ACTUAL.get("resultados", [])
+    # Restore the session globals so menus and the AI planner can pick up
+    # from where the previous session left off.
+    state.CURRENT_CASE  = case_data
+    state.LAST_RESULTS  = state.CURRENT_CASE.get("results", [])
 
-    if not state.ULTIMOS_RESULTADOS:
+    if not state.LAST_RESULTS:
         print_warn("The selected case exists but contains no results.")
         return False
 
     print_success(
         f"Case '[bold]{case_name}[/bold]' loaded — "
-        f"{len(state.ULTIMOS_RESULTADOS)} results available."
+        f"{len(state.LAST_RESULTS)} results available."
     )
     return True

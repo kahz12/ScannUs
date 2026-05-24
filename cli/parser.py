@@ -144,15 +144,15 @@ def get_parser() -> argparse.ArgumentParser:
     search = parser.add_argument_group("Search Parameters")
     search.add_argument("--engine",     type=str, default="duckduckgo", metavar="ENGINE",
                         help="Search engine: google | duckduckgo | brave  (default: duckduckgo).")
-    search.add_argument("-n", "--nombre",   metavar="NAME",
+    search.add_argument("-n", "--name",     metavar="NAME",
                         help="Target's full legal name.")
-    search.add_argument("-u", "--usuario",  metavar="HANDLE",
+    search.add_argument("-u", "--username", metavar="HANDLE",
                         help="Target's username or social handle.")
-    search.add_argument("-b", "--buscar",   metavar="TERM",
+    search.add_argument("-b", "--search",   metavar="TERM",
                         help="Generic keyword or search topic.")
     search.add_argument("-e", "--email",    metavar="EMAIL",
                         help="Target's email address (triggers deep PII mode).")
-    search.add_argument("-t", "--telefono", metavar="PHONE",
+    search.add_argument("-t", "--phone",    metavar="PHONE",
                         help="Target's phone number (triggers deep PII mode).")
     search.add_argument("--deep",           action="store_true",
                         help="Recursively analyse each result URL for PII.")

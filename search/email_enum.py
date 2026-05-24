@@ -36,6 +36,7 @@ from cli.ui import (
 )
 from core.config import DIR_REPORTS
 from core.cache import cached_call
+from core.throttle import throttled
 
 
 # ---------------------------------------------------------------------------
@@ -56,12 +57,17 @@ _FOUND_VALUES = {"true", "1", "yes"}
 # Holehe backend
 # ---------------------------------------------------------------------------
 
+@throttled(namespace="holehe")
 def _run_holehe(email: str, only_used: bool, timeout: int) -> list[dict]:
     """Run holehe and return a unified list of result dicts.
 
     Holehe's ``-C/--csv`` flag dumps the CSV into the process cwd with no
     way to override the path, so we run inside a temp directory and scan
     it for the produced file.
+
+    Rate-limited via the shared ``holehe`` token bucket. Note this sits
+    *inside* ``cached_call`` (see ``enumerate_email``), so a cache hit skips
+    the bucket entirely — only real subprocess launches are throttled.
     """
     with tempfile.TemporaryDirectory() as tmp:
         cmd = [_HOLEHE_BIN, email, "--csv", "--no-color", "--no-clear",

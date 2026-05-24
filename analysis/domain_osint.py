@@ -27,6 +27,7 @@ import re
 import socket
 import ssl
 from datetime import datetime, timezone
+from typing import Any
 from urllib.parse import urlparse
 
 import requests
@@ -35,6 +36,7 @@ from cli.ui import (
     console, THEME,
     print_info, print_warn, print_error, print_success, make_table,
 )
+from core.throttle import throttled, throttled_async
 
 
 # ---------------------------------------------------------------------------
@@ -804,8 +806,13 @@ def subdomains_crtsh(domain: str, timeout: float = 30.0,
 # Shodan host lookup (optional, needs API key)
 # ---------------------------------------------------------------------------
 
+@throttled(namespace="shodan")
 def _shodan_fetch(ip: str) -> dict:
-    """Sync Shodan fetch. Returns the raw API dict, or ``{"_error": ...}``."""
+    """Sync Shodan fetch. Returns the raw API dict, or ``{"_error": ...}``.
+
+    Rate-limited via the shared ``shodan`` bucket (Shodan's free tier is
+    ~1 rps and 429s on violation, so the bucket keeps us under the line).
+    """
     key = os.getenv("SHODAN_API_KEY")
     if not key:
         return {"_error": "no_key"}
@@ -828,13 +835,19 @@ def _shodan_fetch(ip: str) -> dict:
         return {"_error": "non-JSON"}
 
 
+@throttled_async(namespace="shodan")
 async def _shodan_fetch_async(ip: str) -> dict:
-    """Async Shodan fetch via aiohttp; falls back to a thread if missing."""
+    """Async Shodan fetch via aiohttp; falls back to a thread if missing.
+
+    Shares the ``shodan`` bucket with the sync fetcher. The no-aiohttp
+    fallback calls ``_shodan_fetch.__wrapped__`` (the *undecorated* sync
+    fetch) so this path consumes exactly one token, not two.
+    """
     key = os.getenv("SHODAN_API_KEY")
     if not key:
         return {"_error": "no_key"}
     if not _HAS_AIOHTTP:
-        return await asyncio.to_thread(_shodan_fetch, ip)
+        return await asyncio.to_thread(_shodan_fetch.__wrapped__, ip)
     timeout = aiohttp.ClientTimeout(total=15)
     try:
         async with aiohttp.ClientSession(headers=_HEADERS, timeout=timeout) as sess:
