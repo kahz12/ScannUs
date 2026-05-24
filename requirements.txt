@@ -23,7 +23,7 @@ readability-lxml                 # main-content extraction (fallback)
 
 # --- Browser automation ---
 selenium
-#playwright                       # full-page screenshot engine
+# playwright                       # full-page screenshot engine
 
 # --- Search / scraping helpers ---
 google-api-python-client

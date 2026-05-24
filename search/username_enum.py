@@ -242,7 +242,7 @@ def enumerate_username(username: str, backend: str = "auto",
 
 
 def username_enum(username: str, backend: str = "auto",
-                  timeout: int = 20, save_json: bool = True) -> None:
+                  timeout: int = 20, save_json: bool = True) -> list[dict] | None:
     """
     Enumerates a username across social sites and renders the result as a
     Rich table, optionally persisting the JSON report to ``outputs/reports``.
@@ -252,10 +252,16 @@ def username_enum(username: str, backend: str = "auto",
         backend:   ``"auto"``, ``"sherlock"`` or ``"maigret"``.
         timeout:   Per-site request timeout (seconds).
         save_json: Persist results as JSON under ``DIR_REPORTS``.
+
+    Returns:
+        Sorted list of result dicts (possibly empty) so AI dispatchers and
+        other programmatic callers can consume the data. ``None`` is
+        returned only when the input is empty or no backend is installed
+        (an explanatory message is printed in both cases).
     """
     if not username or not username.strip():
         print_error("Username cannot be empty.")
-        return
+        return None
 
     chosen = _select_backend(backend)
     if chosen is None:
@@ -267,13 +273,13 @@ def username_enum(username: str, backend: str = "auto",
             )
         else:
             print_error(f"Backend '{backend}' is not installed.")
-        return
+        return None
 
     results = enumerate_username(username, backend=chosen, timeout=timeout)
 
     if not results:
         print_warn(f"No accounts found for '{username}' via {chosen}.")
-        return
+        return []
 
     results_sorted = sorted(results, key=lambda r: r["site"].lower())
 
@@ -297,3 +303,5 @@ def username_enum(username: str, backend: str = "auto",
         path = _save_results_json(username.strip(), chosen, results_sorted)
         if path:
             print_success(f"Results saved → {path}")
+
+    return results_sorted

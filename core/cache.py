@@ -40,9 +40,15 @@ DEFAULT_TTL: dict[str, int] = {
     "search":        24 * 60 * 60,        # 24h — SERPs change slowly
     "http_text":     6  * 60 * 60,        # 6h — page content drifts faster
     "whois":         7  * 24 * 60 * 60,   # 7d — registry data rarely changes
-    "dns":           1  * 60 * 60,        # 1h — short to honour TTLs
+    "dns":           1  * 60 * 60,        # 1h — fallback only; callers pass
+                                          #       per-record-type TTLs explicitly
+                                          #       (see analysis.domain_osint._DNS_TYPE_TTL).
     "wayback":       30 * 24 * 60 * 60,   # 30d — archives are immutable
-    "crtsh":         24 * 60 * 60,        # 24h — CT logs grow append-only
+    "crtsh":         7  * 24 * 60 * 60,   # 7d — CT logs are strictly append-only;
+                                          #      previously 24h, but a domain's CT
+                                          #      footprint changes on the order of
+                                          #      cert issuance (weeks–months), not
+                                          #      hours. 7d matches `wayback`.
     "hibp_account":  12 * 60 * 60,        # 12h — HIBP updates breach data daily; 12h
                                           #       is a polite balance between freshness
                                           #       and not hammering Troy's servers.
