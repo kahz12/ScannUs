@@ -31,11 +31,12 @@
 |---|---|
 | **Multi-engine search** | Google CSE · DuckDuckGo · Brave — persistent SQLite cache |
 | **Four AI providers** | Gemini · GPT-4o · Claude Sonnet 4.6 · local Ollama — token-streamed |
-| **AI Query Planner** | ReAct multi-step plans using 22 whitelisted tools |
+| **AI Query Planner** | ReAct multi-step plans using 23 whitelisted tools |
 | **Breach intelligence** | HIBP — accounts, domains, breaches, k-anon passwords |
 | **Domain recon** | WHOIS · DNS · TLS · security headers · crt.sh subdomains · Shodan |
 | **PII & secret extraction** | 25+ identifiers: cloud keys · JWTs · BTC/ETH · IBAN · SSN/CPF/SIN |
 | **Username enumeration** | Sherlock / Maigret — 400+ social sites |
+| **Email enumeration** | Holehe — ~120 services (where an email is *registered*) |
 | **Wayback Machine** | Snapshot fetch · PII extraction · unified-diff between dates |
 | **Reverse image search** | TinEye · Bing Visual · Yandex · manual fallbacks |
 | **Export** | Excel · CSV · JSON · HTML — clickable, styled |
@@ -76,8 +77,9 @@ python main.py --recon example.com
 python main.py --hibp-account target@example.com
 python main.py --hibp-password         # interactive, hidden input
 
-# Username enumeration · reverse image
+# Username / email enumeration · reverse image
 python main.py --username-enum jdoe88
+python main.py --email-enum target@example.com    # where the email is registered (Holehe)
 python main.py -rev https://example.com/photo.jpg
 
 # Cache management · export
@@ -122,6 +124,7 @@ ScannUs/
 | Full feature walkthrough | [docs/USER_GUIDE_EN.md](docs/USER_GUIDE_EN.md) · [docs/USER_GUIDE_ES.md](docs/USER_GUIDE_ES.md) |
 | Configuration wizard | User Guide §1.3 |
 | AI Query Planner & tool catalog | User Guide §4 |
+| Username & email enumeration | User Guide §7 |
 | HIBP & breach intelligence | User Guide §9 |
 | Investigation recipes | User Guide §16 |
 | Troubleshooting · FAQ · Glossary | User Guide §17–§19 |

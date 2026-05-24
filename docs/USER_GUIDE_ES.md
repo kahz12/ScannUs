@@ -237,9 +237,9 @@ Toda llamada externa costosa pasa por una única caché SQLite en `outputs/cache
 | `search` | 24h | Resultados SERP de todos los motores |
 | `http_text` | 6h | Texto de página depurado |
 | `whois` | 7d | Metadatos del registrador |
-| `dns` | 1h | Registros A/AAAA/MX/NS/TXT/SOA/CAA |
+| `dns` | por tipo de registro | A/AAAA/CNAME 1h · TXT 3h · MX/NS/SOA/CAA 24h |
 | `wayback` | 30d | Capturas del archivo (inmutables de todos modos) |
-| `crtsh` | 24h | Enumeración de subdominios vía CT-log |
+| `crtsh` | 7d | Enumeración de subdominios vía CT-log (los logs son append-only) |
 | `hibp_account` | 12h | Consultas por email de brechas + pastes |
 | `hibp_breach` | 7d | Metadatos de brechas, brechas por dominio, catálogo completo |
 | `hibp_password` | 30d | Rangos SHA-1 con k-anonimato |
@@ -451,7 +451,7 @@ El plan se guarda en el caso actual para que puedas reproducirlo más tarde.
 
 ### 4.4 El Catálogo de Herramientas
 
-El planificador solo puede invocar herramientas en lista blanca. A la fecha de esta guía, hay 22 herramientas expuestas:
+El planificador solo puede invocar herramientas en lista blanca. A la fecha de esta guía, hay 23 herramientas expuestas:
 
 | Herramienta | Propósito |
 |---|---|
