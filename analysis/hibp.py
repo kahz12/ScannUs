@@ -49,6 +49,7 @@ from cli.ui import (
     make_table, print_info, print_warn, print_error, print_success,
 )
 from core.cache import cached_call
+from core.throttle import retry_http_sync
 
 
 # ---------------------------------------------------------------------------
@@ -108,32 +109,40 @@ def _get(url: str, *, api_key: str | None = None,
     That makes mocking in tests painless (replace ``requests.get``, done).
 
     Returns ``(status_code, body)`` where body is parsed JSON for 2xx, the
-    raw text for non-2xx (so we can surface a useful error), or ``None`` on
-    transport failure.
+    raw text for non-2xx (so we can surface a useful error), or ``status=0``
+    on transport failure.
+
+    Rate-limited (per-namespace token bucket, ~1.5 rps for ``hibp_account``)
+    and retried on transient HTTP errors (429/502/503/504) via
+    :func:`core.throttle.retry_http_sync`. ``Retry-After`` is honoured when
+    present so we back off as much as HIBP wants us to.
 
     Why not raise on errors? Because OSINT tools should degrade gracefully —
     a network hiccup shouldn't abort a 30-step investigation plan.
     """
-    try:
-        r = requests.get(url, headers=_headers(api_key), timeout=timeout)
-    except requests.RequestException as e:
-        # Transport-level failure: DNS, timeout, connection refused, etc.
-        # Return status=0 so callers can tell this apart from an HTTP error.
-        return 0, f"transport: {e}"
+    def _once() -> tuple[int, Any, str | None]:
+        try:
+            r = requests.get(url, headers=_headers(api_key), timeout=timeout)
+        except requests.RequestException as e:
+            return 0, f"transport: {e}", None
+        return r.status_code, r, r.headers.get("Retry-After")
 
-    status = r.status_code
+    status, body = retry_http_sync(_once, namespace="hibp_account", max_retries=2)
+
+    # body is the requests.Response (or the transport-error string for status=0)
+    if status == 0:
+        return 0, body if isinstance(body, str) else "transport failure"
     if status == 200:
         try:
-            return 200, r.json()
+            return 200, body.json()
         except ValueError:
             # HIBP occasionally returns plain text on 200 (very rare).
-            # Return the text so the caller at least has something to log.
-            return 200, r.text
+            return 200, body.text
     if status == 404:
         # HIBP uses 404 to mean "no records" — treat as a soft empty
         # (NOT a bug — this is documented HIBP API behaviour).
         return 404, []
-    return status, r.text
+    return status, body.text if hasattr(body, "text") else body
 
 
 # ---------------------------------------------------------------------------
@@ -349,20 +358,27 @@ def _fetch_pwned_range(prefix: str) -> str | None:
     fixed size (~800 entries) so traffic analysis can't reveal whether
     a specific prefix exists in the corpus. Extra privacy! 🎉
 
+    Rate-limited and retried via the shared ``hibp_password`` bucket
+    (default ~10 rps — the k-anon endpoint is a permissive CDN).
     Private uncached version — the public caller wraps it in cached_call.
     """
     url = f"{_PWNED_PW_API}/{prefix}"
-    try:
-        r = requests.get(
-            url,
-            headers={"User-Agent": _USER_AGENT, "Add-Padding": "true"},
-            timeout=_DEFAULT_TIMEOUT,
-        )
-    except requests.RequestException:
-        return None  # Network failure — we just won't know today
-    if r.status_code != 200:
-        return None
-    return r.text
+
+    def _once() -> tuple[int, Any, str | None]:
+        try:
+            r = requests.get(
+                url,
+                headers={"User-Agent": _USER_AGENT, "Add-Padding": "true"},
+                timeout=_DEFAULT_TIMEOUT,
+            )
+        except requests.RequestException as e:
+            return 0, f"transport: {e}", None
+        return r.status_code, r, r.headers.get("Retry-After")
+
+    status, body = retry_http_sync(_once, namespace="hibp_password", max_retries=2)
+    if status == 200 and hasattr(body, "text"):
+        return body.text
+    return None
 
 
 def hibp_password_pwned_hash(sha1_hex: str) -> int | None:

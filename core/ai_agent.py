@@ -705,19 +705,29 @@ def _dispatch_tech_scan(args: dict, ia_agent) -> dict:
 
 def _dispatch_username_enum(args: dict, ia_agent) -> dict:
     from search.username_enum import username_enum
+    from core.unified import from_username_enum
     username = (args.get("username") or "").strip()
     if not username:
         return {"status": "error", "summary": "username_enum: missing 'username'"}
     backend = (args.get("backend") or "auto").lower()
     try:
-        username_enum(username, backend=backend)
+        results = username_enum(username, backend=backend)
     except Exception as e:
         return {"status": "error", "summary": f"username_enum failed: {e}"}
-    return {"status": "ok", "summary": f"username_enum completed for @{username}", "data": {}}
+    if results is None:
+        return {"status": "error",
+                "summary": "username_enum: no backend installed or empty input"}
+    records = from_username_enum(username, results)
+    return {
+        "status":  "ok",
+        "summary": f"username_enum: {len(records)} claimed account(s) for @{username}",
+        "data":    {"count": len(records), "records": records},
+    }
 
 
 def _dispatch_email_enum(args: dict, ia_agent) -> dict:
     from search.email_enum import email_enum, HOLEHE_AVAILABLE
+    from core.unified import from_email_enum
     email = (args.get("email") or "").strip()
     if not email:
         return {"status": "error", "summary": "email_enum: missing 'email'"}
@@ -731,11 +741,12 @@ def _dispatch_email_enum(args: dict, ia_agent) -> dict:
         return {"status": "error", "summary": f"email_enum failed: {e}"}
     if results is None:
         return {"status": "error", "summary": "email_enum: holehe unavailable"}
-    claimed = sum(1 for r in results if r.get("status") == "claimed")
+    records = from_email_enum(email, results)
+    claimed = sum(1 for r in records if r["status"] == "claimed")
     return {
         "status":  "ok",
         "summary": f"email_enum: {claimed} service registration(s) found for {email}",
-        "data":    {"claimed": claimed, "total": len(results)},
+        "data":    {"claimed": claimed, "total": len(records), "records": records},
     }
 
 
@@ -960,6 +971,7 @@ def _dispatch_hibp_account(args: dict, ia_agent) -> dict:
     """
     from analysis.hibp import (hibp_breached_account, hibp_pastes_for_account,
                                render_breached_account, render_pastes_for_account)
+    from core.unified import from_hibp_breaches, from_hibp_pastes
     email = (args.get("email") or "").strip()
     if not email:
         # Can't look up an account with no email. Tell the planner to retry.
@@ -981,6 +993,7 @@ def _dispatch_hibp_account(args: dict, ia_agent) -> dict:
             pastes_raw = []  # API key issue for pastes; breaches still valid above
         render_pastes_for_account(email, pastes_raw)
         pastes = pastes_raw
+    records = from_hibp_breaches(email, breaches) + from_hibp_pastes(email, pastes)
     return {
         "status":  "ok",
         "summary": f"{email}: {len(breaches)} breach(es), {len(pastes)} paste(s)",
@@ -990,6 +1003,7 @@ def _dispatch_hibp_account(args: dict, ia_agent) -> dict:
             "pastes":       pastes,
             "breach_count": len(breaches),
             "paste_count":  len(pastes),
+            "records":      records,
         },
     }
 

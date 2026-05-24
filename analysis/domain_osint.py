@@ -11,12 +11,17 @@ Covers the foundational reconnaissance surface that wasn't in the project before
   - subdomains_crtsh(domain)         passive subdomain enumeration via crt.sh
   - shodan_host(ip)                  optional, needs SHODAN_API_KEY
 
-The orchestrator ``domain_recon(target)`` runs the free, no-key tools in order
-and prints a single consolidated report.
+The orchestrator ``domain_recon(target)`` fans out every free, no-key probe
+concurrently via ``asyncio.gather`` and renders the results in fixed order
+after all probes have completed (deferred rendering — keeps output ordered
+even though probes finish in arbitrary order). Sync entry points are
+preserved so individual callers (CLI menu, AI Query Planner dispatchers) are
+unaffected.
 """
 
 from __future__ import annotations
 
+import asyncio
 import os
 import re
 import socket
@@ -39,6 +44,7 @@ from cli.ui import (
 try:
     import dns.resolver           # type: ignore
     import dns.exception          # type: ignore
+    import dns.asyncresolver      # type: ignore
     _HAS_DNS = True
 except Exception:
     _HAS_DNS = False
@@ -48,6 +54,12 @@ try:
     _HAS_WHOIS = True
 except Exception:
     _HAS_WHOIS = False
+
+try:
+    import aiohttp                # type: ignore
+    _HAS_AIOHTTP = True
+except Exception:
+    _HAS_AIOHTTP = False
 
 
 _HEADERS = {
@@ -99,6 +111,15 @@ def _resolve_first_ip(domain: str) -> str | None:
         return None
 
 
+def _first_a(dns_data) -> str | None:
+    """Extract the first A record from a dns_records() result, or None."""
+    if isinstance(dns_data, dict):
+        a = dns_data.get("A") or []
+        if a:
+            return a[0]
+    return None
+
+
 # ---------------------------------------------------------------------------
 # WHOIS
 # ---------------------------------------------------------------------------
@@ -139,6 +160,34 @@ def _whois_fetch(domain: str) -> dict:
     }
 
 
+def _render_whois_body(info: dict) -> None:
+    """Render the WHOIS table only — no print_info header (caller prints it)."""
+    if not info:
+        return
+    rows = [
+        ("Registrar",      str(info.get("registrar") or "—")),
+        ("Created",        str(info.get("created") or "—")),
+        ("Expires",        str(info.get("expires") or "—")),
+        ("Updated",        str(info.get("updated") or "—")),
+        ("Org",            str(info.get("org") or "—")),
+        ("Country",        str(info.get("country") or "—")),
+        ("Name servers",   "\n".join(info.get("name_servers") or []) or "—"),
+        ("Status",         "\n".join(info["status"]) if isinstance(info.get("status"), list)
+                           else (str(info.get("status")) if info.get("status") else "—")),
+        ("Emails",         "\n".join(info["emails"]) if isinstance(info.get("emails"), list)
+                           else (str(info.get("emails")) if info.get("emails") else "—")),
+    ]
+    tbl = make_table(
+        f"WHOIS · {info.get('domain') or '?'}",
+        ("Field", THEME["PRIMARY"]),
+        ("Value", "white"),
+        show_lines=False,
+    )
+    for k, v in rows:
+        tbl.add_row(k, v)
+    console.print(tbl)
+
+
 def whois_lookup(domain: str) -> dict:
     """
     Performs a WHOIS lookup with persistent SQLite caching (TTL: 7d).
@@ -148,32 +197,22 @@ def whois_lookup(domain: str) -> dict:
     print_info(f"WHOIS · {domain}")
     info = cached_call("whois", [domain.lower()],
                        lambda: _whois_fetch(domain)) or {}
-    if not info:
-        return {}
-
-    rows = [
-        ("Registrar",      str(info["registrar"] or "—")),
-        ("Created",        str(info["created"] or "—")),
-        ("Expires",        str(info["expires"] or "—")),
-        ("Updated",        str(info["updated"] or "—")),
-        ("Org",            str(info["org"] or "—")),
-        ("Country",        str(info["country"] or "—")),
-        ("Name servers",   "\n".join(info["name_servers"]) or "—"),
-        ("Status",         "\n".join(info["status"]) if isinstance(info["status"], list)
-                           else (str(info["status"]) if info["status"] else "—")),
-        ("Emails",         "\n".join(info["emails"]) if isinstance(info["emails"], list)
-                           else (str(info["emails"]) if info["emails"] else "—")),
-    ]
-    tbl = make_table(
-        f"WHOIS · {info['domain']}",
-        ("Field", THEME["PRIMARY"]),
-        ("Value", "white"),
-        show_lines=False,
-    )
-    for k, v in rows:
-        tbl.add_row(k, v)
-    console.print(tbl)
+    _render_whois_body(info)
     return info
+
+
+async def _whois_lookup_async(domain: str) -> dict:
+    """Async WHOIS fetcher (cache-aware, no rendering). For the orchestrator."""
+    from core.cache import get_cache
+    cache = get_cache()
+    key = cache.make_key(domain.lower())
+    hit = cache.get("whois", key)
+    if hit is not None:
+        return hit
+    info = await asyncio.to_thread(_whois_fetch, domain)
+    if info:
+        cache.set("whois", key, info)
+    return info or {}
 
 
 # ---------------------------------------------------------------------------
@@ -181,6 +220,21 @@ def whois_lookup(domain: str) -> dict:
 # ---------------------------------------------------------------------------
 
 _DNS_TYPES = ("A", "AAAA", "MX", "NS", "TXT", "SOA", "CNAME", "CAA")
+
+# Per-record-type TTLs (seconds). The "dns" cache namespace stores one row
+# per (domain, rtype) so volatile records (A/AAAA behind load balancers) and
+# stable records (NS, SOA, MX, CAA) can each be cached at the right cadence.
+_DNS_TYPE_TTL: dict[str, int] = {
+    "A":     1  * 60 * 60,        # 1h  — IPs rotate with LBs / CDN steering
+    "AAAA":  1  * 60 * 60,        # 1h
+    "CNAME": 1  * 60 * 60,        # 1h  — moves with infra changes
+    "TXT":   3  * 60 * 60,        # 3h  — verification tokens change occasionally
+    "MX":    24 * 60 * 60,        # 24h — mail infra rarely flips
+    "NS":    24 * 60 * 60,        # 24h — delegation almost never changes
+    "SOA":   24 * 60 * 60,        # 24h — serials bump, but ttls in the rrset
+                                  #       are still fine to cache for a day
+    "CAA":   24 * 60 * 60,        # 24h — changes only on cert-provider switches
+}
 
 
 def _dns_fetch(domain: str, types: tuple[str, ...]) -> dict[str, list[str]]:
@@ -206,22 +260,37 @@ def _dns_fetch(domain: str, types: tuple[str, ...]) -> dict[str, list[str]]:
     return found
 
 
-def dns_records(domain: str, types: tuple[str, ...] = _DNS_TYPES) -> dict[str, list[str]]:
+async def _dns_fetch_async(domain: str,
+                           types: tuple[str, ...]) -> dict[str, list[str]]:
     """
-    Queries the most useful DNS record types for *domain* with persistent
-    SQLite caching (TTL: 1h to honour real DNS TTLs).
-    Returns a dict ``{type: [records]}``.
+    Async DNS resolution — fans out per-record-type queries concurrently.
+    Returns a dict ``{type: [records]}``. Same exceptions as the sync version
+    are caught and treated as "no records for that type".
     """
-    from core.cache import cached_call
-    print_info(f"DNS · {domain}")
-    key_parts = [domain.lower(), ",".join(types)]
-    found = cached_call("dns", key_parts,
-                        lambda: _dns_fetch(domain, types)) or {}
+    if not _HAS_DNS:
+        return {}
+    resolver = dns.asyncresolver.Resolver()
+    resolver.lifetime = 6.0
+    resolver.timeout = 3.0
 
+    async def _one(rtype: str) -> tuple[str, list[str]]:
+        try:
+            answers = await resolver.resolve(domain, rtype)
+        except (dns.resolver.NoAnswer, dns.resolver.NXDOMAIN, dns.resolver.NoNameservers):
+            return rtype, []
+        except dns.exception.DNSException:
+            return rtype, []
+        return rtype, [rdata.to_text().strip().strip('"') for rdata in answers]
+
+    pairs = await asyncio.gather(*[_one(t) for t in types])
+    return {rt: rows for rt, rows in pairs if rows}
+
+
+def _render_dns_body(domain: str, found: dict[str, list[str]]) -> None:
+    """Render the DNS table only — no print_info header."""
     if not found:
         print_warn("No DNS records returned.")
-        return {}
-
+        return
     tbl = make_table(
         f"DNS Records · {domain}",
         ("Type",   THEME["PRIMARY"]),
@@ -231,19 +300,90 @@ def dns_records(domain: str, types: tuple[str, ...] = _DNS_TYPES) -> dict[str, l
     for rtype, values in found.items():
         tbl.add_row(rtype, "\n".join(values))
     console.print(tbl)
+
+
+def _dns_cache_lookup(types: tuple[str, ...],
+                      domain: str) -> tuple[dict[str, list[str]], list[str]]:
+    """
+    Per-record-type cache probe. Returns ``(hits, misses)`` where ``hits``
+    is the partial result dict already populated from cache and ``misses``
+    is the list of record types that still need to be fetched.
+
+    Empty-list cache entries (e.g. "this domain has no MX records") are
+    honoured — they count as hits but do not appear in the returned dict.
+    """
+    from core.cache import get_cache
+    cache = get_cache()
+    hits: dict[str, list[str]] = {}
+    misses: list[str] = []
+    for rtype in types:
+        key = cache.make_key(domain.lower(), rtype)
+        cached = cache.get("dns", key)
+        if cached is None:
+            misses.append(rtype)
+            continue
+        if cached:
+            hits[rtype] = cached
+    return hits, misses
+
+
+def _dns_cache_store(domain: str, fresh: dict[str, list[str]],
+                     fetched_types: list[str]) -> None:
+    """Persist freshly-fetched DNS results with per-type TTLs."""
+    from core.cache import get_cache
+    cache = get_cache()
+    for rtype in fetched_types:
+        rows = fresh.get(rtype, [])
+        ttl = _DNS_TYPE_TTL.get(rtype, 60 * 60)
+        cache.set("dns", cache.make_key(domain.lower(), rtype), rows, ttl=ttl)
+
+
+def dns_records(domain: str, types: tuple[str, ...] = _DNS_TYPES) -> dict[str, list[str]]:
+    """
+    Queries the most useful DNS record types for *domain* with persistent
+    SQLite caching. Each record type is cached independently with a TTL
+    appropriate to its volatility (see ``_DNS_TYPE_TTL``).
+
+    Returns a dict ``{type: [records]}``.
+    """
+    print_info(f"DNS · {domain}")
+    found, misses = _dns_cache_lookup(types, domain)
+    if misses:
+        fresh = _dns_fetch(domain, tuple(misses))
+        _dns_cache_store(domain, fresh, misses)
+        for rtype in misses:
+            rows = fresh.get(rtype, [])
+            if rows:
+                found[rtype] = rows
+    _render_dns_body(domain, found)
     return found
 
 
-def email_security(domain: str) -> dict:
-    """
-    Inspects SPF, DMARC, and reports likely DKIM selectors found at common names.
-    Returns ``{"spf": str|None, "dmarc": str|None, "dkim_selectors": [str]}``.
-    """
-    if not _HAS_DNS:
-        print_warn("dnspython not installed — install with: pip install dnspython")
-        return {}
+async def _dns_records_async(domain: str,
+                             types: tuple[str, ...] = _DNS_TYPES) -> dict[str, list[str]]:
+    """Async DNS fetcher (per-type cache-aware, no rendering)."""
+    found, misses = _dns_cache_lookup(types, domain)
+    if misses:
+        fresh = await _dns_fetch_async(domain, tuple(misses))
+        _dns_cache_store(domain, fresh, misses)
+        for rtype in misses:
+            rows = fresh.get(rtype, [])
+            if rows:
+                found[rtype] = rows
+    return found
 
-    print_info(f"Email security · {domain}")
+
+# ---------------------------------------------------------------------------
+# Email security (SPF / DMARC / DKIM hints)
+# ---------------------------------------------------------------------------
+
+_DKIM_SELECTORS = ("default", "google", "selector1", "selector2", "k1", "mail")
+
+
+def _email_security_fetch(domain: str) -> dict:
+    """Uncached SPF/DMARC/DKIM lookup. Returns ``{}`` if dnspython missing."""
+    if not _HAS_DNS:
+        return {}
 
     resolver = dns.resolver.Resolver()
     resolver.lifetime = 6.0
@@ -263,12 +403,51 @@ def email_security(domain: str) -> dict:
 
     spf = next((r for r in _txt(domain) if r.lower().startswith("v=spf1")), None)
     dmarc = next((r for r in _txt(f"_dmarc.{domain}") if r.lower().startswith("v=dmarc1")), None)
+    dkim_selectors = [s for s in _DKIM_SELECTORS if _txt(f"{s}._domainkey.{domain}")]
+    return {"spf": spf, "dmarc": dmarc, "dkim_selectors": dkim_selectors}
 
-    dkim_selectors: list[str] = []
-    for selector in ("default", "google", "selector1", "selector2", "k1", "mail"):
-        if _txt(f"{selector}._domainkey.{domain}"):
-            dkim_selectors.append(selector)
 
+async def _email_security_fetch_async(domain: str) -> dict:
+    """
+    Async SPF/DMARC/DKIM lookup — runs all 8 TXT queries (1 SPF + 1 DMARC +
+    6 DKIM selectors) concurrently.
+    """
+    if not _HAS_DNS:
+        return {}
+
+    resolver = dns.asyncresolver.Resolver()
+    resolver.lifetime = 6.0
+    resolver.timeout = 3.0
+
+    async def _txt(name: str) -> list[str]:
+        try:
+            answers = await resolver.resolve(name, "TXT")
+        except Exception:
+            return []
+        out = []
+        for rdata in answers:
+            chunks = [b.decode(errors="ignore") if isinstance(b, bytes) else str(b)
+                      for b in rdata.strings] if hasattr(rdata, "strings") else [rdata.to_text()]
+            out.append("".join(chunks).strip('"'))
+        return out
+
+    queries = [_txt(domain), _txt(f"_dmarc.{domain}")] + \
+              [_txt(f"{s}._domainkey.{domain}") for s in _DKIM_SELECTORS]
+    results = await asyncio.gather(*queries)
+
+    spf = next((r for r in results[0] if r.lower().startswith("v=spf1")), None)
+    dmarc = next((r for r in results[1] if r.lower().startswith("v=dmarc1")), None)
+    dkim_selectors = [s for s, found in zip(_DKIM_SELECTORS, results[2:]) if found]
+    return {"spf": spf, "dmarc": dmarc, "dkim_selectors": dkim_selectors}
+
+
+def _render_email_security_body(domain: str, info: dict) -> None:
+    """Render the email-auth table only — no print_info header."""
+    if not info:
+        return
+    spf = info.get("spf")
+    dmarc = info.get("dmarc")
+    dkim_selectors = info.get("dkim_selectors") or []
     rows = [
         ("SPF",   spf or "[red]missing[/red]"),
         ("DMARC", dmarc or "[red]missing[/red]"),
@@ -285,18 +464,30 @@ def email_security(domain: str) -> dict:
         tbl.add_row(k, v)
     console.print(tbl)
 
-    return {"spf": spf, "dmarc": dmarc, "dkim_selectors": dkim_selectors}
+
+def email_security(domain: str) -> dict:
+    """
+    Inspects SPF, DMARC, and reports likely DKIM selectors found at common names.
+    Returns ``{"spf": str|None, "dmarc": str|None, "dkim_selectors": [str]}``.
+    """
+    if not _HAS_DNS:
+        print_warn("dnspython not installed — install with: pip install dnspython")
+        return {}
+    print_info(f"Email security · {domain}")
+    info = _email_security_fetch(domain)
+    _render_email_security_body(domain, info)
+    return info
 
 
 # ---------------------------------------------------------------------------
 # TLS certificate
 # ---------------------------------------------------------------------------
 
-def tls_certificate(host: str, port: int = 443, timeout: float = 8.0) -> dict:
+def _tls_fetch(host: str, port: int = 443, timeout: float = 8.0) -> dict:
     """
     Connects to ``host:port`` over TLS and returns parsed certificate info.
+    On failure returns ``{"_error": str}``.
     """
-    print_info(f"TLS · {host}:{port}")
     try:
         ctx = ssl.create_default_context()
         with socket.create_connection((host, port), timeout=timeout) as sock:
@@ -305,8 +496,7 @@ def tls_certificate(host: str, port: int = 443, timeout: float = 8.0) -> dict:
                 cipher = ssock.cipher()
                 version = ssock.version()
     except Exception as e:
-        print_error(f"TLS handshake failed: {e}")
-        return {}
+        return {"_error": str(e)}
 
     def _dn(seq):
         return ", ".join(f"{k}={v}" for t in (seq or []) for k, v in t)
@@ -324,16 +514,45 @@ def tls_certificate(host: str, port: int = 443, timeout: float = 8.0) -> dict:
     except (TypeError, ValueError):
         pass
 
+    return {
+        "subject":     subject,
+        "issuer":      issuer,
+        "san":         sans,
+        "not_before":  not_before,
+        "not_after":   not_after,
+        "days_left":   days_left,
+        "tls_version": version,
+        "cipher":      cipher[0] if cipher else None,
+    }
+
+
+def _render_tls_body(host: str, port: int, info: dict) -> None:
+    """Render the TLS table only — no print_info header."""
+    if not info:
+        return
+    if "_error" in info:
+        print_error(f"TLS handshake failed: {info['_error']}")
+        return
+    days_left = info.get("days_left")
+    if days_left is not None and days_left < 0:
+        days_cell = "[red]expired[/red]"
+    elif days_left is not None and days_left < 30:
+        days_cell = f"[yellow]{days_left}[/yellow]"
+    elif days_left is not None:
+        days_cell = str(days_left)
+    else:
+        days_cell = "—"
+
+    version = info.get("tls_version") or "—"
+    cipher = info.get("cipher")
     rows = [
-        ("Subject",    subject or "—"),
-        ("Issuer",     issuer or "—"),
-        ("Valid from", not_before or "—"),
-        ("Valid to",   not_after or "—"),
-        ("Days left",  ("[red]expired[/red]" if (days_left is not None and days_left < 0)
-                        else ("[yellow]" + str(days_left) + "[/yellow]" if (days_left is not None and days_left < 30)
-                              else (str(days_left) if days_left is not None else "—")))),
-        ("TLS",        f"{version}  {cipher[0]}" if cipher else (version or "—")),
-        ("SAN",        "\n".join(sans) or "—"),
+        ("Subject",    info.get("subject") or "—"),
+        ("Issuer",     info.get("issuer") or "—"),
+        ("Valid from", info.get("not_before") or "—"),
+        ("Valid to",   info.get("not_after") or "—"),
+        ("Days left",  days_cell),
+        ("TLS",        f"{version}  {cipher}" if cipher else version),
+        ("SAN",        "\n".join(info.get("san") or []) or "—"),
     ]
     tbl = make_table(
         f"TLS Certificate · {host}:{port}",
@@ -345,16 +564,17 @@ def tls_certificate(host: str, port: int = 443, timeout: float = 8.0) -> dict:
         tbl.add_row(k, v)
     console.print(tbl)
 
-    return {
-        "subject":    subject,
-        "issuer":     issuer,
-        "san":        sans,
-        "not_before": not_before,
-        "not_after":  not_after,
-        "days_left":  days_left,
-        "tls_version": version,
-        "cipher":     cipher[0] if cipher else None,
-    }
+
+def tls_certificate(host: str, port: int = 443, timeout: float = 8.0) -> dict:
+    """
+    Connects to ``host:port`` over TLS and returns parsed certificate info.
+    """
+    print_info(f"TLS · {host}:{port}")
+    info = _tls_fetch(host, port, timeout)
+    _render_tls_body(host, port, info)
+    if "_error" in info:
+        return {}
+    return info
 
 
 # ---------------------------------------------------------------------------
@@ -374,28 +594,67 @@ _SECURITY_HEADERS = {
 }
 
 
-def http_security_headers(url: str) -> dict:
+def _http_headers_fetch(url: str) -> dict:
     """
-    Fetches *url* (HEAD with GET fallback) and reports hardening headers.
+    Sync HEAD-with-GET-fallback fetch. Returns ``{url, status, headers}`` or
+    ``{"_error": str}`` on failure.
     """
-    print_info(f"HTTP headers · {url}")
     try:
         resp = requests.head(url, headers=_HEADERS, timeout=10, allow_redirects=True)
         if resp.status_code >= 400:
-            resp = requests.get(url, headers=_HEADERS, timeout=10, allow_redirects=True, stream=True)
+            resp = requests.get(url, headers=_HEADERS, timeout=10,
+                                allow_redirects=True, stream=True)
     except requests.exceptions.RequestException as e:
-        print_error(f"HTTP request failed: {e}")
+        return {"_error": str(e)}
+    return {"url": str(resp.url), "status": resp.status_code,
+            "headers": dict(resp.headers)}
+
+
+async def _http_headers_fetch_async(url: str) -> dict:
+    """Async HEAD-with-GET-fallback via aiohttp; falls back to a thread if missing."""
+    if not _HAS_AIOHTTP:
+        return await asyncio.to_thread(_http_headers_fetch, url)
+    timeout = aiohttp.ClientTimeout(total=10)
+    try:
+        async with aiohttp.ClientSession(headers=_HEADERS, timeout=timeout) as sess:
+            async with sess.head(url, allow_redirects=True) as resp:
+                if resp.status >= 400:
+                    async with sess.get(url, allow_redirects=True) as resp2:
+                        return {
+                            "url":     str(resp2.url),
+                            "status":  resp2.status,
+                            "headers": dict(resp2.headers),
+                        }
+                return {
+                    "url":     str(resp.url),
+                    "status":  resp.status,
+                    "headers": dict(resp.headers),
+                }
+    except aiohttp.ClientError as e:
+        return {"_error": str(e)}
+    except asyncio.TimeoutError:
+        return {"_error": "timeout"}
+
+
+def _render_http_headers_body(raw: dict) -> dict:
+    """
+    Render the security-headers table only — no print_info header.
+    Returns the normalised summary dict (present/missing/score…) the same
+    way the sync wrapper used to.
+    """
+    if not raw or "_error" in (raw or {}):
+        if raw and "_error" in raw:
+            print_error(f"HTTP request failed: {raw['_error']}")
         return {}
 
-    headers = {k: v for k, v in resp.headers.items()}
+    headers = raw.get("headers") or {}
     tbl = make_table(
-        f"Security Headers · {resp.url}  ({resp.status_code})",
+        f"Security Headers · {raw.get('url')}  ({raw.get('status')})",
         ("Header",  THEME["PRIMARY"]),
         ("Status",  "white"),
         ("Value",   THEME["DIM"]),
         show_lines=True,
     )
-
     present, missing = {}, []
     for header, purpose in _SECURITY_HEADERS.items():
         value = headers.get(header) or headers.get(header.lower())
@@ -406,47 +665,35 @@ def http_security_headers(url: str) -> dict:
             missing.append(header)
             tbl.add_row(header, "[red]missing[/red]",
                         f"[{THEME['DIM']}]{purpose}[/]")
-
     console.print(tbl)
     score = f"{len(present)}/{len(_SECURITY_HEADERS)}"
     print_info(f"Security score: {score} headers present.")
     return {
-        "url":      resp.url,
-        "status":   resp.status_code,
-        "present":  present,
-        "missing":  missing,
-        "score":    score,
-        "server":   headers.get("Server"),
+        "url":        raw.get("url"),
+        "status":     raw.get("status"),
+        "present":    present,
+        "missing":    missing,
+        "score":      score,
+        "server":     headers.get("Server"),
         "powered_by": headers.get("X-Powered-By"),
     }
+
+
+def http_security_headers(url: str) -> dict:
+    """
+    Fetches *url* (HEAD with GET fallback) and reports hardening headers.
+    """
+    print_info(f"HTTP headers · {url}")
+    raw = _http_headers_fetch(url)
+    return _render_http_headers_body(raw)
 
 
 # ---------------------------------------------------------------------------
 # Subdomain enumeration — passive via crt.sh
 # ---------------------------------------------------------------------------
 
-def subdomains_crtsh(domain: str, timeout: float = 30.0,
-                    include_wildcards: bool = False) -> list[str]:
-    """
-    Returns deduplicated subdomains observed in Certificate Transparency logs.
-    """
-    print_info(f"Subdomains · crt.sh lookup for *.{domain}")
-    try:
-        resp = requests.get(
-            "https://crt.sh/",
-            params={"q": f"%.{domain}", "output": "json"},
-            headers=_HEADERS,
-            timeout=timeout,
-        )
-        resp.raise_for_status()
-        entries = resp.json()
-    except requests.exceptions.RequestException as e:
-        print_error(f"crt.sh request failed: {e}")
-        return []
-    except ValueError:
-        print_error("crt.sh returned non-JSON (likely rate-limited).")
-        return []
-
+def _crtsh_parse(entries, domain: str, include_wildcards: bool) -> list[str]:
+    """Filter/normalise crt.sh JSON response into a sorted subdomain list."""
     found: set[str] = set()
     for entry in entries or []:
         names = (entry.get("name_value") or "").split("\n")
@@ -458,36 +705,110 @@ def subdomains_crtsh(domain: str, timeout: float = 30.0,
                 name = name[2:]
             if name == domain or name.endswith(f".{domain}"):
                 found.add(name)
+    return sorted(found)
 
-    found_sorted = sorted(found)
+
+def _crtsh_fetch(domain: str, timeout: float = 30.0,
+                 include_wildcards: bool = False) -> dict:
+    """Sync crt.sh fetch. Returns ``{"subdomains": [...]}`` or ``{"_error": str}``."""
+    try:
+        resp = requests.get(
+            "https://crt.sh/",
+            params={"q": f"%.{domain}", "output": "json"},
+            headers=_HEADERS,
+            timeout=timeout,
+        )
+        resp.raise_for_status()
+        entries = resp.json()
+    except requests.exceptions.RequestException as e:
+        return {"_error": str(e), "subdomains": []}
+    except ValueError:
+        return {"_error": "non-JSON (likely rate-limited)", "subdomains": []}
+    return {"subdomains": _crtsh_parse(entries, domain, include_wildcards)}
+
+
+async def _crtsh_fetch_async(domain: str, timeout: float = 30.0,
+                             include_wildcards: bool = False) -> dict:
+    """
+    Async crt.sh fetch via aiohttp; falls back to a thread if missing.
+
+    Rate-limited and retried via the shared ``crtsh`` bucket (default 0.5 rps
+    + 2 retries on 502/503). crt.sh frequently 502s under load, so the
+    retry loop materially improves dossier completeness.
+    """
+    if not _HAS_AIOHTTP:
+        return await asyncio.to_thread(_crtsh_fetch, domain, timeout, include_wildcards)
+    from core.throttle import retry_http_async
+
+    t = aiohttp.ClientTimeout(total=timeout)
+
+    async def _once() -> tuple[int, Any, str | None]:
+        try:
+            sess = aiohttp.ClientSession(headers=_HEADERS, timeout=t)
+            async with sess:
+                async with sess.get(
+                    "https://crt.sh/",
+                    params={"q": f"%.{domain}", "output": "json"},
+                ) as resp:
+                    text = await resp.text()
+                    return resp.status, text, resp.headers.get("Retry-After")
+        except aiohttp.ClientError as e:
+            return 0, f"transport: {e}", None
+        except asyncio.TimeoutError:
+            return 0, "transport: timeout", None
+
+    status, body = await retry_http_async(_once, namespace="crtsh", max_retries=2)
+
+    if status != 200:
+        if status == 0:
+            return {"_error": body if isinstance(body, str) else "transport", "subdomains": []}
+        return {"_error": f"HTTP {status}", "subdomains": []}
+    try:
+        import json as _json
+        entries = _json.loads(body) if isinstance(body, str) else body
+    except (ValueError, TypeError):
+        return {"_error": "non-JSON (likely rate-limited)", "subdomains": []}
+    return {"subdomains": _crtsh_parse(entries, domain, include_wildcards)}
+
+
+def _render_subdomains_body(domain: str, raw: dict) -> list[str]:
+    """Render the subdomains table only — no print_info header. Returns the list."""
+    if "_error" in (raw or {}):
+        print_error(f"crt.sh request failed: {raw['_error']}")
+        return []
+    subs = (raw or {}).get("subdomains") or []
     tbl = make_table(
-        f"Subdomains · *.{domain}  ({len(found_sorted)} unique)",
+        f"Subdomains · *.{domain}  ({len(subs)} unique)",
         ("Subdomain", THEME["PRIMARY"]),
         show_lines=False,
     )
-    for sub in found_sorted[:200]:
+    for sub in subs[:200]:
         tbl.add_row(sub)
     console.print(tbl)
-    if len(found_sorted) > 200:
-        console.print(f"  [{THEME['DIM']}](+{len(found_sorted) - 200} more not shown)[/]")
-    return found_sorted
+    if len(subs) > 200:
+        console.print(f"  [{THEME['DIM']}](+{len(subs) - 200} more not shown)[/]")
+    return subs
+
+
+def subdomains_crtsh(domain: str, timeout: float = 30.0,
+                    include_wildcards: bool = False) -> list[str]:
+    """
+    Returns deduplicated subdomains observed in Certificate Transparency logs.
+    """
+    print_info(f"Subdomains · crt.sh lookup for *.{domain}")
+    raw = _crtsh_fetch(domain, timeout, include_wildcards)
+    return _render_subdomains_body(domain, raw)
 
 
 # ---------------------------------------------------------------------------
 # Shodan host lookup (optional, needs API key)
 # ---------------------------------------------------------------------------
 
-def shodan_host(ip: str) -> dict:
-    """
-    Queries Shodan for ``ip`` if ``SHODAN_API_KEY`` is set in the environment.
-    Returns the raw host dict, or {} on failure / no key.
-    """
+def _shodan_fetch(ip: str) -> dict:
+    """Sync Shodan fetch. Returns the raw API dict, or ``{"_error": ...}``."""
     key = os.getenv("SHODAN_API_KEY")
     if not key:
-        print_warn("SHODAN_API_KEY not set — skipping Shodan lookup.")
-        return {}
-
-    print_info(f"Shodan · {ip}")
+        return {"_error": "no_key"}
     try:
         resp = requests.get(
             f"https://api.shodan.io/shodan/host/{ip}",
@@ -496,22 +817,58 @@ def shodan_host(ip: str) -> dict:
             timeout=15,
         )
     except requests.exceptions.RequestException as e:
-        print_error(f"Shodan request failed: {e}")
-        return {}
-
+        return {"_error": str(e)}
     if resp.status_code == 404:
+        return {"_error": "404"}
+    if resp.status_code != 200:
+        return {"_error": f"{resp.status_code}: {resp.text[:120]}"}
+    try:
+        return resp.json()
+    except ValueError:
+        return {"_error": "non-JSON"}
+
+
+async def _shodan_fetch_async(ip: str) -> dict:
+    """Async Shodan fetch via aiohttp; falls back to a thread if missing."""
+    key = os.getenv("SHODAN_API_KEY")
+    if not key:
+        return {"_error": "no_key"}
+    if not _HAS_AIOHTTP:
+        return await asyncio.to_thread(_shodan_fetch, ip)
+    timeout = aiohttp.ClientTimeout(total=15)
+    try:
+        async with aiohttp.ClientSession(headers=_HEADERS, timeout=timeout) as sess:
+            async with sess.get(
+                f"https://api.shodan.io/shodan/host/{ip}",
+                params={"key": key},
+            ) as resp:
+                if resp.status == 404:
+                    return {"_error": "404"}
+                if resp.status != 200:
+                    text = await resp.text()
+                    return {"_error": f"{resp.status}: {text[:120]}"}
+                try:
+                    return await resp.json(content_type=None)
+                except (ValueError, aiohttp.ContentTypeError):
+                    return {"_error": "non-JSON"}
+    except aiohttp.ClientError as e:
+        return {"_error": str(e)}
+    except asyncio.TimeoutError:
+        return {"_error": "timeout"}
+
+
+def _render_shodan_body(ip: str, data: dict) -> dict:
+    """Render the Shodan table only — no print_info header. Returns the data dict."""
+    err = (data or {}).get("_error") if isinstance(data, dict) else None
+    if err == "no_key":
+        print_warn("SHODAN_API_KEY not set — skipping Shodan lookup.")
+        return {}
+    if err == "404":
         print_warn("Shodan has no records for this IP.")
         return {}
-    if resp.status_code != 200:
-        print_error(f"Shodan returned {resp.status_code}: {resp.text[:120]}")
+    if err:
+        print_error(f"Shodan: {err}")
         return {}
-
-    try:
-        data = resp.json()
-    except ValueError:
-        print_error("Shodan returned non-JSON.")
-        return {}
-
     rows = [
         ("Org",     data.get("org") or "—"),
         ("ISP",     data.get("isp") or "—"),
@@ -536,54 +893,150 @@ def shodan_host(ip: str) -> dict:
     return data
 
 
-# ---------------------------------------------------------------------------
-# Orchestrator
-# ---------------------------------------------------------------------------
-
-def domain_recon(target: str, include_shodan: bool | None = None) -> dict:
+def shodan_host(ip: str) -> dict:
     """
-    Runs the free, no-key tools in sequence and returns a consolidated dict.
+    Queries Shodan for ``ip`` if ``SHODAN_API_KEY`` is set in the environment.
+    Returns the raw host dict, or {} on failure / no key.
+    """
+    print_info(f"Shodan · {ip}")
+    data = _shodan_fetch(ip)
+    return _render_shodan_body(ip, data)
 
-    Order:
-      1. WHOIS                — registrar, dates, contacts
-      2. DNS                  — A/AAAA/MX/TXT/NS/SOA/CNAME/CAA
-      3. Email security       — SPF + DMARC + DKIM hints
-      4. TLS certificate      — cert, SANs, days left
-      5. HTTP security headers — hardening posture
-      6. Subdomains (crt.sh)  — passive enumeration
-      7. Shodan (only if SHODAN_API_KEY set, or include_shodan=True)
+
+# ---------------------------------------------------------------------------
+# Orchestrator (async fan-out, deferred rendering)
+# ---------------------------------------------------------------------------
+
+async def _domain_recon_async(target: str, include_shodan: bool | None) -> dict:
+    """
+    Concurrent fan-out: fire all six independent probes in parallel via
+    ``asyncio.gather``, then render the results in fixed order (WHOIS → DNS
+    → email-auth → TLS → headers → subdomains → optional Shodan).
     """
     domain, url = _normalize_target(target)
     if not domain:
         print_error("Target cannot be empty.")
         return {}
 
+    final_url = url or f"https://{domain}"
+
     console.print()
     console.rule(f"[{THEME['PRIMARY']}]Domain Recon · {domain}[/]", style=THEME["DIM"])
     console.print()
+    print_info("Probing WHOIS, DNS, email auth, TLS, headers, and crt.sh in parallel…")
+    console.print()
+
+    whois_r, dns_r, mail_r, tls_r, hdr_r, sub_r = await asyncio.gather(
+        _whois_lookup_async(domain),
+        _dns_records_async(domain),
+        _email_security_fetch_async(domain),
+        asyncio.to_thread(_tls_fetch, domain, 443, 8.0),
+        _http_headers_fetch_async(final_url),
+        _crtsh_fetch_async(domain),
+        return_exceptions=True,
+    )
 
     report: dict = {"target": domain}
 
-    report["whois"]            = whois_lookup(domain)
-    console.print()
-    report["dns"]              = dns_records(domain)
-    console.print()
-    report["email_security"]   = email_security(domain)
-    console.print()
-    report["tls"]              = tls_certificate(domain)
-    console.print()
-    report["headers"]          = http_security_headers(url or f"https://{domain}")
-    console.print()
-    report["subdomains"]       = subdomains_crtsh(domain)
+    # 1. WHOIS
+    print_info(f"WHOIS · {domain}")
+    if isinstance(whois_r, BaseException):
+        print_error(f"WHOIS failed: {whois_r}")
+        report["whois"] = {}
+    else:
+        info = whois_r if isinstance(whois_r, dict) else {}
+        _render_whois_body(info)
+        report["whois"] = info
     console.print()
 
+    # 2. DNS
+    print_info(f"DNS · {domain}")
+    if isinstance(dns_r, BaseException):
+        print_error(f"DNS failed: {dns_r}")
+        report["dns"] = {}
+    else:
+        found = dns_r if isinstance(dns_r, dict) else {}
+        _render_dns_body(domain, found)
+        report["dns"] = found
+    console.print()
+
+    # 3. Email security
+    print_info(f"Email security · {domain}")
+    if isinstance(mail_r, BaseException):
+        print_error(f"Email security failed: {mail_r}")
+        report["email_security"] = {}
+    elif not _HAS_DNS:
+        print_warn("dnspython not installed — install with: pip install dnspython")
+        report["email_security"] = {}
+    else:
+        info = mail_r if isinstance(mail_r, dict) else {}
+        _render_email_security_body(domain, info)
+        report["email_security"] = info
+    console.print()
+
+    # 4. TLS
+    print_info(f"TLS · {domain}:443")
+    if isinstance(tls_r, BaseException):
+        print_error(f"TLS failed: {tls_r}")
+        report["tls"] = {}
+    else:
+        info = tls_r if isinstance(tls_r, dict) else {}
+        _render_tls_body(domain, 443, info)
+        report["tls"] = {} if "_error" in info else info
+    console.print()
+
+    # 5. HTTP headers
+    print_info(f"HTTP headers · {final_url}")
+    if isinstance(hdr_r, BaseException):
+        print_error(f"HTTP headers failed: {hdr_r}")
+        report["headers"] = {}
+    else:
+        raw = hdr_r if isinstance(hdr_r, dict) else {}
+        report["headers"] = _render_http_headers_body(raw)
+    console.print()
+
+    # 6. Subdomains (crt.sh)
+    print_info(f"Subdomains · crt.sh lookup for *.{domain}")
+    if isinstance(sub_r, BaseException):
+        print_error(f"crt.sh failed: {sub_r}")
+        report["subdomains"] = []
+    else:
+        raw = sub_r if isinstance(sub_r, dict) else {"subdomains": []}
+        report["subdomains"] = _render_subdomains_body(domain, raw)
+    console.print()
+
+    # 7. Shodan (optional) — piggy-backs on the A record from step 2.
     do_shodan = include_shodan if include_shodan is not None else bool(os.getenv("SHODAN_API_KEY"))
     if do_shodan:
-        ip = _resolve_first_ip(domain)
+        ip = _first_a(report["dns"]) or await asyncio.to_thread(_resolve_first_ip, domain)
         if ip:
-            report["shodan"] = shodan_host(ip)
+            print_info(f"Shodan · {ip}")
+            shodan_data = await _shodan_fetch_async(ip)
+            report["shodan"] = _render_shodan_body(ip, shodan_data)
         else:
             print_warn("Could not resolve target to an IP — skipping Shodan.")
 
     print_success(f"Recon complete for {domain}.")
     return report
+
+
+def domain_recon(target: str, include_shodan: bool | None = None) -> dict:
+    """
+    Runs the free, no-key probes concurrently and returns a consolidated dict.
+
+    Probes (run in parallel):
+      - WHOIS                — registrar, dates, contacts
+      - DNS                  — A/AAAA/MX/TXT/NS/SOA/CNAME/CAA
+      - Email security       — SPF + DMARC + DKIM hints
+      - TLS certificate      — cert, SANs, days left
+      - HTTP security headers — hardening posture
+      - Subdomains (crt.sh)  — passive enumeration
+
+    Then (sequentially, because it needs the resolved IP):
+      - Shodan (only if SHODAN_API_KEY set, or include_shodan=True)
+
+    Output ordering is preserved via deferred rendering: probes run
+    concurrently, but Rich tables are printed in fixed order after all
+    fetches complete.
+    """
+    return asyncio.run(_domain_recon_async(target, include_shodan))
