@@ -237,9 +237,9 @@ Every expensive upstream call routes through a single SQLite cache at `outputs/c
 | `search` | 24h | SERP results from all engines |
 | `http_text` | 6h | Cleaned page text |
 | `whois` | 7d | Registrar metadata |
-| `dns` | 1h | A/AAAA/MX/NS/TXT/SOA/CAA records |
+| `dns` | per-record-type | A/AAAA/CNAME 1h · TXT 3h · MX/NS/SOA/CAA 24h |
 | `wayback` | 30d | Archive snapshots (immutable anyway) |
-| `crtsh` | 24h | CT-log subdomain enumeration |
+| `crtsh` | 7d | CT-log subdomain enumeration (logs are append-only) |
 | `hibp_account` | 12h | Per-email breach + paste lookups |
 | `hibp_breach` | 7d | Breach metadata, domain breaches, full catalog |
 | `hibp_password` | 30d | k-anonymity SHA-1 ranges |
@@ -451,7 +451,7 @@ The plan is stored in the current case so you can replay it later.
 
 ### 4.4 The Tool Catalog
 
-The planner can only call whitelisted tools. As of this guide, 22 tools are exposed:
+The planner can only call whitelisted tools. As of this guide, 23 tools are exposed:
 
 | Tool | Purpose |
 |---|---|
