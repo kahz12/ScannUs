@@ -25,6 +25,7 @@ from cli.ui import (
     print_info, print_warn, print_error, print_success, make_table,
 )
 from core.config import DIR_REPORTS
+from core.throttle import throttled
 
 
 # ---------------------------------------------------------------------------
@@ -59,11 +60,16 @@ def _select_backend(preference: str) -> str | None:
 # Sherlock backend
 # ---------------------------------------------------------------------------
 
+@throttled(namespace="sherlock")
 def _run_sherlock(username: str, timeout: int = 20) -> list[dict]:
     """
     Runs Sherlock with CSV output and returns claimed accounts.
 
     Each result dict has: site, url, status, http_status, response_time.
+
+    Rate-limited via the shared ``sherlock`` token bucket so rapid
+    back-to-back launches (e.g. an agent loop) get spaced out; a single
+    interactive call never waits.
     """
     with tempfile.TemporaryDirectory() as tmp:
         cmd = [
@@ -119,11 +125,15 @@ def _run_sherlock(username: str, timeout: int = 20) -> list[dict]:
 _MAIGRET_FOUND_STATUSES = {"claimed", "found", "available"}
 
 
+@throttled(namespace="maigret")
 def _run_maigret(username: str, timeout: int = 20) -> list[dict]:
     """
     Runs Maigret with simple-JSON output and returns claimed accounts.
 
     Each result dict has: site, url, status, http_status, response_time.
+
+    Rate-limited via the shared ``maigret`` token bucket (gentler than
+    Sherlock's — Maigret's ~3000-site sweep is far heavier).
     """
     with tempfile.TemporaryDirectory() as tmp:
         cmd = [

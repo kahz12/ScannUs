@@ -22,7 +22,7 @@ from cli.ui import (
     make_table,
 )
 from core import state
-from core.case_manager import guardar_caso, cargar_caso
+from core.case_manager import save_case, load_case
 from core.config import env_config, openai_config
 from core.ai_agent import (IAAgent, GeminiGenerator, OpenAIGenerator,
                             AnthropicGenerator, OllamaGenerator)
@@ -83,7 +83,7 @@ def _select_engine(default: str = "duckduckgo") -> str:
 
 def _current_case_label() -> str:
     """Short label describing the loaded case for the status footer."""
-    terms = state.CASO_ACTUAL.get("terminos") if isinstance(state.CASO_ACTUAL, dict) else None
+    terms = state.CURRENT_CASE.get("search_params") if isinstance(state.CURRENT_CASE, dict) else None
     if not terms:
         return "none"
     value = terms.get("value", "")
@@ -93,6 +93,11 @@ def _current_case_label() -> str:
 
 
 def _agent_label(ia_agent) -> str:
+    """Return a short display name for the active AI agent, or 'none'.
+
+    Strips the 'Generator' suffix that every LLM backend class appends
+    so the footer stays compact (e.g. 'GeminiGenerator' → 'Gemini').
+    """
     if ia_agent is None:
         return "none"
     gen = getattr(ia_agent, "generator", None)
@@ -233,7 +238,7 @@ def process_selected_url(url: str, ia_agent=None) -> None:
 
         elif action == "file":
             print_info("Attempting direct download…")
-            FileDownload().descargar_archivo_directo(url, extract_metadata=True)
+            FileDownload().download_file_direct(url, extract_metadata=True)
 
         elif action == "media":
             media_type = select_menu(
@@ -350,7 +355,7 @@ def _render_results_page(results: list, page: int) -> None:
     console.print(Panel(commands_text, border_style=THEME["BORDER"], padding=(0, 1)))
 
 
-def interactive_analysis_menu(resultados: list, ia_agent=None) -> None:
+def interactive_analysis_menu(results: list, ia_agent=None) -> None:
     """
     Interactive results loop with pagination.
 
@@ -360,22 +365,26 @@ def interactive_analysis_menu(resultados: list, ia_agent=None) -> None:
       media                        → batch media download
       save · excel · exit          → case/export/quit
     """
-    state.ULTIMOS_RESULTADOS = resultados
+    state.LAST_RESULTS = results
 
-    if not state.CASO_ACTUAL["terminos"]:
-        state.CASO_ACTUAL["terminos"] = {"type": "manual", "value": "N/A"}
+    # Guard: ensure the session dict always has a search_params entry so
+    # every downstream reader (e.g. _current_case_label) can safely call .get().
+    if not state.CURRENT_CASE["search_params"]:
+        state.CURRENT_CASE["search_params"] = {"type": "manual", "value": "N/A"}
 
+    # Assign stable integer IDs (1-based) to each result so users can refer
+    # to them by number in the command loop below.
     formatted = []
-    for i, r in enumerate(resultados):
+    for i, r in enumerate(results):
         formatted.append({
             "id":          i + 1,
             "title":       r.get("title", "N/A"),
             "description": r.get("description", "N/A"),
             "link":        r.get("link", "N/A"),
         })
-    state.CASO_ACTUAL["resultados"] = formatted
+    state.CURRENT_CASE["results"] = formatted
 
-    all_results = state.CASO_ACTUAL["resultados"]
+    all_results = state.CURRENT_CASE["results"]
     total_pages = max(1, -(-len(all_results) // PAGE_SIZE))
     current_page = 0
     show_all = False
@@ -456,14 +465,14 @@ def interactive_analysis_menu(resultados: list, ia_agent=None) -> None:
             break
 
         elif choice in ("save", "guardar"):
-            guardar_caso()
+            save_case()
             continue
 
         elif choice == "excel":
             filename = ask("Excel filename", default="results.xlsx")
             if not filename.endswith(".xlsx"):
                 filename += ".xlsx"
-            ResultsParser(all_results).exportar_excel(filename)
+            ResultsParser(all_results).export_excel(filename)
             continue
 
         elif choice == "media":
@@ -692,18 +701,20 @@ def _run_domain_recon() -> None:
 
 def _run_guided_search() -> None:
     header_bar("Guided Search", "Compose an AND-query from target attributes")
-    nombre   = ask("Full name         (optional)")
-    usuario  = ask("Username / handle (optional)")
-    email    = ask("Email address     (optional)")
-    telefono = ask("Phone number      (optional)")
-    buscar   = ask("General term      (optional)")
+    full_name   = ask("Full name         (optional)")
+    username    = ask("Username / handle (optional)")
+    email       = ask("Email address     (optional)")
+    phone       = ask("Phone number      (optional)")
+    search_term = ask("General term      (optional)")
 
+    # Each provided attribute becomes a quoted AND clause, e.g.
+    # "Alice Smith" AND "aliceS" AND "alice@example.com"
     parts = []
-    if nombre:   parts.append(f'"{nombre}"')
-    if usuario:  parts.append(f'"{usuario}"')
-    if email:    parts.append(f'"{email}"')
-    if telefono: parts.append(f'"{telefono}"')
-    if buscar:   parts.append(f'"{buscar}"')
+    if full_name:    parts.append(f'"{full_name}"')
+    if username:     parts.append(f'"{username}"')
+    if email:        parts.append(f'"{email}"')
+    if phone:        parts.append(f'"{phone}"')
+    if search_term:  parts.append(f'"{search_term}"')
 
     if not parts:
         print_error("At least one search term is required.")
@@ -712,14 +723,14 @@ def _run_guided_search() -> None:
     query  = " AND ".join(parts)
     engine = _select_engine()
 
-    if email or telefono:
+    if email or phone:
         print_info("PII detected — switching to deep extraction mode…")
         cli.actions.do_deep_search(query, engine, pages=1, start_page=1, lang="lang_es")
     else:
         cli.actions.do_search(query, engine, pages=1, start_page=1,
                               lang="lang_es", interactive=False, ia_agent=None)
-        if state.ULTIMOS_RESULTADOS:
-            interactive_analysis_menu(state.ULTIMOS_RESULTADOS, ia_agent=None)
+        if state.LAST_RESULTS:
+            interactive_analysis_menu(state.LAST_RESULTS, ia_agent=None)
 
 
 def _run_direct_search() -> None:
@@ -731,8 +742,8 @@ def _run_direct_search() -> None:
     engine = _select_engine()
     cli.actions.do_search(query, engine, pages=1, start_page=1,
                           lang="lang_es", interactive=False, ia_agent=None)
-    if state.ULTIMOS_RESULTADOS:
-        interactive_analysis_menu(state.ULTIMOS_RESULTADOS, ia_agent=None)
+    if state.LAST_RESULTS:
+        interactive_analysis_menu(state.LAST_RESULTS, ia_agent=None)
 
 
 def _run_tech_scan() -> None:
@@ -831,8 +842,8 @@ def show_main_menu() -> None:
         elif choice == "load":
             header_bar("Load Case", "Restore a saved investigation")
             ia_agent = select_ia_agent()
-            if ia_agent and cargar_caso():
-                interactive_analysis_menu(state.ULTIMOS_RESULTADOS, ia_agent)
+            if ia_agent and load_case():
+                interactive_analysis_menu(state.LAST_RESULTS, ia_agent)
         elif choice == "config":
             header_bar("API Credentials", "Update .env file")
             env_config()

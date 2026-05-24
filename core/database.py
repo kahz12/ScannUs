@@ -78,8 +78,8 @@ class DBManager:
             - name_conflict is True when the name already exists, so the
               caller can offer an 'overwrite?' prompt.
         """
-        query_data = json.dumps(current_case.get("terminos", {}), ensure_ascii=False)
-        resultados = current_case.get("resultados", [])
+        query_data = json.dumps(current_case.get("search_params", {}), ensure_ascii=False)
+        results = current_case.get("results", [])
 
         try:
             with self._connect() as conn:
@@ -93,7 +93,7 @@ class DBManager:
                     # UNIQUE constraint → duplicate name
                     return False, f"A case named '{name}' already exists.", True
 
-                self._insert_results(conn, case_id, resultados)
+                self._insert_results(conn, case_id, results)
                 return True, f"Case '{name}' saved successfully.", False
 
         except Exception as e:
@@ -107,8 +107,8 @@ class DBManager:
         Returns:
             (success, message)
         """
-        query_data = json.dumps(current_case.get("terminos", {}), ensure_ascii=False)
-        resultados = current_case.get("resultados", [])
+        query_data = json.dumps(current_case.get("search_params", {}), ensure_ascii=False)
+        results = current_case.get("results", [])
 
         try:
             with self._connect() as conn:
@@ -127,7 +127,7 @@ class DBManager:
                     (query_data, now, case_id),
                 )
                 conn.execute("DELETE FROM results WHERE case_id = ?", (case_id,))
-                self._insert_results(conn, case_id, resultados)
+                self._insert_results(conn, case_id, results)
 
             return True, f"Case '{name}' updated successfully."
 
@@ -172,7 +172,7 @@ class DBManager:
         Deep-fetches a case by ID, joining root metadata with its result nodes.
 
         Returns:
-            dict with keys 'name', 'terminos', 'resultados', or None on failure.
+            dict with keys 'name', 'search_params', 'results', or None on failure.
         """
         try:
             with self._connect() as conn:
@@ -191,8 +191,8 @@ class DBManager:
                     (case_id,),
                 ).fetchall()
 
-            terminos   = json.loads(case_row["query_data"]) if case_row["query_data"] else {}
-            resultados = [
+            search_params = json.loads(case_row["query_data"]) if case_row["query_data"] else {}
+            results = [
                 {
                     "id":          row["result_id"],
                     "title":       row["title"],
@@ -202,7 +202,7 @@ class DBManager:
                 for row in result_rows
             ]
 
-            return {"name": case_row["name"], "terminos": terminos, "resultados": resultados}
+            return {"name": case_row["name"], "search_params": search_params, "results": results}
 
         except Exception as e:
             console.print(f"  [{THEME['ERROR']}]✘[/]  Error loading case: {e}")
@@ -213,7 +213,7 @@ class DBManager:
     # ------------------------------------------------------------------
 
     def _insert_results(self, conn: sqlite3.Connection,
-                        case_id: int, resultados: list) -> None:
+                        case_id: int, results: list) -> None:
         """Batch-inserts result rows into the results table."""
         conn.executemany(
             "INSERT INTO results (case_id, result_id, title, description, link) "
@@ -221,6 +221,6 @@ class DBManager:
             [
                 (case_id, r.get("id"), r.get("title"),
                  r.get("description"), r.get("link"))
-                for r in resultados
+                for r in results
             ],
         )

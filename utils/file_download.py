@@ -62,9 +62,9 @@ class FileDownload:
     Service layer for artifact retrieval and metadata extraction.
     """
 
-    def __init__(self, directorio_destino: str = DIR_DOWNLOADS):
-        self.directorio = directorio_destino
-        os.makedirs(self.directorio, exist_ok=True)
+    def __init__(self, destination_dir: str = DIR_DOWNLOADS):
+        self.directory = destination_dir
+        os.makedirs(self.directory, exist_ok=True)
 
     # ---------------------- Metadata extractors ----------------------------
 
@@ -214,7 +214,7 @@ class FileDownload:
 
     # ---------------------- Downloading -----------------------------------
 
-    def descargar_archivo(self, url: str, extract_metadata: bool = False) -> str | None:
+    def download_file(self, url: str, extract_metadata: bool = False) -> str | None:
         """
         Streams a binary file to disk. Returns the local path on success.
         """
@@ -225,7 +225,7 @@ class FileDownload:
                 filename = hashlib.md5(url.encode()).hexdigest() + ".bin"
                 print_warn(f"No filename in URL — using hash: {filename}")
 
-            full_path = os.path.join(self.directorio, filename)
+            full_path = os.path.join(self.directory, filename)
             print_info(f"Downloading [green]{filename}[/green] from {url}")
 
             resp = requests.get(url, stream=True, timeout=15)
@@ -246,6 +246,7 @@ class FileDownload:
             print_error(f"Unexpected error downloading {url}: {e}")
         return None
 
-    def descargar_archivo_directo(self, url: str, extract_metadata: bool = False) -> str | None:
-        """Alias preserved for backward compatibility."""
-        return self.descargar_archivo(url, extract_metadata)
+    def download_file_direct(self, url: str, extract_metadata: bool = False) -> str | None:
+        """Thin alias for :meth:`download_file`, kept for call sites that
+        historically distinguished a "direct" download path."""
+        return self.download_file(url, extract_metadata)

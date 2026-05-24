@@ -706,7 +706,10 @@ def extract_information(text: str) -> dict:
     if sql_hits:
         extracted['sql_errors'] = sorted(sql_hits)
 
-    # --- Usernames (unchanged pattern) ---
+    # --- Usernames ---
+    # The pattern includes Spanish-language field labels ("usuario", "nombre de
+    # usuario") because scraped target content may be in Spanish — these are
+    # search keywords applied to external data, not Spanish identifiers in our code.
     USER_RE = re.compile(
         r'(user|username|login|usuario|nombre de usuario)[\s:=]+[\'"]?([a-zA-Z0-9._-]{3,})[\'"]?',
         re.IGNORECASE,
@@ -823,26 +826,33 @@ class SmartSearch:
         if not os.path.isdir(self.dir_path):
             print(f"Error: The path '{self.dir_path}' is not a valid directory.")
             return files
-        for archivo in os.listdir(self.dir_path):
-            file_path = os.path.join(self.dir_path, archivo)
+        for filename in os.listdir(self.dir_path):
+            file_path = os.path.join(self.dir_path, filename)
             if os.path.isfile(file_path):
                 try:
                     with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
-                        files[archivo] = f.read()
+                        files[filename] = f.read()
                 except Exception as e:
                     print(f"Error reading file {file_path}: {e}")
         return files
 
     def regex_search(self, regex):
         """
-        Executes an arbitrary regex search against the local file cache.
+        Executes an arbitrary regex search against the in-memory file cache.
+
+        Args:
+            regex (str): Regular expression pattern to match against each file's text.
+
+        Returns:
+            dict: Mapping of filename → list of matched strings for every file
+                  that contains at least one match. Empty dict if no hits.
         """
-        coincidencias = {}
-        for file, text in self.files.items():
+        results_by_file = {}
+        for filename, text in self.files.items():
             matches = re.findall(regex, text, re.IGNORECASE)
             if matches:
-                coincidencias[file] = matches
-        return coincidencias
+                results_by_file[filename] = matches
+        return results_by_file
 
     def extract_from_files(self):
         """

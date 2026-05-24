@@ -3,10 +3,10 @@ utils/results_parse.py — Transforms search result sets into various output for
 
 Formats supported:
   - Rich terminal table (to_table)
-  - HTML report  (exportar_html)
-  - CSV          (exportar_csv)
-  - Excel .xlsx  (exportar_excel)  ← improved: colors, autofit, freeze, hyperlinks
-  - JSON         (exportar_json)
+  - HTML report  (export_html)
+  - CSV          (export_csv)
+  - Excel .xlsx  (export_excel)  ← improved: colors, autofit, freeze, hyperlinks
+  - JSON         (export_json)
 """
 
 import json
@@ -33,14 +33,14 @@ _HTML_TEMPLATE = """<!doctype html>
   header { border-bottom: 1px solid #2a2f3a; padding-bottom: 1rem; margin-bottom: 1.5rem; }
   header h1 { margin: 0 0 .25rem 0; font-size: 1.4rem; color: #00d7ff; letter-spacing: .02em; }
   header .meta { color: #888; font-size: .9rem; }
-  .resultado { background: #161a23; border: 1px solid #232836; border-radius: 8px;
-               padding: 1rem 1.25rem; margin-bottom: 1rem; }
-  .resultado .indice { color: #ff5fd7; font-size: .75rem; text-transform: uppercase;
-                       letter-spacing: .08em; margin-bottom: .25rem; }
-  .resultado h5 { margin: .1rem 0 .5rem 0; font-size: 1rem; color: #ffffff; }
-  .resultado p  { margin: 0 0 .6rem 0; color: #b8b8b8; line-height: 1.45; }
-  .resultado a  { color: #00d7ff; text-decoration: none; word-break: break-all; }
-  .resultado a:hover { text-decoration: underline; }
+  .result { background: #161a23; border: 1px solid #232836; border-radius: 8px;
+            padding: 1rem 1.25rem; margin-bottom: 1rem; }
+  .result .index { color: #ff5fd7; font-size: .75rem; text-transform: uppercase;
+                   letter-spacing: .08em; margin-bottom: .25rem; }
+  .result h5 { margin: .1rem 0 .5rem 0; font-size: 1rem; color: #ffffff; }
+  .result p  { margin: 0 0 .6rem 0; color: #b8b8b8; line-height: 1.45; }
+  .result a  { color: #00d7ff; text-decoration: none; word-break: break-all; }
+  .result a:hover { text-decoration: underline; }
 </style>
 </head>
 <body>
@@ -48,7 +48,7 @@ _HTML_TEMPLATE = """<!doctype html>
     <h1>⬡  ScannUs — Search Report</h1>
     <div class="meta">{{ total }} result(s)</div>
   </header>
-  {{ resultados }}
+  {{ results }}
 </body>
 </html>
 """
@@ -59,8 +59,8 @@ class ResultsParser:
     Data transformation layer for search result sets.
     """
 
-    def __init__(self, resultados: list):
-        self.resultados = resultados
+    def __init__(self, results: list):
+        self.results = results
 
     # ------------------------------------------------------------------
     # Helpers
@@ -74,31 +74,31 @@ class ResultsParser:
     # HTML export
     # ------------------------------------------------------------------
 
-    def exportar_html(self, archivo_salida: str) -> None:
+    def export_html(self, output_path: str) -> None:
         """
         Exports results into a self-contained, styled HTML report.
         """
-        path = self._output_path(archivo_salida)
+        path = self._output_path(output_path)
 
         try:
             fragments = []
-            for i, r in enumerate(self.resultados, 1):
+            for i, r in enumerate(self.results, 1):
                 title = html.escape(r.get("title") or "No title")
                 description = html.escape(r.get("description") or "No description")
                 link_raw = r.get("link") or ""
                 link_attr = html.escape(link_raw, quote=True) or "#"
                 link_text = html.escape(link_raw) or "No link"
                 fragments.append(
-                    '<div class="resultado">'
-                    f'<div class="indice">Result {i}</div>'
+                    '<div class="result">'
+                    f'<div class="index">Result {i}</div>'
                     f'<h5>{title}</h5>'
                     f'<p>{description}</p>'
                     f'<a href="{link_attr}" target="_blank" rel="noopener noreferrer">{link_text}</a>'
                     '</div>'
                 )
 
-            report = _HTML_TEMPLATE.replace("{{ resultados }}", "\n".join(fragments))
-            report = report.replace("{{ total }}", str(len(self.resultados)))
+            report = _HTML_TEMPLATE.replace("{{ results }}", "\n".join(fragments))
+            report = report.replace("{{ total }}", str(len(self.results)))
 
             with open(path, "w", encoding="utf-8") as f:
                 f.write(report)
@@ -114,14 +114,14 @@ class ResultsParser:
     # CSV export
     # ------------------------------------------------------------------
 
-    def exportar_csv(self, archivo_salida: str) -> None:
+    def export_csv(self, output_path: str) -> None:
         """Dumps results to a flat UTF-8 CSV file."""
-        path = self._output_path(archivo_salida)
+        path = self._output_path(output_path)
         try:
             with open(path, "w", newline="", encoding="utf-8") as f:
                 writer = csv.writer(f)
                 writer.writerow(["ID", "Title", "Description", "Link"])
-                for i, r in enumerate(self.resultados, 1):
+                for i, r in enumerate(self.results, 1):
                     writer.writerow([
                         i,
                         r.get("title", ""),
@@ -138,7 +138,7 @@ class ResultsParser:
     # Excel export — improved
     # ------------------------------------------------------------------
 
-    def exportar_excel(self, archivo_salida: str) -> None:
+    def export_excel(self, output_path: str) -> None:
         """
         Generates a polished Excel .xlsx file with:
         - Styled header row (dark background, white bold text)
@@ -148,7 +148,7 @@ class ResultsParser:
         - Clickable hyperlinks in the Link column
         - Thin borders on all cells
         """
-        path = self._output_path(archivo_salida)
+        path = self._output_path(output_path)
         try:
             wb = openpyxl.Workbook()
             ws = wb.active
@@ -182,7 +182,7 @@ class ResultsParser:
             ws.freeze_panes = "A2"
 
             # ── Data rows ─────────────────────────────────────────────
-            for row_num, r in enumerate(self.resultados, 2):
+            for row_num, r in enumerate(self.results, 2):
                 fill = row_fill_even if row_num % 2 == 0 else row_fill_odd
                 url  = r.get("link", "")
 
@@ -230,12 +230,12 @@ class ResultsParser:
     # JSON export
     # ------------------------------------------------------------------
 
-    def exportar_json(self, archivo_salida: str) -> None:
+    def export_json(self, output_path: str) -> None:
         """Serialises the result list to a pretty-printed JSON file."""
-        path = self._output_path(archivo_salida)
+        path = self._output_path(output_path)
         try:
             with open(path, "w", encoding="utf-8") as f:
-                json.dump(self.resultados, f, ensure_ascii=False, indent=4)
+                json.dump(self.results, f, ensure_ascii=False, indent=4)
             print_success(f"JSON saved → {path}")
         except IOError as e:
             print_error(f"I/O error exporting JSON: {e}")
@@ -252,14 +252,14 @@ class ResultsParser:
         Used for non-interactive rendering in the terminal.
         """
         tbl = make_table(
-            f"Results  [{THEME['ACCENT']}]{len(self.resultados)} found[/]",
+            f"Results  [{THEME['ACCENT']}]{len(self.results)} found[/]",
             ("#",           THEME["DIM"]),
             ("Title",       "bold white"),
             ("Link",        THEME["LINK"]),
             ("Description", THEME["DIM"]),
             show_lines=True,
         )
-        for i, r in enumerate(self.resultados, 1):
+        for i, r in enumerate(self.results, 1):
             desc = r.get("description", "")
             tbl.add_row(
                 str(i),
