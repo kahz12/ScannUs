@@ -6,6 +6,7 @@ from search.engines.duckduckgosearch import DuckDuckGoSearch
 from search.engines.bravesearch import BraveSearch
 from search.engines.googlesearch import GoogleSearch
 from core import state
+from core.findings import get_hub
 from analysis.web_analyzer import get_text_from_url
 from search.smart_search import extract_information
 
@@ -130,6 +131,14 @@ def do_deep_search(query: str, engine: str, pages: int, start_page: int, lang: s
     state.CURRENT_CASE["search_params"] = {"type": "deep", "value": query}
     state.LAST_RESULTS = resultados
 
+    # Feed the findings hub so the deep-search yield is pivotable: the crawled
+    # result URLs become "url" findings, and every PII identifier we extracted
+    # (emails, usernames, IPs, phones) becomes its own typed finding. This is
+    # what lets a deep search chain straight into Holehe/HIBP or a fresh search.
+    hub = get_hub()
+    hub.ingest_results(resultados, source="deep-search")
+    hub.ingest_pii({k: sorted(v) for k, v in all_extracted.items()}, source="deep-search")
+
 
 def do_search(query: str, engine: str, pages: int, start_page: int,
               lang: str, interactive: bool, ia_agent) -> None:
@@ -149,6 +158,11 @@ def do_search(query: str, engine: str, pages: int, start_page: int,
 
     state.CURRENT_CASE["search_params"] = {"type": "direct", "value": query}
     state.LAST_RESULTS = resultados
+
+    # Pool the result URLs into the findings hub so they can be pivoted into
+    # downloads, PII extraction, recon, etc. — even when this search was run
+    # non-interactively (e.g. as a hub pivot itself).
+    get_hub().ingest_results(resultados, source="search")
 
     if interactive:
         if not ia_agent:
