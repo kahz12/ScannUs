@@ -451,7 +451,7 @@ The plan is stored in the current case so you can replay it later.
 
 ### 4.4 The Tool Catalog
 
-The planner can only call whitelisted tools. As of this guide, 23 tools are exposed:
+The planner can only call whitelisted tools. As of this guide, 24 tools are exposed:
 
 | Tool | Purpose |
 |---|---|
@@ -461,6 +461,7 @@ The planner can only call whitelisted tools. As of this guide, 23 tools are expo
 | `tech_scan` | Fingerprint web tech |
 | `username_enum` | Sherlock/Maigret enumeration |
 | `email_enum` | Holehe ~120-service registration lookup |
+| `phone_osint` | Offline number intelligence (carrier, region, line type) + footprint |
 | `screenshot` | Full-page screenshot |
 | `wayback` | Snapshot timeline |
 | `wayback_fetch` | Fetch raw archived content |
@@ -748,6 +749,59 @@ same address is instant.
 
 **Install:** `pip install holehe`. If absent, `--email-enum` prints a friendly
 install hint and exits cleanly.
+
+### 7.2 Phone Intelligence (libphonenumber)
+
+The phone counterpart to username/email enumeration. Given a number, ScannUs
+resolves everything knowable **offline** from Google's libphonenumber metadata —
+validity, country/region, geographic location, carrier, time zones and line type
+(mobile / fixed / VoIP / toll-free) — then generates an **OSINT footprint**:
+ready-to-run search dorks (across the number's written forms) plus number-lookup
+links (Truecaller, WhatsApp `wa.me`, Sync.me).
+
+```bash
+python main.py --phone-osint "+14155552671"      # international format preferred
+```
+
+TUI: Main menu → **Phone Intelligence**. You'll be prompted for the number and an
+optional ISO-3166 region hint (e.g. `US`) for numbers written in national format.
+
+Sample output:
+
+```
+╭───────────────┬──────────────────────╮
+│ Field         │ Value                │
+├───────────────┼──────────────────────┤
+│ Valid         │ yes                  │
+│ E.164         │ +14155552671         │
+│ Region        │ US                   │
+│ Location      │ San Francisco, CA    │
+│ Carrier       │ —                    │
+│ Line type     │ fixed line or mobile │
+│ Time zones    │ America/Los_Angeles  │
+╰───────────────┴──────────────────────╯
+```
+
+**How it differs from related tools:**
+
+| Flag | What it answers |
+|---|---|
+| `--phone-osint` | *What can I learn about this number itself — region, carrier, line type — and where do I look next?* |
+| `-t/--phone` (deep PII) | *What does the web say about this number — pages, mentions, PII?* |
+
+**Notes:**
+
+- **Offline, keyless, instant.** libphonenumber bundles its own metadata, so there
+  is no network call, no API key, and (unlike the enumerators) no cache or rate
+  limit. It runs everywhere, including Termux.
+- Carrier data is sparse for some regions (libphonenumber only ships carrier maps
+  for mobile ranges in supported countries) — a blank carrier is normal.
+- Invalid or unparseable input is reported with a warning and best-effort
+  metadata rather than a crash.
+
+**Footprint pivots** feed the Findings Hub: running a footprint search dork pools
+its result URLs back into the session so you can chain
+`phone → search → URLs → analyse / download`.
 
 ---
 

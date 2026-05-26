@@ -157,6 +157,12 @@ def main():
                    only_used=not getattr(args, "email_enum_all", False))
         sys.exit(0)
 
+    # Route: Phone intelligence via libphonenumber (offline metadata + footprint)
+    if getattr(args, "phone_osint", None):
+        from search.phone_osint import phone_osint
+        phone_osint(args.phone_osint)
+        sys.exit(0)
+
     # Route: LLM-based query planner (multi-step ReAct investigation)
     if getattr(args, "plan", None):
         from cli.actions import do_query_planner

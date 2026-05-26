@@ -43,6 +43,7 @@ from analysis.domain_osint import (
 from search.smart_search import extract_information
 from search.username_enum import username_enum
 from search.email_enum import email_enum
+from search.phone_osint import phone_osint
 from utils.file_download import FileDownload
 from utils.media_downloader import download_media
 from utils.results_parse import ResultsParser
@@ -697,6 +698,49 @@ def _hub_email_pivot(hub) -> None:
         print_info(f"{added} service domain(s) added to the hub.")
 
 
+def _phone_footprint_followup(report: dict, ia_agent=None) -> None:
+    """Offer the generated footprint pivots from a phone report.
+
+    Search dorks run via :func:`cli.actions.do_search` (non-interactive, so the
+    result URLs flow back into the hub); lookup links are added to the hub as
+    URL findings so they can be analysed/screenshotted. Loops until the user is
+    done so several pivots can be fired from one lookup.
+    """
+    fps = report.get("footprint") or []
+    if not fps:
+        return
+    while True:
+        choices = [
+            (fp["label"], str(i), "search dork" if fp["kind"] == "search" else "lookup link")
+            for i, fp in enumerate(fps)
+        ]
+        choices.append(("Done", "__done__", ""))
+        pick = select_menu("Run a footprint pivot?", choices, default="__done__")
+        if pick in (None, "__done__"):
+            return
+        fp = fps[int(pick)]
+        if fp["kind"] == "search":
+            engine = _select_engine()
+            cli.actions.do_search(fp["value"], engine, pages=1, start_page=1,
+                                  lang="lang_es", interactive=False, ia_agent=ia_agent)
+            print_info("Result URLs added to the hub — use “Analyse a URL” to act on them.")
+        else:
+            get_hub().add_url(fp["value"], source="phone-footprint", label=fp["label"])
+            print_info(f"{fp['label']}: {fp['value']}  (added to hub)")
+
+
+def _hub_phone_pivot(hub) -> None:
+    """Pivot: run offline number intelligence on a discovered phone and offer its
+    footprint. Calls phone_osint directly (not _run_phone_osint) so we don't
+    re-enter the hub — same convention as the other hub pivots."""
+    phone = _pick_value(_kind_options(hub, "phone"), "Pick a phone to investigate")
+    if not phone:
+        return
+    report = phone_osint(phone)
+    if report:
+        _phone_footprint_followup(report)
+
+
 def _hub_hibp_pivot(hub) -> None:
     """Pivot: breach/leak check against a discovered email (account lookup) or
     domain (free domain lookup)."""
@@ -822,6 +866,8 @@ def findings_hub_menu(ia_agent=None) -> None:
             actions.append(("Enumerate a username","user-enum","Sherlock / Maigret"))
         if "email" in kinds:
             actions.append(("Enumerate an email",  "email-enum","Holehe · ~120 services"))
+        if "phone" in kinds:
+            actions.append(("Phone intelligence",  "phone-osint","validity · carrier · region · footprint"))
         if (kinds & {"email"}) or has_domains:
             actions.append(("Breach & leak check", "hibp",     "Have I Been Pwned"))
         actions.append(("Add a target manually",   "add",      "seed a URL/domain/email/username"))
@@ -848,6 +894,8 @@ def findings_hub_menu(ia_agent=None) -> None:
             _hub_username_pivot(hub)
         elif choice == "email-enum":
             _hub_email_pivot(hub)
+        elif choice == "phone-osint":
+            _hub_phone_pivot(hub)
         elif choice == "hibp":
             _hub_hibp_pivot(hub)
         elif choice == "add":
@@ -882,6 +930,7 @@ _MAIN_MENU_CHOICES = [
     ("Web Technology Scan",    "tech",     "Tech stack fingerprinting"),
     ("Username Enumeration",   "user-enum","Sherlock · 400+ sites"),
     ("Email Enumeration",      "email-enum","Holehe · ~120 services"),
+    ("Phone Intelligence",     "phone-osint","Carrier · region · line type · footprint"),
     ("Domain Recon",           "recon",    "WHOIS · DNS · TLS · headers · subdomains"),
     ("Breach & Leak Check",    "hibp",     "Have I Been Pwned: accounts · domains · passwords"),
     ("Load Saved Case",        "load",     "Resume a previous investigation"),
@@ -1184,6 +1233,23 @@ def _run_email_enum() -> None:
     _offer_hub()
 
 
+def _run_phone_osint() -> None:
+    header_bar("Phone Intelligence", "Carrier · region · line type · OSINT footprint")
+    phone = ask("Phone number  (international format preferred, e.g. +14155552671)")
+    if not phone:
+        print_error("Phone number cannot be empty.")
+        return
+    region = (ask("Region hint  (ISO-3166, optional, e.g. US)", default="") or "").strip().upper() or None
+
+    # Seed the queried number, render the report, then offer its footprint
+    # pivots (search dorks pool result URLs back into the hub).
+    get_hub().add_phone(phone, source="phone-osint-input")
+    report = phone_osint(phone, region=region)
+    if report:
+        _phone_footprint_followup(report)
+    _offer_hub()
+
+
 def show_main_menu() -> None:
     """Root navigation menu for ScannUs."""
     while True:
@@ -1231,6 +1297,8 @@ def show_main_menu() -> None:
             _run_username_enum()
         elif choice == "email-enum":
             _run_email_enum()
+        elif choice == "phone-osint":
+            _run_phone_osint()
         elif choice == "recon":
             _run_domain_recon()
         elif choice == "hibp":
