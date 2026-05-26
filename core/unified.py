@@ -36,7 +36,8 @@ from typing import Any, Literal
 # These are *just* documentation — Python doesn't enforce Literal types at
 # runtime. The dispatchers and the AI prompt both reference these names.
 IdentifierType = Literal["email", "username", "domain", "phone", "ip"]
-Status = Literal["claimed", "available", "leaked", "rate_limited", "error"]
+Status = Literal["claimed", "available", "leaked", "rate_limited", "error",
+                 "valid", "invalid"]
 
 
 @dataclass
@@ -115,6 +116,31 @@ def from_email_enum(email: str,
             },
         ).to_dict())
     return out
+
+
+def from_phone_osint(phone: str, report: dict | None) -> list[dict]:
+    """
+    Convert a :func:`search.phone_osint.phone_lookup` report into a single
+    unified record. ``status`` is ``valid``/``invalid``; the offline metadata
+    (carrier, location, line type, time zones, region) is kept under
+    ``evidence`` so the planner can correlate it with other identifiers.
+    """
+    if not report:
+        return []
+    return [UnifiedRecord(
+        identifier=report.get("e164") or phone,
+        identifier_type="phone",
+        service="phone_intel",
+        status="valid" if report.get("valid") else "invalid",
+        evidence={
+            "carrier":     report.get("carrier") or "",
+            "location":    report.get("location") or "",
+            "line_type":   report.get("line_type") or "",
+            "region_code": report.get("region_code") or "",
+            "timezones":   list(report.get("timezones") or []),
+            "country_code": report.get("country_code") or 0,
+        },
+    ).to_dict()]
 
 
 def from_hibp_breaches(email: str,

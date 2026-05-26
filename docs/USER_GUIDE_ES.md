@@ -451,7 +451,7 @@ El plan se guarda en el caso actual para que puedas reproducirlo más tarde.
 
 ### 4.4 El Catálogo de Herramientas
 
-El planificador solo puede invocar herramientas en lista blanca. A la fecha de esta guía, hay 23 herramientas expuestas:
+El planificador solo puede invocar herramientas en lista blanca. A la fecha de esta guía, hay 24 herramientas expuestas:
 
 | Herramienta | Propósito |
 |---|---|
@@ -461,6 +461,7 @@ El planificador solo puede invocar herramientas en lista blanca. A la fecha de e
 | `tech_scan` | Fingerprinting de tecnologías web |
 | `username_enum` | Enumeración Sherlock/Maigret |
 | `email_enum` | Búsqueda de registros en ~120 servicios vía Holehe |
+| `phone_osint` | Inteligencia de número offline (operador, región, tipo de línea) + huella |
 | `screenshot` | Captura de página completa |
 | `wayback` | Timeline de capturas |
 | `wayback_fetch` | Obtener contenido archivado en bruto |
@@ -751,6 +752,61 @@ la misma búsqueda es instantáneo.
 
 **Instalación:** `pip install holehe`. Si falta, `--email-enum` imprime una
 sugerencia amistosa de instalación y sale limpiamente.
+
+### 7.2 Inteligencia de Teléfono (libphonenumber)
+
+El equivalente de la enumeración de usuarios/emails para números de teléfono.
+Dado un número, ScannUs resuelve todo lo que puede saberse **sin conexión** a
+partir de los metadatos de libphonenumber de Google — validez, país/región,
+ubicación geográfica, operador, zonas horarias y tipo de línea (móvil / fijo /
+VoIP / gratuito) — y luego genera una **huella OSINT**: dorks de búsqueda listos
+para ejecutar (sobre las distintas formas escritas del número) más enlaces de
+consulta de números (Truecaller, WhatsApp `wa.me`, Sync.me).
+
+```bash
+python main.py --phone-osint "+14155552671"      # se prefiere formato internacional
+```
+
+TUI: menú principal → **Inteligencia de Teléfono**. Se te pedirá el número y una
+pista de región ISO-3166 opcional (p. ej. `US`) para números en formato nacional.
+
+Salida de ejemplo:
+
+```
+╭───────────────┬──────────────────────╮
+│ Campo         │ Valor                │
+├───────────────┼──────────────────────┤
+│ Válido        │ sí                   │
+│ E.164         │ +14155552671         │
+│ Región        │ US                   │
+│ Ubicación     │ San Francisco, CA    │
+│ Operador      │ —                    │
+│ Tipo de línea │ fijo o móvil         │
+│ Zonas horarias│ America/Los_Angeles  │
+╰───────────────┴──────────────────────╯
+```
+
+**En qué se diferencia de herramientas relacionadas:**
+
+| Bandera | Qué responde |
+|---|---|
+| `--phone-osint` | *¿Qué puedo saber del número en sí — región, operador, tipo de línea — y dónde busco después?* |
+| `-t/--phone` (PII profundo) | *¿Qué dice la web sobre este número — páginas, menciones, PII?* |
+
+**Notas:**
+
+- **Offline, sin clave, instantáneo.** libphonenumber incluye sus propios
+  metadatos, así que no hay llamada de red, ni API key, ni (a diferencia de los
+  enumeradores) caché o rate limit. Funciona en todas partes, incluido Termux.
+- Los datos de operador son escasos en algunas regiones (libphonenumber solo
+  incluye mapas de operador para rangos móviles en países soportados) — un
+  operador en blanco es normal.
+- La entrada inválida o no analizable se reporta con una advertencia y metadatos
+  de mejor esfuerzo, en lugar de un fallo.
+
+**Los pivotes de huella** alimentan el Findings Hub: ejecutar un dork de búsqueda
+de la huella vuelca sus URLs de resultado de vuelta a la sesión, encadenando
+`teléfono → búsqueda → URLs → analizar / descargar`.
 
 ---
 

@@ -495,6 +495,17 @@ TOOL_CATALOG: dict[str, dict] = {
             "only_used": "bool — show only claimed accounts (default: true)",
         },
     },
+    "phone_osint": {
+        # Offline, keyless, instant — backed by libphonenumber metadata.
+        "desc": "Resolve offline intelligence for a phone number via libphonenumber: "
+                "validity, country/region, geographic location, carrier, time zones "
+                "and line type (mobile/fixed/VoIP). Also returns an OSINT footprint "
+                "(search dorks + lookup links). No network call, no API key.",
+        "args": {
+            "phone":  "str (required) — ideally E.164, e.g. +14155552671",
+            "region": "str — optional ISO-3166 hint (e.g. US) for national-format numbers",
+        },
+    },
     "screenshot": {
         "desc": "Capture a full-page screenshot of a URL using a headless browser.",
         "args": {"url": "str (required)"},
@@ -747,6 +758,32 @@ def _dispatch_email_enum(args: dict, ia_agent) -> dict:
         "status":  "ok",
         "summary": f"email_enum: {claimed} service registration(s) found for {email}",
         "data":    {"claimed": claimed, "total": len(records), "records": records},
+    }
+
+
+def _dispatch_phone_osint(args: dict, ia_agent) -> dict:
+    from search.phone_osint import phone_lookup
+    from core.unified import from_phone_osint
+    phone = (args.get("phone") or "").strip()
+    if not phone:
+        return {"status": "error", "summary": "phone_osint: missing 'phone'"}
+    region = (args.get("region") or "").strip().upper() or None
+    try:
+        report = phone_lookup(phone, region=region)
+    except Exception as e:
+        return {"status": "error", "summary": f"phone_osint failed: {e}"}
+    if report is None:
+        return {"status": "error",
+                "summary": f"phone_osint: could not parse '{phone}' as a number"}
+    records = from_phone_osint(phone, report)
+    validity = "valid" if report["valid"] else "invalid"
+    return {
+        "status":  "ok",
+        "summary": (f"phone_osint: {report['e164']} is {validity} — "
+                    f"{report.get('carrier') or 'unknown carrier'}, "
+                    f"{report.get('location') or report.get('region_code') or '?'}, "
+                    f"{report['line_type']}"),
+        "data":    {"report": report, "records": records},
     }
 
 
@@ -1094,6 +1131,7 @@ TOOL_DISPATCH: dict[str, Callable[..., dict]] = {
     "tech_scan":             _dispatch_tech_scan,
     "username_enum":         _dispatch_username_enum,
     "email_enum":            _dispatch_email_enum,
+    "phone_osint":           _dispatch_phone_osint,
     "screenshot":            _dispatch_screenshot,
     "wayback":               _dispatch_wayback,
     "wayback_fetch":         _dispatch_wayback_fetch,
