@@ -1,11 +1,10 @@
 """
 core/database.py — SQLite DAO for ScannUs investigation cases.
 
-Improvements:
-  - Added update_case() to overwrite an existing case by name
-  - Added delete_case() for clean teardown
-  - save_case() now returns a conflict signal so callers can offer
-    an 'overwrite?' prompt instead of silently failing
+Persists named cases and exposes CRUD helpers. save_case() returns a conflict
+signal when a case name already exists, so callers can offer an "overwrite?"
+prompt rather than failing silently; update_case() performs that overwrite and
+delete_case() removes a case by name.
 """
 
 import sqlite3

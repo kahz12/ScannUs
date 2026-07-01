@@ -2,6 +2,7 @@ import sys
 import os
 
 from core.config import load_environment, env_config, openai_config, init_directories
+from core.logging_setup import setup_logging, get_logger
 from cli.ui import console, print_startup_banner
 from cli.parser import get_parser, show_custom_help
 from cli.menus import show_main_menu, select_ia_agent
@@ -19,7 +20,14 @@ def main():
     """
     # Initialize workspace scaffold and required directory structure
     init_directories()
-    
+
+    # Configure logging before anything else does real work. We read --debug
+    # straight from argv here because it must be live for both the CLI path
+    # (parsed below) and the interactive TUI path (which never reaches parse).
+    setup_logging(debug="--debug" in sys.argv)
+    log = get_logger(__name__)
+    log.info("ScannUs starting (argv=%s)", sys.argv[1:])
+
     # Load environment variables (API keys, etc.) and verify core requirements
     google_api_key_found = load_environment()
     print_startup_banner(bool(google_api_key_found))

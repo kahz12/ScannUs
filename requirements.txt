@@ -1,63 +1,71 @@
+# Runtime dependencies — version-pinned for reproducible installs.
+#
+# Versions reflect the set the project is developed and tested against. Bump
+# deliberately (and re-run the test suite) rather than letting them float; the
+# AI-provider SDKs in particular (openai, anthropic, google-genai) ship
+# breaking changes often. Dev/test-only deps are the `dev` optional-dependency
+# in pyproject.toml (install with `pip install -e ".[dev]"`).
+
 # --- Core HTTP & async ---
-requests
-aiohttp                          # async media downloads
+requests==2.33.1
+aiohttp==3.13.5                  # async media downloads
 
 # --- AI providers ---
-openai
-google-genai
-anthropic                        # Claude (claude-sonnet-4-6 default)
+openai==2.38.0
+google-genai==2.6.0
+anthropic==0.104.1               # Claude (claude-sonnet-4-6 default)
 # Ollama uses plain HTTP — no SDK required, just have `ollama serve` running
 
 # --- Configuration ---
-python-dotenv
+python-dotenv==1.2.2
 
 # --- TUI / rendering ---
-rich
-questionary                      # arrow-key navigable menus (graceful fallback)
-pyvis                            # interactive HTML graphs
+rich==15.0.0
+questionary==2.1.1               # arrow-key navigable menus (graceful fallback)
+pyvis==0.3.2                     # interactive HTML graphs
 
 # --- HTML / web extraction ---
-beautifulsoup4
-trafilatura                      # main-content extraction (preferred)
-readability-lxml                 # main-content extraction (fallback)
+beautifulsoup4==4.14.3
+trafilatura==2.0.0               # main-content extraction (preferred)
+readability-lxml==0.8.4.1        # main-content extraction (fallback)
 
 # --- Browser automation ---
-selenium
+selenium==4.44.0
 # playwright                       # full-page screenshot engine
 
 # --- Search / scraping helpers ---
-google-api-python-client
-phonenumbers                     # libphonenumber port for PII phone parsing
-yt-dlp                           # video extraction across 1000+ sites
+google-api-python-client==2.196.0
+phonenumbers==9.0.30             # libphonenumber port for PII phone parsing
+yt-dlp==2026.3.17                # video extraction across 1000+ sites
 
 # --- Domain / network OSINT ---
-dnspython                        # DNS resolver (A/AAAA/MX/TXT/SOA/NS/CAA…)
-python-whois                     # WHOIS registry lookups
+dnspython==2.8.0                 # DNS resolver (A/AAAA/MX/TXT/SOA/NS/CAA…)
+python-whois==0.9.6              # WHOIS registry lookups
 
 # --- Crypto / checksum primitives ---
-pycryptodome                     # Keccak-256 for EIP-55 Ethereum address validation
+pycryptodome==3.23.0             # Keccak-256 for EIP-55 Ethereum address validation
 
 # --- Document / file metadata ---
-pypdf                            # modern PDF metadata (preferred)
-PyPDF2                           # legacy PDF metadata (fallback)
-python-docx                      # DOCX core properties
-openpyxl                         # XLSX workbook properties + Excel export
-exifread                         # image EXIF tags
+pypdf==6.12.0                    # modern PDF metadata (preferred)
+PyPDF2==3.0.1                    # legacy PDF metadata (fallback)
+python-docx==1.2.0               # DOCX core properties
+openpyxl==3.1.5                  # XLSX workbook properties + Excel export
+exifread==3.5.1                  # image EXIF tags
 
 # --- Web fingerprinting ---
-python-Wappalyzer                # tech fingerprinting (preferred)
-webtech                          # tech fingerprinting (fallback)
+python-Wappalyzer==0.3.1         # tech fingerprinting (preferred)
+webtech==1.3.4                   # tech fingerprinting (fallback)
 
 # --- PII detection (optional) ---
-presidio-analyzer                # Microsoft Presidio entity detection
+presidio-analyzer==2.2.362       # Microsoft Presidio entity detection
 
 # --- Username enumeration ---
-sherlock-project                 # 400+ social sites — pure-Python, works everywhere
+sherlock-project==0.16.0         # 400+ social sites — pure-Python, works everywhere
 # maigret                        # 3000+ sites — DO NOT enable on Termux / Python 3.13.
                                  # Pins aiohttp==3.8.x which has no aarch64-android wheels;
                                  # source build requires the full Rust toolchain (maturin).
                                  # Install on Linux/macOS only:  pip install maigret
 
 # --- Email enumeration ---
-holehe                           # ~120 services — checks where an email is registered
+holehe==1.61                     # ~120 services — checks where an email is registered
                                  # via password-reset flows. Complements HIBP (leaks).

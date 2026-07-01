@@ -1,10 +1,9 @@
 """
 analysis/web_analyzer.py — Web content extraction and AI-driven analysis.
 
-Key improvements:
-  - Replaced all plain print() with Rich console helpers
-  - Text chunking instead of hard truncation: long texts are summarised in
-    overlapping chunks and the partial summaries are merged for a final answer
+Long inputs are summarised by chunking rather than hard truncation: the text is
+split into overlapping chunks, each chunk is summarised, and the partial
+summaries are merged into a single final answer.
 """
 
 import os
@@ -13,7 +12,10 @@ from bs4 import BeautifulSoup
 from pyvis.network import Network
 
 from core.config import DIR_GRAPHS
+from core.logging_setup import get_logger
 from cli.ui import print_info, print_warn, print_error
+
+_log = get_logger(__name__)
 
 
 # ---------------------------------------------------------------------------
@@ -91,7 +93,8 @@ def _fetch_and_clean(url: str) -> str | None:
                 if text and len(text) > 80:
                     return text
             except Exception:
-                pass
+                _log.debug("readability-lxml extraction failed; falling back to soup",
+                           exc_info=True)
 
         # Tier 3 — BeautifulSoup fallback
         return _soup_fallback(html) or None

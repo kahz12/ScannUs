@@ -9,6 +9,9 @@ from core import state
 from core.findings import get_hub
 from analysis.web_analyzer import get_text_from_url
 from search.smart_search import extract_information
+from core.logging_setup import get_logger
+
+_log = get_logger(__name__)
 
 
 # ---------------------------------------------------------------------------
@@ -21,23 +24,27 @@ def get_search_engine(engine: str, pages: int, start_page: int, lang: str, query
     Returns a list of result dicts or raises on config error.
     """
     engine = engine.lower()
-    if engine == 'duckduckgo':
-        return DuckDuckGoSearch().search(query, pages=pages)
+    _log.info("search: engine=%s query=%r pages=%s start=%s", engine, query, pages, start_page)
 
-    if engine == 'brave':
+    if engine == 'duckduckgo':
+        results = DuckDuckGoSearch().search(query, pages=pages)
+    elif engine == 'brave':
         key = os.getenv("BRAVE_API_KEY")
         if not key:
             raise EnvironmentError("BRAVE_API_KEY not found in .env")
-        return BraveSearch(key).search(query, pages=pages)
+        results = BraveSearch(key).search(query, pages=pages)
+    else:
+        # Default → Google
+        api_key     = os.getenv("API_KEY_GOOGLE")
+        engine_id   = os.getenv("SEARCH_ENGINE_ID")
+        if not api_key or not engine_id:
+            raise EnvironmentError("API_KEY_GOOGLE or SEARCH_ENGINE_ID not found in .env")
+        results = GoogleSearch(api_key, engine_id).search(
+            query, start_page=start_page, pages=pages, lang=lang
+        )
 
-    # Default → Google
-    api_key     = os.getenv("API_KEY_GOOGLE")
-    engine_id   = os.getenv("SEARCH_ENGINE_ID")
-    if not api_key or not engine_id:
-        raise EnvironmentError("API_KEY_GOOGLE or SEARCH_ENGINE_ID not found in .env")
-    return GoogleSearch(api_key, engine_id).search(
-        query, start_page=start_page, pages=pages, lang=lang
-    )
+    _log.info("search: engine=%s returned %d result(s)", engine, len(results or []))
+    return results
 
 
 def _print_search_header(engine: str, query: str, mode: str = "Standard") -> None:

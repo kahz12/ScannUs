@@ -34,12 +34,13 @@ HTTP Retry-After hints on startup).
 from __future__ import annotations
 
 import asyncio
-import logging
 import random
 import threading
 import time
 from functools import wraps
 from typing import Any, Callable
+
+from core.logging_setup import get_logger
 
 
 # ---------------------------------------------------------------------------
@@ -191,7 +192,7 @@ class TransientError(Exception):
 # Decorators
 # ---------------------------------------------------------------------------
 
-_log = logging.getLogger(__name__)
+_log = get_logger(__name__)
 
 
 def throttled(namespace: str, *, rate: float | None = None,

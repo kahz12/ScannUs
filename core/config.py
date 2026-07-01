@@ -13,6 +13,7 @@ DIR_REPORTS     = os.path.join(OUTPUT_DIR, "reports")
 DIR_SCREENSHOTS = os.path.join(OUTPUT_DIR, "screenshots")
 DIR_GRAPHS      = os.path.join(OUTPUT_DIR, "graphs")
 DIR_CACHE       = os.path.join(OUTPUT_DIR, "cache")
+DIR_LOGS        = os.path.join(OUTPUT_DIR, "logs")
 
 
 def init_directories():
@@ -22,7 +23,7 @@ def init_directories():
     """
     for directory in [OUTPUT_DIR, DIR_CASES, DIR_DOWNLOADS,
                       DIR_MEDIA, DIR_REPORTS, DIR_SCREENSHOTS, DIR_GRAPHS,
-                      DIR_CACHE]:
+                      DIR_CACHE, DIR_LOGS]:
         if not os.path.exists(directory):
             try:
                 os.makedirs(directory)

@@ -85,6 +85,9 @@ python main.py -rev https://example.com/photo.jpg
 # Cache management · export
 python main.py --cache-stats
 python main.py -q "query" --excel out.xlsx --json out.json
+
+# Verbose diagnostics (engine hits, cache hit/miss, source failures)
+python main.py --debug -q "query"     # logs to stderr + outputs/logs/scannus.log
 ```
 
 **Full CLI reference, configuration details, investigation recipes, troubleshooting and FAQ:** see the [User Guide](docs/USER_GUIDE_EN.md) ([ES](docs/USER_GUIDE_ES.md)).
