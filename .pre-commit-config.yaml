@@ -1,0 +1,25 @@
+# Pre-commit hooks. Opt-in: run `pre-commit install` once to enable.
+#
+# We run Ruff's linter (not its formatter) on purpose — the codebase uses a
+# deliberate compact style (one-line guards, aligned comments) that a formatter
+# would rewrite. Ruff's config in pyproject.toml already waives those checks.
+#
+# Note: Ruff has no Android/Termux wheel and builds from source there (needs
+# Rust), same as maigret. These hooks are intended for the primary Linux/macOS/
+# Windows dev machines; run the test suite directly on Termux.
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-yaml
+      - id: check-toml
+      - id: check-merge-conflict
+      - id: check-added-large-files
+
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.14.0
+    hooks:
+      - id: ruff-check
+        args: [--fix]

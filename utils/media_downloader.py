@@ -20,6 +20,9 @@ from rich.table import Table
 from rich.box import ROUNDED
 from cli.ui import console, THEME, print_info, print_warn, print_success
 from core.config import DIR_MEDIA
+from core.logging_setup import get_logger
+
+_log = get_logger(__name__)
 
 # aiohttp is optional — fall back to ThreadPoolExecutor if absent.
 try:
@@ -591,9 +594,10 @@ def _extract_video_urls_selenium_interaction(url: str) -> list[str]:
                         driver.execute_script("arguments[0].click();", el)
                         clicked += 1
                     except Exception:
-                        pass
+                        _log.debug("play-element click failed (selector=%s)", selector,
+                                   exc_info=True)
             except Exception:
-                pass
+                _log.debug("play-selector scan failed (selector=%s)", selector, exc_info=True)
 
         if clicked:
             print_info(f"  Clicked {clicked} play element(s). Waiting for player init…")

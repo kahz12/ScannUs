@@ -1,0 +1,77 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "scannus"
+version = "0.1.0"
+description = "Advanced OSINT & Web Intelligence Framework"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { file = "LICENSE" }
+authors = [{ name = "Ale" }]
+keywords = ["osint", "intelligence", "recon", "security", "pii", "cli"]
+classifiers = [
+    "Environment :: Console",
+    "Intended Audience :: Information Technology",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3 :: Only",
+    "Topic :: Security",
+]
+# Runtime deps are read from requirements.txt so there is a single, pinned
+# source of truth (see [tool.setuptools.dynamic] below).
+dynamic = ["dependencies"]
+
+[project.optional-dependencies]
+# Dev/test tooling — install with:  pip install -e ".[dev]"
+dev = [
+    "pytest==9.0.3",
+    # Ruff (linter) runs in CI and via pre-commit. It has no Android/Termux
+    # wheel and builds from source there (needs Rust), so it is not pinned
+    # here. On Linux/macOS/Windows:  pip install ruff==0.14.0
+]
+
+[project.urls]
+Homepage = "https://github.com/kahz12/scannus"
+Repository = "https://github.com/kahz12/scannus"
+
+[project.scripts]
+scannus = "main:main"
+
+[tool.setuptools]
+py-modules = ["main"]
+
+[tool.setuptools.packages.find]
+include = ["cli*", "core*", "search*", "analysis*", "utils*"]
+exclude = ["tests*", "outputs*", "spacy-env*", "docs*"]
+
+[tool.setuptools.dynamic]
+dependencies = { file = ["requirements.txt"] }
+
+# ---------------------------------------------------------------------------
+# Ruff — linter/formatter
+# ---------------------------------------------------------------------------
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+extend-exclude = ["spacy-env", "outputs"]
+
+[tool.ruff.lint]
+# Keep Ruff's default rule set (pyflakes `F` + a curated pycodestyle `E`
+# subset — real errors, not formatting). We only waive the stylistic checks
+# this codebase uses on purpose:
+#   E701/E704 — compact one-line guards (`if x: append(...)`) and stub defs
+#   E402      — imports deliberately placed next to the section that uses them
+#   E731      — a couple of intentional lambda assignments
+select = ["E4", "E7", "E9", "F"]
+ignore = ["E701", "E704", "E402", "E731"]
+
+# ---------------------------------------------------------------------------
+# Pytest
+# ---------------------------------------------------------------------------
+[tool.pytest.ini_options]
+# `pythonpath = .` lets tests import core/search/... without installing the
+# package; testpaths keeps `pytest` (no args) scoped to the suite.
+pythonpath = ["."]
+testpaths = ["tests"]
+addopts = "-ra"

@@ -30,6 +30,10 @@ import sqlite3
 import time
 from typing import Any, Iterable
 
+from core.logging_setup import get_logger
+
+_log = get_logger(__name__)
+
 
 # ---------------------------------------------------------------------------
 # Defaults
@@ -44,11 +48,10 @@ DEFAULT_TTL: dict[str, int] = {
                                           #       per-record-type TTLs explicitly
                                           #       (see analysis.domain_osint._DNS_TYPE_TTL).
     "wayback":       30 * 24 * 60 * 60,   # 30d — archives are immutable
-    "crtsh":         7  * 24 * 60 * 60,   # 7d — CT logs are strictly append-only;
-                                          #      previously 24h, but a domain's CT
-                                          #      footprint changes on the order of
+    "crtsh":         7  * 24 * 60 * 60,   # 7d — CT logs are append-only; a domain's
+                                          #      CT footprint changes on the order of
                                           #      cert issuance (weeks–months), not
-                                          #      hours. 7d matches `wayback`.
+                                          #      hours, so 7d matches `wayback`.
     "hibp_account":  12 * 60 * 60,        # 12h — HIBP updates breach data daily; 12h
                                           #       is a polite balance between freshness
                                           #       and not hammering Troy's servers.
@@ -131,19 +134,24 @@ class SQLiteCache:
                     "WHERE namespace = ? AND key = ?",
                     (namespace, key),
                 ).fetchone()
-        except sqlite3.Error:
+        except sqlite3.Error as e:
+            _log.debug("cache get failed ns=%s key=%s: %s", namespace, key, e)
             return None
         if row is None:
             self._misses += 1
+            _log.debug("cache miss ns=%s key=%s", namespace, key)
             return None
         value_json, expires_at = row
         if expires_at is not None and expires_at < time.time():
             self._misses += 1
+            _log.debug("cache miss (expired) ns=%s key=%s", namespace, key)
             return None
         self._hits += 1
+        _log.debug("cache hit ns=%s key=%s", namespace, key)
         try:
             return json.loads(value_json)
         except json.JSONDecodeError:
+            _log.debug("cache value corrupt (bad JSON) ns=%s key=%s", namespace, key)
             return None
 
     def set(self, namespace: str, key: str, value: Any,
@@ -175,8 +183,8 @@ class SQLiteCache:
                     "  expires_at = excluded.expires_at",
                     (namespace, key, value_json, now, expires_at),
                 )
-        except sqlite3.Error:
-            pass
+        except sqlite3.Error as e:
+            _log.debug("cache set failed ns=%s key=%s: %s", namespace, key, e)
 
     def invalidate(self, namespace: str, key: str) -> None:
         """Remove a single entry. No-op if absent."""

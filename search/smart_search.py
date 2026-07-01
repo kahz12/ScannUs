@@ -9,6 +9,9 @@ import phonenumbers
 
 # Engine-specific imports
 from search.engines.googlesearch import GoogleSearch
+from core.logging_setup import get_logger
+
+_log = get_logger(__name__)
 
 # ---------------------------------------------------------------------------
 # PII Extraction — Helpers
@@ -663,19 +666,22 @@ def _extract_presidio_entities(text: str) -> dict[str, list[str]]:
 
 def extract_information(text: str) -> dict:
     """
-    Parses a text/HTML block to extract PII and OSINT-relevant patterns.
+    Parse a text/HTML block and extract PII and OSINT-relevant patterns.
 
-    Improvements over the previous version:
-    - Emails: obfuscation decoding, long TLD support, false-positive filter
-    - Phones: international formats, multi-separator support, normalised dedup
-    - HTML:   mailto:/tel: attribute extraction in addition to visible text
-    - Misc:   SQL error and username patterns unchanged
+    Handling per category:
+    - Emails: decodes common obfuscation, supports long TLDs, filters likely
+      false positives, and also reads mailto: hrefs.
+    - Phones: parses international and domestic formats via libphonenumber,
+      deduplicated by E.164 canonical form; also reads tel: hrefs.
+    - HTML:   mailto:/tel: attributes are extracted alongside visible text.
+    - Also: SQL-error signatures, usernames, national IDs, financial and crypto
+      identifiers, leaked secrets, and public network addresses.
 
     Args:
         text: Raw input text (may contain HTML markup).
 
     Returns:
-        dict mapping category names to deduplicated lists of found values.
+        dict mapping category names to deduplicated, sorted lists of found values.
     """
     if not text:
         return {}
@@ -692,7 +698,7 @@ def extract_information(text: str) -> dict:
     if phones:
         extracted['phones'] = sorted(phones)
 
-    # --- SQL Errors (unchanged) ---
+    # --- SQL Errors ---
     SQL_RE = re.compile(
         r'(SQL(ite)?|MySQL|PostgreSQL|Oracle)\s(error|exception|failed|denied)'
         r'|(unclosed quotation mark|syntax error|invalid query)',
@@ -941,7 +947,7 @@ class SmartSearch:
                 try:
                     driver.quit()
                 except Exception:
-                    pass
+                    _log.debug("selenium driver.quit() failed during cleanup", exc_info=True)
 
 # --- Testing / CLI Standalone Utility ---
 if __name__ == "__main__":

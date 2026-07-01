@@ -36,7 +36,7 @@ from phonenumbers import carrier, geocoder, timezone, PhoneNumberType
 
 from cli.ui import (
     console, THEME,
-    print_info, print_warn, print_error, print_success, make_table,
+    print_warn, print_error, print_success, make_table,
 )
 from core.config import DIR_REPORTS
 # Reuse the same region fallback set the PII extractor uses, so a domestically

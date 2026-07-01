@@ -5,7 +5,7 @@ Formats supported:
   - Rich terminal table (to_table)
   - HTML report  (export_html)
   - CSV          (export_csv)
-  - Excel .xlsx  (export_excel)  ← improved: colors, autofit, freeze, hyperlinks
+  - Excel .xlsx  (export_excel)  — styled: colors, autofit, freeze panes, hyperlinks
   - JSON         (export_json)
 """
 
@@ -135,7 +135,7 @@ class ResultsParser:
             print_error(f"Unexpected error exporting CSV: {e}")
 
     # ------------------------------------------------------------------
-    # Excel export — improved
+    # Excel export
     # ------------------------------------------------------------------
 
     def export_excel(self, output_path: str) -> None:

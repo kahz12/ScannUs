@@ -1,10 +1,9 @@
 """
 cli/parser.py — Argument parser and styled help renderer for ScannUs CLI.
 
-Improvements:
-  - Uses shared THEME tokens for visual consistency with the TUI
-  - Help table rendered inside a Rich Panel per argument group
-  - Examples section uses a styled two-column grid
+show_custom_help() renders each argparse group as its own Rich Panel (using the
+shared THEME tokens for consistency with the TUI) and lists usage examples in a
+two-column grid.
 """
 
 import argparse
@@ -134,6 +133,8 @@ def get_parser() -> argparse.ArgumentParser:
                          help="Launch the .env API credential setup wizard.")
     general.add_argument("-i", "--interactive", action="store_true",
                          help="Enter the full interactive TUI investigation mode.")
+    general.add_argument("--debug",             action="store_true",
+                         help="Verbose debug logging to stderr + outputs/logs/scannus.log.")
 
     # ── Case management ───────────────────────────────────────────────────
     cases = parser.add_argument_group("Case Management")
