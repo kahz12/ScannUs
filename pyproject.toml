@@ -60,11 +60,11 @@ extend-exclude = ["spacy-env", "outputs"]
 # Keep Ruff's default rule set (pyflakes `F` + a curated pycodestyle `E`
 # subset — real errors, not formatting). We only waive the stylistic checks
 # this codebase uses on purpose:
-#   E701/E704 — compact one-line guards (`if x: append(...)`) and stub defs
+#   E701     — compact one-line guards (`if x: append(...)`)
 #   E402      — imports deliberately placed next to the section that uses them
 #   E731      — a couple of intentional lambda assignments
 select = ["E4", "E7", "E9", "F"]
-ignore = ["E701", "E704", "E402", "E731"]
+ignore = ["E701", "E402", "E731"]
 
 # ---------------------------------------------------------------------------
 # Pytest

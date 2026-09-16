@@ -195,6 +195,9 @@ class ResultsParser:
                 ws.row_dimensions[row_num].height = 16
 
                 for col_idx, cell in enumerate(ws[row_num], 1):
+                    # Search results are untrusted text, never spreadsheet formulas.
+                    if col_idx > 1 and isinstance(cell.value, str):
+                        cell.data_type = "s"
                     cell.fill   = fill
                     cell.border = border
                     cell.alignment = Alignment(

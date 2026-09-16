@@ -286,16 +286,17 @@ def _dispatch_search(args: dict, ia_agent) -> dict:
 
 def _dispatch_deep_search(args: dict, ia_agent) -> dict:
     from cli.actions import do_deep_search
-    from core import state
     query = (args.get("query") or "").strip()
     if not query:
         return {"status": "error", "summary": "deep_search: missing 'query'"}
     engine = (args.get("engine") or "duckduckgo").lower()
     try:
-        do_deep_search(query, engine, pages=1, start_page=1, lang="lang_es")
+        results = do_deep_search(query, engine, pages=1, start_page=1, lang="lang_es")
     except Exception as e:
         return {"status": "error", "summary": f"deep_search failed: {e}"}
-    count = len(state.LAST_RESULTS or [])
+    if results is None:
+        return {"status": "error", "summary": "deep search failed"}
+    count = len(results)
     return {
         "status":  "ok",
         "summary": f"deep search over {count} URLs complete",

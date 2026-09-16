@@ -1,4 +1,5 @@
 import os
+from concurrent.futures import ThreadPoolExecutor
 from rich.panel import Panel
 from rich.text import Text
 from cli.ui import console, THEME, print_success, print_error, print_warn, print_info, make_table
@@ -85,13 +86,32 @@ def _print_results_table(resultados: list) -> None:
     console.print(tbl)
 
 
+def _fetch_search_texts(results: list[dict]):
+    """Fetch up to four pages at once, bounding buffered text and preserving order."""
+    urls = list(dict.fromkeys(r["link"] for r in results if r.get("link")))
+
+    def fetch(url):
+        try:
+            return get_text_from_url(url)
+        except Exception:
+            _log.warning("deep search could not fetch %s", url, exc_info=True)
+            return None
+
+    with ThreadPoolExecutor(max_workers=4) as executor:
+        for start in range(0, len(urls), 4):
+            batch = urls[start:start + 4]
+            yield from zip(batch, executor.map(fetch, batch))
+
+
 # ---------------------------------------------------------------------------
 # Public actions
 # ---------------------------------------------------------------------------
 
-def do_deep_search(query: str, engine: str, pages: int, start_page: int, lang: str) -> None:
+def do_deep_search(query: str, engine: str, pages: int, start_page: int,
+                   lang: str) -> list[dict] | None:
     """
     Intensive search: retrieves SERP results then crawls each URL to extract PII.
+    Returns search results on success (including an empty list), or None on failure.
     """
     _print_search_header(engine, query, mode="Deep / PII Extraction")
 
@@ -105,12 +125,8 @@ def do_deep_search(query: str, engine: str, pages: int, start_page: int, lang: s
     console.print()
 
     all_extracted: dict = {}
-    for r in resultados:
-        url = r.get("link")
-        if not url:
-            continue
+    for url, text in _fetch_search_texts(resultados):
         console.print(f"  [{THEME['DIM']}]🔗[/]  [{THEME['LINK']}]{url}[/]")
-        text = get_text_from_url(url)
         if text:
             data = extract_information(text)
             for key, values in data.items():
@@ -145,6 +161,7 @@ def do_deep_search(query: str, engine: str, pages: int, start_page: int, lang: s
     hub = get_hub()
     hub.ingest_results(resultados, source="deep-search")
     hub.ingest_pii({k: sorted(v) for k, v in all_extracted.items()}, source="deep-search")
+    return resultados
 
 
 def do_search(query: str, engine: str, pages: int, start_page: int,

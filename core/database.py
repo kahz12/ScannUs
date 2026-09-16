@@ -10,7 +10,9 @@ delete_case() removes a case by name.
 import sqlite3
 import os
 import json
+from contextlib import contextmanager
 from datetime import datetime, timezone
+from typing import Iterator
 from cli.ui import console, THEME
 from core.config import DIR_CASES
 
@@ -51,6 +53,8 @@ class DBManager:
                         link      TEXT,
                         FOREIGN KEY (case_id) REFERENCES cases (id) ON DELETE CASCADE
                     );
+                    CREATE INDEX IF NOT EXISTS idx_results_case_result
+                        ON results(case_id, result_id);
                 """)
         except Exception as e:
             console.print(f"  [{THEME['ERROR']}]✘[/]  DB init error: {e}")
@@ -59,10 +63,15 @@ class DBManager:
     # Connection helper
     # ------------------------------------------------------------------
 
-    def _connect(self) -> sqlite3.Connection:
+    @contextmanager
+    def _connect(self) -> Iterator[sqlite3.Connection]:
         conn = sqlite3.connect(self.db_path)
-        conn.execute("PRAGMA foreign_keys = ON")
-        return conn
+        try:
+            conn.execute("PRAGMA foreign_keys = ON")
+            with conn:
+                yield conn
+        finally:
+            conn.close()
 
     # ------------------------------------------------------------------
     # Write operations

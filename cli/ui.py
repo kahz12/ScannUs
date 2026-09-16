@@ -76,9 +76,7 @@ SUCCESS_GLYPH  = "✔"
 ERROR_GLYPH    = "✘"
 WARN_GLYPH     = "⚠"
 INFO_GLYPH     = "›"
-ARROW_GLYPH    = "→"
 BULLET_GLYPH   = "•"
-LOADING_GLYPH  = "◔"
 
 PROMPT = f"[{THEME['INPUT']}]{PROMPT_GLYPH}[/] "
 

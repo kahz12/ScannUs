@@ -198,29 +198,3 @@ def from_hibp_pastes(email: str,
             },
         ).to_dict())
     return out
-
-
-# ---------------------------------------------------------------------------
-# Aggregation helpers — used by the AI planner to correlate across tools
-# ---------------------------------------------------------------------------
-
-def by_service(records: list[dict]) -> dict[str, list[dict]]:
-    """
-    Group records by ``service`` (lowercased) so the planner can see at a
-    glance whether the same upstream appears under multiple identifiers
-    (e.g. username claimed on LinkedIn *and* email leaked in LinkedIn breach
-    → identity-link signal).
-    """
-    out: dict[str, list[dict]] = {}
-    for r in records or []:
-        key = str(r.get("service") or "").lower()
-        out.setdefault(key, []).append(r)
-    return out
-
-
-def by_identifier(records: list[dict]) -> dict[str, list[dict]]:
-    """Group by ``identifier`` — useful when multiple targets are in play."""
-    out: dict[str, list[dict]] = {}
-    for r in records or []:
-        out.setdefault(str(r.get("identifier") or ""), []).append(r)
-    return out
