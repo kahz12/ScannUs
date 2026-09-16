@@ -27,8 +27,10 @@ from __future__ import annotations
 import json
 import os
 import sqlite3
+import threading
 import time
-from typing import Any, Iterable
+from contextlib import contextmanager
+from typing import Any, Iterable, Iterator
 
 from core.logging_setup import get_logger
 
@@ -98,22 +100,43 @@ class SQLiteCache:
         self.db_path = db_path
         self._hits   = 0
         self._misses = 0
+        self._purge_lock = threading.Lock()
+        self._next_purge = 0.0
         self._initialize()
+        self._maybe_purge()
 
     # ------------------------------------------------------------------
     # Connection / schema
     # ------------------------------------------------------------------
 
-    def _connect(self) -> sqlite3.Connection:
+    @contextmanager
+    def _connect(self) -> Iterator[sqlite3.Connection]:
         conn = sqlite3.connect(self.db_path, timeout=10, isolation_level=None)
-        conn.execute("PRAGMA journal_mode = WAL")
-        conn.execute("PRAGMA synchronous = NORMAL")
-        return conn
+        try:
+            conn.execute("PRAGMA journal_mode = WAL")
+            conn.execute("PRAGMA synchronous = NORMAL")
+            with conn:
+                yield conn
+        finally:
+            conn.close()
 
     def _initialize(self) -> None:
-        os.makedirs(os.path.dirname(self.db_path), exist_ok=True)
+        os.makedirs(os.path.dirname(self.db_path) or ".", exist_ok=True)
         with self._connect() as conn:
             conn.executescript(_SCHEMA)
+
+    def _maybe_purge(self) -> None:
+        """Reclaim expired rows at startup and every five minutes of activity."""
+        if _disabled() or time.monotonic() < self._next_purge:
+            return
+        if not self._purge_lock.acquire(blocking=False):
+            return
+        try:
+            if time.monotonic() >= self._next_purge:
+                self.purge_expired()
+                self._next_purge = time.monotonic() + 300
+        finally:
+            self._purge_lock.release()
 
     # ------------------------------------------------------------------
     # Core API
@@ -122,11 +145,11 @@ class SQLiteCache:
     def get(self, namespace: str, key: str) -> Any | None:
         """
         Return the cached value for ``(namespace, key)``, or ``None`` on
-        cache miss / expired row. Expired rows are NOT lazily deleted here
-        — use :meth:`purge_expired` to reclaim space.
+        cache miss / expired row. Periodic maintenance reclaims expired rows.
         """
         if _disabled():
             return None
+        self._maybe_purge()
         try:
             with self._connect() as conn:
                 row = conn.execute(
@@ -162,6 +185,7 @@ class SQLiteCache:
         """
         if _disabled():
             return
+        self._maybe_purge()
         try:
             value_json = json.dumps(value, default=str, ensure_ascii=False)
         except (TypeError, ValueError):
@@ -271,15 +295,17 @@ class SQLiteCache:
 # ---------------------------------------------------------------------------
 
 _GLOBAL: SQLiteCache | None = None
+_GLOBAL_LOCK = threading.Lock()
 
 
 def get_cache() -> SQLiteCache:
     """Return the process-wide cache instance, creating it lazily."""
     global _GLOBAL
-    if _GLOBAL is None:
-        # Defer import so this module can be loaded before init_directories()
-        from core.config import DIR_CACHE
-        _GLOBAL = SQLiteCache(os.path.join(DIR_CACHE, "cache.db"))
+    with _GLOBAL_LOCK:
+        if _GLOBAL is None:
+            # Defer import so this module can be loaded before init_directories()
+            from core.config import DIR_CACHE
+            _GLOBAL = SQLiteCache(os.path.join(DIR_CACHE, "cache.db"))
     return _GLOBAL
 
 

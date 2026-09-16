@@ -228,12 +228,24 @@ class FileDownload:
             full_path = os.path.join(self.directory, filename)
             print_info(f"Downloading [green]{filename}[/green] from {url}")
 
-            resp = requests.get(url, stream=True, timeout=15)
-            resp.raise_for_status()
-
-            with open(full_path, "wb") as f:
-                for chunk in resp.iter_content(chunk_size=8192):
-                    f.write(chunk)
+            with requests.get(url, stream=True, timeout=15) as resp:
+                resp.raise_for_status()
+                stem, ext = os.path.splitext(filename)
+                suffix = 0
+                while True:
+                    try:
+                        f = open(full_path, "xb")
+                        break
+                    except FileExistsError:
+                        suffix += 1
+                        full_path = os.path.join(self.directory, f"{stem}_{suffix}{ext}")
+                try:
+                    with f:
+                        for chunk in resp.iter_content(chunk_size=8192):
+                            f.write(chunk)
+                except BaseException:
+                    os.unlink(full_path)
+                    raise
             print_success(f"Saved: {full_path}")
 
             if extract_metadata:

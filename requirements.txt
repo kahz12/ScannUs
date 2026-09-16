@@ -31,7 +31,7 @@ readability-lxml==0.8.4.1        # main-content extraction (fallback)
 
 # --- Browser automation ---
 selenium==4.44.0
-# playwright                       # full-page screenshot engine
+playwright                       # full-page screenshot engine
 
 # --- Search / scraping helpers ---
 google-api-python-client==2.196.0
@@ -61,7 +61,7 @@ presidio-analyzer==2.2.362       # Microsoft Presidio entity detection
 
 # --- Username enumeration ---
 sherlock-project==0.16.0         # 400+ social sites — pure-Python, works everywhere
-# maigret                        # 3000+ sites — DO NOT enable on Termux / Python 3.13.
+maigret                        # 3000+ sites — DO NOT enable on Termux / Python 3.13.
                                  # Pins aiohttp==3.8.x which has no aarch64-android wheels;
                                  # source build requires the full Rust toolchain (maturin).
                                  # Install on Linux/macOS only:  pip install maigret
