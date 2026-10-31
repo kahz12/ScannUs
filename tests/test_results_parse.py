@@ -84,8 +84,9 @@ class TestExcel:
 
 class TestExtracted:
     EXTRACTED = [
-        {"category": "emails", "value": "alice@acme-corp.io",
-         "source": "https://a.example/1"},
+        {"category": "emails", "value": "alice@acme-corp.io", "confidence": "high",
+         "source": "https://a.example/1", "tool": "deep-search",
+         "found_at": "2026-10-31T12:00:00+00:00", "content_sha256": "abc123"},
         {"category": "presidio_person", "value": "<b>Maria</b>",
          "source": "https://b.example/2?x=1&y=2"},
     ]
@@ -108,10 +109,15 @@ class TestExtracted:
         with (tmp_path / "out.csv").open(encoding="utf-8") as f:
             assert next(csv.reader(f)) == ["ID", "Title", "Description", "Link"]
         with (tmp_path / "out_extracted.csv").open(encoding="utf-8") as f:
-            rows = list(csv.reader(f))
-        assert rows[0] == ["Category", "Value", "Source"]
-        assert rows[1] == ["emails", "alice@acme-corp.io", "https://a.example/1"]
-        assert len(rows) == 3
+            rows = list(csv.DictReader(f))
+        assert rows[0]["Category"] == "emails"
+        assert rows[0]["Value"] == "alice@acme-corp.io"
+        assert rows[0]["Source"] == "https://a.example/1"
+        assert rows[0]["Confidence"] == "high"
+        assert rows[0]["Tool"] == "deep-search"
+        assert rows[0]["Found at"] == "2026-10-31T12:00:00+00:00"
+        assert rows[0]["Content SHA-256"] == "abc123"
+        assert len(rows) == 2
 
     def test_plain_search_writes_no_companion_csv(self, tmp_path):
         ResultsParser(SAMPLE).export_csv("out.csv")
@@ -147,10 +153,19 @@ class TestExtracted:
         wb = openpyxl.load_workbook(tmp_path / "out.xlsx")
         assert wb.sheetnames == ["Results", "Extracted"]
         ws = wb["Extracted"]
-        assert [c.value for c in ws[1]] == ["Category", "Value", "Source"]
+        assert [c.value for c in ws[1]][:4] == ["Category", "Value", "Confidence", "Source"]
         assert ws["B2"].value == "=1+1"
         assert ws["B2"].data_type == "s"
-        assert ws["C2"].hyperlink.target == "https://a.example/1"
+        assert ws["D2"].hyperlink.target == "https://a.example/1"
+
+    def test_only_web_addresses_become_links(self, tmp_path):
+        extracted = [{"category": "domain", "value": "a.test", "source": "javascript:alert(1)"}]
+        ResultsParser(SAMPLE, extracted=extracted).export_excel("out.xlsx")
+        ResultsParser(SAMPLE, extracted=extracted).export_html("out.html")
+
+        ws = openpyxl.load_workbook(tmp_path / "out.xlsx")["Extracted"]
+        assert ws["D2"].hyperlink is None
+        assert 'href="javascript' not in (tmp_path / "out.html").read_text(encoding="utf-8")
 
     def test_excel_sheet_exists_when_nothing_was_extracted(self, tmp_path):
         ResultsParser(SAMPLE, extracted=[]).export_excel("out.xlsx")

@@ -448,15 +448,20 @@ def wayback_extract_pii(url: str, timestamp: str | None = None) -> dict | None:
     sensitive strings that may have been scrubbed from the live site.
 
     Returns:
-        ``{"timestamp", "date", "archive_url", "by_category", "counts"}`` or
-        ``None`` if the snapshot cannot be retrieved or yields no extractable text.
+        ``{"timestamp", "date", "archive_url", "by_category", "counts", "evidence"}``
+        or ``None`` if the snapshot cannot be retrieved or yields no extractable text.
     """
-    from search.smart_search import extract_information
+    from core import state
+    from core.findings import get_hub
+    from search.smart_search import build_evidence, extract_information
 
     snap = wayback_fetch_snapshot(url, timestamp)
     if not snap or not snap.get("text"):
         return None
     data = extract_information(snap["text"])
+    records = build_evidence(data, snap["text"], snap["archive_url"], "wayback")
+    state.add_evidence(records)
+    get_hub().ingest_evidence(records)
     counts = {k: (len(v) if not isinstance(v, dict) else len(v))
               for k, v in data.items()}
 
@@ -484,6 +489,7 @@ def wayback_extract_pii(url: str, timestamp: str | None = None) -> dict | None:
         "archive_url": snap["archive_url"],
         "by_category": data,
         "counts":      counts,
+        "evidence":    records,
     }
 
 

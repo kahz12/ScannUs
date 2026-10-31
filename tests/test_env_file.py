@@ -38,7 +38,12 @@ def run_main(tmp_path, monkeypatch):
 ])
 def test_free_commands_run_without_env_file(run_main, monkeypatch, flags, route):
     calls = []
-    monkeypatch.setattr(route, lambda *args, **kwargs: calls.append(args))
+
+    def command_ran(*args, **kwargs):
+        calls.append(args)
+        return []
+
+    monkeypatch.setattr(route, command_ran)
 
     with pytest.raises(SystemExit) as exit_info:
         run_main(*flags)
@@ -52,7 +57,8 @@ def test_search_runs_without_env_file(run_main, monkeypatch):
     hub = FindingsHub()
     monkeypatch.setattr(actions, "get_hub", lambda: hub)
     monkeypatch.setattr(state, "LAST_RESULTS", [])
-    monkeypatch.setattr(state, "CURRENT_CASE", {"search_params": {}, "results": []})
+    monkeypatch.setattr(state, "CURRENT_CASE",
+                        {"search_params": {}, "results": [], "evidence": [], "investigation": None})
 
     run_main("-q", "target")
 

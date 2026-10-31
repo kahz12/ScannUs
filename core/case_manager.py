@@ -6,6 +6,47 @@ Uses Rich console helpers for a consistent visual experience.
 from cli.ui import console, THEME, print_success, print_error, print_warn, print_info, make_table
 from core import state
 from core.database import DBManager
+from core.findings import EVIDENCE_KINDS, get_hub
+
+
+def case_snapshot() -> dict:
+    """
+    Returns the active case as it should be stored: its evidence plus the hub
+    findings not already covered by it or by the search results, such as the
+    subdomains and addresses that recon found.
+    """
+    case = state.CURRENT_CASE
+    evidence = list(case.get("evidence") or [])
+    links = {r.get("link") for r in case.get("results") or []}
+    covered = {(EVIDENCE_KINDS.get(e["category"]), e["value"].lower()) for e in evidence}
+    for finding in get_hub().all():
+        if (finding.kind, finding.value.lower()) in covered or finding.value in links:
+            continue
+        evidence.append({
+            "category":       finding.kind,
+            "value":          finding.value,
+            "confidence":     "",
+            "source":         finding.label if finding.label.startswith("http") else "",
+            "tool":           finding.source,
+            "found_at":       finding.found_at,
+            "content_sha256": "",
+        })
+    return {**case, "evidence": evidence}
+
+
+def _has_content(case: dict) -> bool:
+    return bool(case.get("results") or case.get("evidence") or case.get("investigation"))
+
+
+def save_case_as(name: str) -> bool:
+    """Saves the active case under *name* without prompting. Returns True on success."""
+    case = case_snapshot()
+    if not _has_content(case):
+        print_warn("Nothing to save — the session has no results or findings.")
+        return False
+    success, message, _conflict = DBManager().save_case(name, case)
+    (print_success if success else print_error)(message)
+    return success
 
 
 def save_case() -> None:
@@ -14,7 +55,8 @@ def save_case() -> None:
     local SQLite database. If a case with the same name already exists, offers
     an overwrite prompt rather than silently failing or duplicating.
     """
-    if not state.CURRENT_CASE.get("results"):
+    case = case_snapshot()
+    if not _has_content(case):
         print_warn("No results to save — run a search first.")
         return
 
@@ -27,7 +69,7 @@ def save_case() -> None:
         return
 
     db = DBManager()
-    success, message, conflict = db.save_case(case_name, state.CURRENT_CASE)
+    success, message, conflict = db.save_case(case_name, case)
 
     if success:
         print_success(message)
@@ -42,7 +84,7 @@ def save_case() -> None:
         ).strip().lower()
 
         if confirm == "y":
-            ok, msg = db.update_case(case_name, state.CURRENT_CASE)
+            ok, msg = db.update_case(case_name, case)
             if ok:
                 print_success(msg)
             else:
@@ -56,11 +98,11 @@ def save_case() -> None:
 def load_case() -> bool:
     """
     Lists all saved cases in a Rich table, prompts the user to select one by
-    number, and restores it into the global session state.
+    number, and restores it into the global session state and the findings hub.
 
     Returns:
         True if a case was loaded successfully, False otherwise (no cases in
-        the DB, invalid selection, missing data, or empty result set).
+        the DB, invalid selection, missing data, or an empty case).
     """
     db = DBManager()
     saved_cases = db.get_all_cases()
@@ -106,12 +148,17 @@ def load_case() -> bool:
     state.CURRENT_CASE  = case_data
     state.LAST_RESULTS  = state.CURRENT_CASE.get("results", [])
 
-    if not state.LAST_RESULTS:
-        print_warn("The selected case exists but contains no results.")
+    if not _has_content(case_data):
+        print_warn("The selected case exists but it is empty.")
         return False
+
+    evidence = case_data.get("evidence", [])
+    hub = get_hub()
+    hub.ingest_results(state.LAST_RESULTS, source="case")
+    hub.ingest_evidence(evidence)
 
     print_success(
         f"Case '[bold]{case_name}[/bold]' loaded — "
-        f"{len(state.LAST_RESULTS)} results available."
+        f"{len(state.LAST_RESULTS)} results and {len(evidence)} findings available."
     )
     return True

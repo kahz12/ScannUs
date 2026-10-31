@@ -10,7 +10,7 @@
 
 **Advanced OSINT & Web Intelligence Framework**
 
-[![Python](https://img.shields.io/badge/Python-3.10%2B-blue?style=flat-square&logo=python)](https://python.org)
+[![Python](https://img.shields.io/badge/Python-3.11%2B-blue?style=flat-square&logo=python)](https://python.org)
 [![License](https://img.shields.io/badge/License-MIT-green?style=flat-square)](LICENSE)
 [![Status](https://img.shields.io/badge/Status-Active-brightgreen?style=flat-square)]()
 [![Platforms](https://img.shields.io/badge/Platforms-Linux%20%7C%20Windows%20%7C%20Termux-orange?style=flat-square)]()
@@ -31,7 +31,8 @@
 |---|---|
 | **Multi-engine search** | DuckDuckGo · Brave, with automatic fallback — persistent SQLite cache |
 | **Four AI providers** | Gemini · GPT-4o · Claude Sonnet 4.6 · local Ollama — token-streamed |
-| **AI Query Planner** | ReAct multi-step plans using 23 whitelisted tools |
+| **AI Query Planner** | Step-by-step investigations that build on each result, with a sourced final report, using 24 whitelisted tools |
+| **Evidence** | Every finding keeps its source, tool, date, content hash and confidence, saved with the case |
 | **Breach intelligence** | HIBP — accounts, domains, breaches, k-anon passwords |
 | **Domain recon** | WHOIS · DNS · TLS · security headers · crt.sh subdomains · Shodan |
 | **PII & secret extraction** | 25+ identifiers: cloud keys · JWTs · BTC/ETH · IBAN · SSN/CPF/SIN |
@@ -55,7 +56,7 @@ python main.py -c          # configure .env (interactive wizard)
 python main.py             # launch interactive TUI
 ```
 
-**Requirements:** Python 3.10+, Firefox (for Selenium features). Optional: Ollama daemon for local LLM.
+**Requirements:** Python 3.11+, Firefox (for Selenium features). Optional: Ollama daemon for local LLM.
 
 > ScannUs works with **zero API keys** (DuckDuckGo + free HIBP endpoints + crt.sh + Wayback + Sherlock). Add Gemini for free AI features.
 

@@ -47,8 +47,8 @@ def run_main(tmp_path, monkeypatch):
     hub = FindingsHub()
     monkeypatch.setattr(actions, "get_hub", lambda: hub)
     monkeypatch.setattr(state, "LAST_RESULTS", [])
-    monkeypatch.setattr(state, "LAST_EXTRACTED", [])
-    monkeypatch.setattr(state, "CURRENT_CASE", {"search_params": {}, "results": []})
+    monkeypatch.setattr(state, "CURRENT_CASE",
+                        {"search_params": {}, "results": [], "evidence": [], "investigation": None})
 
     def run(*flags):
         monkeypatch.setattr(sys, "argv", ["main.py", *flags])
@@ -101,8 +101,10 @@ def test_failed_search_writes_nothing(run_main, tmp_path, monkeypatch, mode):
 
     monkeypatch.setattr(actions, "get_search_engine", blocked)
 
-    run_main("-q", "target", *mode, *EXPORT_FLAGS)
+    with pytest.raises(SystemExit) as exit_info:
+        run_main("-q", "target", *mode, *EXPORT_FLAGS)
 
+    assert exit_info.value.code == 1
     assert sorted(p.name for p in tmp_path.iterdir()) == [".env"]
 
 
@@ -119,8 +121,8 @@ def test_deep_search_runs_requested_downloads(run_main, monkeypatch):
     downloaded = []
 
     class FakeDownloader:
-        def __init__(self, directory):
-            pass
+        def __init__(self, *custom_folder):
+            assert custom_folder == ()
 
         def download_file(self, url, metadata):
             downloaded.append(url)
@@ -153,8 +155,10 @@ def test_presidio_values_survive_a_deep_search(run_main, monkeypatch):
 
     run_main("-q", "target", "--deep")
 
-    assert {"category": "presidio_person", "value": "Maria Gonzalez",
-            "source": SERP[0]["link"]} in state.LAST_EXTRACTED
+    record = next(e for e in state.CURRENT_CASE["evidence"] if e["value"] == "Maria Gonzalez")
+    assert record["category"] == "presidio_person"
+    assert record["confidence"] == "low"
+    assert record["source"] == SERP[0]["link"]
 
 
 def test_iter_extracted_flattens_nested_entities():

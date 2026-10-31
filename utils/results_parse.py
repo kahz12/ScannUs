@@ -66,6 +66,26 @@ _HTML_TEMPLATE = """<!doctype html>
 
 _HTML_PLACEHOLDER = re.compile(r"\{\{ (results|total|extracted) \}\}")
 
+_EVIDENCE_HEADERS = ["Category", "Value", "Confidence", "Source", "Tool", "Found at",
+                     "Content SHA-256"]
+
+
+def _evidence_row(item: dict) -> list:
+    """Returns one evidence record in the column order of ``_EVIDENCE_HEADERS``."""
+    return [item["category"], item["value"], item.get("confidence", ""), item["source"],
+            item.get("tool", ""), item.get("found_at", ""), item.get("content_sha256", "")]
+
+
+def export_report_json(report: dict, output_path: str) -> None:
+    """Writes a tool report to a JSON file inside DIR_REPORTS."""
+    path = os.path.join(DIR_REPORTS, os.path.basename(output_path))
+    try:
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(report, f, ensure_ascii=False, indent=4, default=str)
+        print_success(f"JSON saved → {path}")
+    except OSError as e:
+        print_error(f"I/O error exporting JSON: {e}")
+
 
 class ResultsParser:
     """
@@ -97,17 +117,24 @@ class ResultsParser:
             return ""
         rows = []
         for item in self.extracted:
-            source_attr = html.escape(item["source"], quote=True)
+            source = item["source"]
+            source_cell = html.escape(source)
+            if source.startswith(("http://", "https://")):
+                source_cell = (f'<a href="{html.escape(source, quote=True)}" target="_blank" '
+                               f'rel="noopener noreferrer">{source_cell}</a>')
             rows.append(
                 f'<tr><td>{html.escape(item["category"])}</td>'
                 f'<td>{html.escape(item["value"])}</td>'
-                f'<td><a href="{source_attr}" target="_blank" rel="noopener noreferrer">'
-                f'{html.escape(item["source"])}</a></td></tr>'
+                f'<td>{html.escape(item.get("confidence", ""))}</td>'
+                f'<td>{source_cell}</td>'
+                f'<td>{html.escape(item.get("tool", ""))}</td>'
+                f'<td>{html.escape(item.get("found_at", ""))}</td></tr>'
             )
         return (
             '<section class="extracted">'
             f'<h2>Extracted data ({len(self.extracted)})</h2>'
-            '<table><thead><tr><th>Category</th><th>Value</th><th>Source</th></tr></thead>'
+            '<table><thead><tr><th>Category</th><th>Value</th><th>Confidence</th>'
+            '<th>Source</th><th>Tool</th><th>Found at</th></tr></thead>'
             f'<tbody>{"".join(rows)}</tbody></table>'
             '</section>'
         )
@@ -185,9 +212,9 @@ class ResultsParser:
                 extracted_path = f"{stem}_extracted{ext}"
                 with open(extracted_path, "w", newline="", encoding="utf-8") as f:
                     writer = csv.writer(f)
-                    writer.writerow(["Category", "Value", "Source"])
+                    writer.writerow(_EVIDENCE_HEADERS)
                     for item in self.extracted:
-                        writer.writerow([item["category"], item["value"], item["source"]])
+                        writer.writerow(_evidence_row(item))
                 print_success(f"Extracted data CSV saved → {extracted_path}")
         except IOError as e:
             print_error(f"I/O error exporting CSV: {e}")
@@ -221,11 +248,11 @@ class ResultsParser:
             if self.extracted is not None:
                 self._fill_sheet(
                     wb.create_sheet("Extracted"),
-                    ["Category", "Value", "Source"],
-                    [[e["category"], e["value"], e["source"]] for e in self.extracted],
-                    link_col=3,
+                    _EVIDENCE_HEADERS,
+                    [_evidence_row(item) for item in self.extracted],
+                    link_col=4,
                     wrap_col=2,
-                    max_widths={1: 25, 2: 60, 3: 60},
+                    max_widths={1: 25, 2: 60, 3: 12, 4: 60, 5: 16, 6: 26, 7: 20},
                 )
 
             wb.save(path)
@@ -291,7 +318,7 @@ class ResultsParser:
                     wrap_text=(col_idx == wrap_col)
                 )
 
-                if col_idx == link_col and url:
+                if col_idx == link_col and str(url).startswith(("http://", "https://")):
                     cell.hyperlink = url
                     cell.font = link_font
                 else:

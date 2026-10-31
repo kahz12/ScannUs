@@ -167,14 +167,14 @@ class FileDownload:
             stat = os.stat(file_path)
             size_kb = stat.st_size / 1024
             mtime = datetime.datetime.fromtimestamp(stat.st_mtime).isoformat(timespec="seconds")
-            # Hash first 1 MB for quick fingerprint
             sha = hashlib.sha256()
             with open(file_path, "rb") as f:
-                sha.update(f.read(1024 * 1024))
+                for block in iter(lambda: f.read(1024 * 1024), b""):
+                    sha.update(block)
             rows = [
-                ("Size",         f"{size_kb:,.1f} KB ({stat.st_size:,} bytes)"),
-                ("Modified",     mtime),
-                ("SHA-256 (1M)", sha.hexdigest()),
+                ("Size",     f"{size_kb:,.1f} KB ({stat.st_size:,} bytes)"),
+                ("Modified", mtime),
+                ("SHA-256",  sha.hexdigest()),
             ]
             self._render_table(f"Filesystem — {os.path.basename(file_path)}", rows)
         except Exception as e:

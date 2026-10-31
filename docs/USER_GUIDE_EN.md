@@ -181,13 +181,25 @@ python main.py --hibp-account target@example.com
 
 Every CLI flag has an equivalent menu entry, and vice versa. The TUI internally dispatches to the same functions as the CLI.
 
+#### Exit codes
+
+A command ends with `0` when it could do its job, even if it found nothing, and with `1` when it could not, for example because a search was blocked or an API key is missing. `--hibp-domain` and `--media-scrape` always end with `0`, because they cannot tell a failure from an empty result yet.
+
 ### 2.2 Cases
 
-A **case** is a named investigation — your query, the engine used, all the results that came back, and a creation timestamp. Cases live in a SQLite database at `outputs/cases/cases.db`.
+A **case** is a named investigation: your query, its results, every finding with its origin, and the report of the planner if you ran one. Cases live in a SQLite database at `outputs/cases/cases.db`, readable by your user only, because they hold personal data.
 
 #### Saving a case
 
 After a search returns results, type `save` at the result prompt. You'll be asked for a name. If the name already exists, you'll be prompted to confirm overwrite.
+
+From the command line, add `--save-case NAME` to a search or a plan:
+
+```bash
+python main.py -q "acme" --deep --save-case acme-recon
+```
+
+Here a name that already exists is refused, so nothing is overwritten by accident.
 
 #### Loading a case
 
@@ -205,7 +217,8 @@ CREATE TABLE cases (
     name       TEXT    UNIQUE NOT NULL,
     query_data TEXT,             -- JSON: {"type": "direct", "value": "..."}
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    investigation TEXT           -- JSON: goal, steps and report of a planner run
 );
 
 CREATE TABLE results (
@@ -217,7 +230,23 @@ CREATE TABLE results (
     link        TEXT,
     FOREIGN KEY (case_id) REFERENCES cases (id) ON DELETE CASCADE
 );
+
+CREATE TABLE evidence (
+    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+    case_id        INTEGER NOT NULL,
+    category       TEXT NOT NULL,   -- emails, ipv4, domain, presidio_person...
+    value          TEXT NOT NULL,
+    confidence     TEXT,            -- high, medium or low
+    source         TEXT NOT NULL DEFAULT '',  -- page the value came from
+    tool           TEXT,            -- deep-search, wayback, recon:dns...
+    found_at       TEXT,            -- UTC time
+    content_sha256 TEXT,            -- hash of the text the value came from
+    UNIQUE (case_id, category, value, source),
+    FOREIGN KEY (case_id) REFERENCES cases (id) ON DELETE CASCADE
+);
 ```
+
+Older databases gain the new table and column automatically the next time they are opened.
 
 ### 2.3 The Persistent Cache
 
@@ -344,11 +373,11 @@ Available guided flags:
 
 | Flag | Short | Purpose |
 |---|---|---|
-| `--nombre` | `-n` | Full legal name |
-| `--usuario` | `-u` | Username / handle |
+| `--name` | `-n` | Full legal name |
+| `--username` | `-u` | Username / handle |
 | `--email` | `-e` | Email (triggers `--deep`) |
-| `--telefono` | `-t` | Phone (triggers `--deep`) |
-| `--buscar` | `-b` | Generic keyword |
+| `--phone` | `-t` | Phone (triggers `--deep`) |
+| `--search` | `-b` | Generic keyword |
 
 ### 3.3 Engines Compared
 
@@ -417,36 +446,47 @@ Or via TUI: Main menu → **AI Dork Generator**.
 
 ### 4.3 AI Query Planner (ReAct)
 
-The planner takes a natural-language goal and produces a **multi-step investigation plan** composed of whitelisted tool calls. Each step is interactively confirmable, and the planner can re-plan after each observation.
+The planner takes a natural-language goal and investigates it **one step at a time**. The model picks a whitelisted tool, ScannUs runs it, and the model sees the result before choosing the next step, so a domain or email found in one step can drive the next. When it has enough, it writes a final report with the sources of each fact.
 
 ```bash
 python main.py -p "Investigate breaches affecting acme.com and find leaked PII"
 ```
 
-A typical plan looks like:
+A typical run looks like:
 
 ```
-Plan summary: Recon the target domain, enumerate breach exposure,
-              then crawl for leaked PII surface.
+Ask before each step? [Y/n]
 
-Step 1/5 · domain_recon
-  why:    Establish baseline (WHOIS, DNS, TLS, headers, subdomains)
-  expect: Tech stack and infrastructure overview
-  args:   {'target': 'acme.com'}
-  Run this step? [Y/n]
+Step 1 · domain_recon
+  why:   Establish baseline (WHOIS, DNS, TLS, headers, subdomains)
+  args:  {'target': 'acme.com'}
+Run this step? [Y/n]
+  ✔  recon complete · 14 subdomains · headers 3/7
 
-Step 2/5 · hibp_domain
-  why:    Check whether acme.com has been recorded in any breach
+Step 2 · extract_pii
+  why:   Read the contact page found on dev.acme.com
+  args:  {'url': 'https://dev.acme.com/contact'}
+Run this step? [Y/n]
   ...
 ```
 
 You can:
 
-- **Accept** each step → it executes; results are summarised and printed.
-- **Skip** a step → planner moves on.
-- **Abort** mid-plan → ScannUs records observations and can re-plan.
+- **Accept** a step → it runs, and the model reads the result.
+- **Decline** a step → the model is told and looks for another way. After two skipped steps in a row, the investigation ends.
+- **Stop asking** → answer no to the first question. Only do this on goals you trust, as explained below.
 
-The plan is stored in the current case so you can replay it later.
+An investigation ends when the model finishes, after 12 steps, or when several steps in a row are skipped. If the model stops responding, ScannUs still produces a report listing the steps that ran.
+
+The report is shown on screen and saved to `outputs/reports/investigation_<date>.md`. Everything found goes into the active case, so `--save-case`, `--json`, `--csv`, `--html` and `--excel` also work with `-p`.
+
+#### What reaches the AI provider
+
+The model reads the results of each step, including text from websites, so those pages reach your AI provider. Keep this in mind for your provider's data policy.
+
+- **Withheld values:** card numbers, national IDs and leaked secrets reach the model only as counts. Their values stay in your local case.
+- **Passwords:** the planner offers `hibp_password` with a SHA-1 hash, and any cleartext password is masked in everything shown or stored.
+- **Web content is untrusted:** a page could include text written to steer the model. ScannUs marks that text as data for the model, but no filter is perfect, which is why each step asks for confirmation by default.
 
 ### 4.4 The Tool Catalog
 
@@ -479,7 +519,7 @@ The planner can only call whitelisted tools. As of this guide, 24 tools are expo
 | `hibp_breach` | Single breach metadata (free) |
 | `hibp_password` | Pwned Passwords k-anon (free) |
 
-Each tool returns `{status, summary, data}`. The planner sees the summary and uses it to inform the next step.
+Each tool returns `{status, summary, data}`. The model reads the summary and the data of the last 8 steps, and only the summary of older ones, to choose the next step.
 
 ---
 
@@ -557,7 +597,7 @@ Direct HTTP download of the URL with automatic metadata extraction:
 | XLSX | Workbook properties |
 | Images | EXIF (camera model, GPS, timestamp, software) |
 
-Saved to `outputs/downloads/<type>/`.
+Saved to `outputs/downloads/`.
 
 ### 5.5 Download Media
 
@@ -1027,8 +1067,10 @@ ScannUs's extraction engine detects and validates **25+ identifier categories**.
 
 | Category | Validation |
 |---|---|
-| **Emails** | Regex + obfuscation decoding (`[at]`, `(dot)`, `&#64;`, spaced); false-positive filter excludes `noreply@*`, bots, test domains |
-| **Phones** | libphonenumber (international, country-aware) |
+| **Emails** | Regex + obfuscation decoding (`[at]`, `(dot)`, `&#64;`, spaced); false-positive filter excludes `noreply@*`, bots, test domains and asset names like `logo@2x.png` |
+| **Phones** | libphonenumber (international, country-aware). Digits with no `+` or separators also need a nearby word like "phone" or "tel" |
+| **Usernames** | A label such as `user:` or `login=`; plain prose like "the user agent" does not count |
+| **People and places** | Presidio, when installed. A person needs at least two words |
 
 ### Government IDs
 
@@ -1037,7 +1079,8 @@ ScannUs's extraction engine detects and validates **25+ identifier categories**.
 | **US SSN** | Regex + rejects 000/666/9xx area, 00 group, 0000 serial |
 | **Brazilian CPF** | Mod-11 two-digit checksum; rejects all-same digits |
 | **Canadian SIN** | Luhn algorithm |
-| **Argentine DNI/CUIT** | Structural |
+| **Argentine CUIT/CUIL** | Type prefix + mod-11 check digit. Eleven plain digits also need the word CUIT or CUIL nearby |
+| **Argentine DNI** | Needs a `DNI` label |
 | **Mexican RFC** | Structural |
 
 ### Financial
@@ -1045,7 +1088,7 @@ ScannUs's extraction engine detects and validates **25+ identifier categories**.
 | Category | Validation |
 |---|---|
 | **IBAN** | Regex by country code + checksum |
-| **Credit cards** | Luhn algorithm |
+| **Credit cards** | Issuer prefix + length + Luhn. Numbers without card grouping also need a nearby word like "card" or an expiry date |
 
 ### Cloud & API secrets
 
@@ -1074,9 +1117,19 @@ ScannUs's extraction engine detects and validates **25+ identifier categories**.
 
 | Category | Validation |
 |---|---|
-| **Public IPv4** | stdlib `ipaddress`; filters private, loopback, link-local, multicast |
+| **Public IPv4** | stdlib `ipaddress`; filters private, loopback, link-local, multicast, and software versions like `Chrome/124.0.0.0` |
 | **Public IPv6** | stdlib `ipaddress`; same filters |
 | **MAC** | `XX:XX:XX:XX:XX:XX` or `XX-XX-…` |
+
+### Confidence levels
+
+Every saved finding has a confidence level:
+
+| Level | Meaning | Examples |
+|---|---|---|
+| **high** | A checksum or a vendor prefix backs it | Emails, IBANs, cards, tax IDs, API keys, wallets |
+| **medium** | It rests on format alone | Phones, usernames, IPs, MACs, SSNs, RFCs |
+| **low** | A statistical guess, so treat it as a lead | People and places from Presidio |
 
 ### Example extraction output
 
@@ -1084,21 +1137,19 @@ ScannUs's extraction engine detects and validates **25+ identifier categories**.
 from search.smart_search import extract_information
 
 text = """
-Contact: alice@acme.com or call +1-555-0123
+Contact: alice@acme-corp.io or call +1 415 555 2671
 AWS: AKIAIOSFODNN7EXAMPLE
-JWT: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...
 BTC: 1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa
 ETH: 0x5aAeb6053F3E94C9b9A09f33669435E7Ef1BeAed
 """
 
 print(extract_information(text))
 # {
-#   "emails":      {"alice@acme.com"},
-#   "phones":      {"+1-555-0123"},
-#   "aws_keys":    {"AKIAIOSFODNN7EXAMPLE"},
-#   "jwts":        {"eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."},
-#   "btc_wallets": {"1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa"},
-#   "eth_wallets": {"0x5aAeb6053F3E94C9b9A09f33669435E7Ef1BeAed"},
+#   "emails":          ["alice@acme-corp.io"],
+#   "phones":          ["+1 415 555 2671"],
+#   "btc_addresses":   ["1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa"],
+#   "eth_addresses":   ["0x5aAeb6053F3E94C9b9A09f33669435E7Ef1BeAed"],
+#   "aws_access_keys": ["AKIAIOSFODNN7EXAMPLE"],
 # }
 ```
 
@@ -1167,6 +1218,14 @@ If the name exists, you'll be asked to confirm overwrite:
 Case 'jdoe-investigation-2025-03' already exists. Overwrite? [y/N]
 ```
 
+From the command line, use `--save-case NAME`, which refuses a name that already exists.
+
+A saved case holds the results, every finding from the session with its source, tool, date, content hash and confidence, and the planner report. Findings from recon, such as subdomains and IPs, are saved too.
+
+### Reviewing the evidence
+
+Type `evidence` at the results prompt to list what the session has found and where each value came from. The `excel` command includes the same data in an `Extracted` sheet.
+
 ### Loading
 
 ```bash
@@ -1187,7 +1246,7 @@ You'll see all cases with timestamps:
 ╰──┴───────────────────────────────────┴─────────────────────╯
 ```
 
-Pick by ID; results are restored and the analysis menu opens.
+Pick by ID; results and findings are restored, the Findings Hub is refilled, and the analysis menu opens.
 
 ### Updating
 
@@ -1261,7 +1320,7 @@ python main.py -q "query" --excel out.xlsx --json out.json --html out.html
 
 ### Deep searches
 
-With `--deep`, `-e` or `-t`, exports also include every extracted value with its category and source page:
+With `--deep`, `-e`, `-t` or `-p`, exports also include every value found, with its category, confidence, source page, tool and date. Excel and CSV add the SHA-256 of the text it came from:
 
 | Format | Where the extracted values go |
 |---|---|
@@ -1657,7 +1716,7 @@ All cached calls work transparently — no need to wire up the cache yourself.
 | **OSINT** | Open-Source Intelligence: gathering info from public sources |
 | **PEM** | Privacy-Enhanced Mail — text format for cryptographic keys (`-----BEGIN…-----` blocks) |
 | **PII** | Personally Identifiable Information |
-| **Plan** | A multi-step investigation strategy produced by the AI Query Planner |
+| **Plan** | A step-by-step investigation run by the AI Query Planner |
 | **PWA / SPA** | Single-Page Application — JS-rendered site that static HTTP can't see |
 | **ReAct** | Reasoning + Acting: an LLM agent pattern that interleaves planning, action, and observation |
 | **SAN** | Subject Alternative Name — additional hostnames covered by a TLS cert |

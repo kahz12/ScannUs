@@ -54,15 +54,15 @@ def test_analyzer_is_created_once_and_finds_entities(monkeypatch):
             created.append(self)
 
         def analyze(self, text, language):
-            start = text.index("alice")
-            return [SimpleNamespace(entity_type="PERSON", start=start, end=start + 5)]
+            start = text.index("contact")
+            return [SimpleNamespace(entity_type="PERSON", start=start, end=start + 13)]
 
     use_fake_presidio(monkeypatch, FakeEngine)
 
     extract_information(TEXT)
     result = extract_information(TEXT)
 
-    assert result["presidio"] == {"PERSON": ["alice"]}
+    assert result["presidio"] == {"PERSON": ["contact alice"]}
     assert len(created) == 1
 
 

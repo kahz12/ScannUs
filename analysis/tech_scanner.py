@@ -220,21 +220,22 @@ def detect_technologies(url: str) -> tuple[str, list[tuple[str, str, str]]]:
     return ("none", [])
 
 
-def tech_scan(url: str) -> None:
+def tech_scan(url: str) -> tuple[str, list[tuple[str, str, str]]]:
     """
-    Fingerprints a URL and renders the result as a styled Rich table.
+    Fingerprints a URL, renders the result as a styled Rich table, and returns
+    what :func:`detect_technologies` found.
     """
     if not (_WAPPALYZER or _HAS_WEBTECH):
         print_error("No fingerprinting backend available. "
                     "Install one of: 'python-Wappalyzer', 'wappalyzer', or 'webtech'.")
-        return
+        return ("none", [])
 
     print_info(f"Scanning technology stack: {url}")
 
     backend, technologies = detect_technologies(url)
     if not technologies:
         print_warn("No technologies detected — the site may block fingerprinting.")
-        return
+        return (backend, technologies)
 
     tbl = make_table(
         f"Technology Stack  [{THEME['DIM']}]{url} · via {backend}[/]",
@@ -249,3 +250,4 @@ def tech_scan(url: str) -> None:
     console.print()
     console.print(tbl)
     console.print(f"  [{THEME['DIM']}]Total: {len(technologies)} technologies detected · backend: {backend}[/]")
+    return (backend, technologies)

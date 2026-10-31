@@ -12,11 +12,11 @@ from search.reverse_image_engines import reverse_image_aggregate
 from utils.results_parse import ResultsParser
 
 
-def do_reverse_image_search(image_url: str | None = None) -> None:
+def do_reverse_image_search(image_url: str | None = None) -> bool:
     """
     Run the full reverse-image fallback chain and render the aggregated
     results. Prompts for the URL if not supplied (e.g. when launched from
-    the TUI).
+    the TUI). Returns True when the search produced results.
     """
     if not image_url:
         image_url = console.input(
@@ -25,7 +25,7 @@ def do_reverse_image_search(image_url: str | None = None) -> None:
 
     if not image_url:
         print_error("Image URL cannot be empty.")
-        return
+        return False
 
     print_info(f"Starting reverse image search for: {image_url}")
 
@@ -38,7 +38,7 @@ def do_reverse_image_search(image_url: str | None = None) -> None:
 
         if not results:
             print_warn("No results found across any engine.")
-            return
+            return False
 
         # Tally per-engine hits so the user can see which tier produced what
         by_engine: dict[str, int] = {}
@@ -52,6 +52,8 @@ def do_reverse_image_search(image_url: str | None = None) -> None:
         )
         rparser = ResultsParser(results)
         console.print(rparser.to_table())
+        return True
 
     except Exception as e:
         print_error(f"Reverse image search failed: {e}")
+        return False

@@ -141,6 +141,9 @@ def get_parser() -> argparse.ArgumentParser:
     cases = parser.add_argument_group("Case Management")
     cases.add_argument("--load-case", action="store_true",
                        help="Restore session state from a previously saved case.")
+    cases.add_argument("--save-case", type=str, metavar="NAME",
+                       help="Save the search or plan, with its findings and their origin, "
+                            "as a new case.")
 
     # ── Search parameters ─────────────────────────────────────────────────
     search = parser.add_argument_group("Search Parameters")

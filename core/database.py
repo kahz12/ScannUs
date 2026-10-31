@@ -5,6 +5,8 @@ Persists named cases and exposes CRUD helpers. save_case() returns a conflict
 signal when a case name already exists, so callers can offer an "overwrite?"
 prompt rather than failing silently; update_case() performs that overwrite and
 delete_case() removes a case by name.
+
+Cases hold personal data, so the database file is readable by its owner only.
 """
 
 import sqlite3
@@ -55,7 +57,26 @@ class DBManager:
                     );
                     CREATE INDEX IF NOT EXISTS idx_results_case_result
                         ON results(case_id, result_id);
+
+                    CREATE TABLE IF NOT EXISTS evidence (
+                        id             INTEGER PRIMARY KEY AUTOINCREMENT,
+                        case_id        INTEGER NOT NULL,
+                        category       TEXT NOT NULL,
+                        value          TEXT NOT NULL,
+                        confidence     TEXT,
+                        source         TEXT NOT NULL DEFAULT '',
+                        tool           TEXT,
+                        found_at       TEXT,
+                        content_sha256 TEXT,
+                        UNIQUE (case_id, category, value, source),
+                        FOREIGN KEY (case_id) REFERENCES cases (id) ON DELETE CASCADE
+                    );
                 """)
+                # Databases created before this column existed gain it here.
+                columns = {row[1] for row in conn.execute("PRAGMA table_info(cases)")}
+                if "investigation" not in columns:
+                    conn.execute("ALTER TABLE cases ADD COLUMN investigation TEXT")
+            os.chmod(self.db_path, 0o600)
         except Exception as e:
             console.print(f"  [{THEME['ERROR']}]✘[/]  DB init error: {e}")
 
@@ -87,14 +108,15 @@ class DBManager:
               caller can offer an 'overwrite?' prompt.
         """
         query_data = json.dumps(current_case.get("search_params", {}), ensure_ascii=False)
+        investigation = self._dump_investigation(current_case)
         results = current_case.get("results", [])
 
         try:
             with self._connect() as conn:
                 try:
                     cursor = conn.execute(
-                        "INSERT INTO cases (name, query_data) VALUES (?, ?)",
-                        (name, query_data),
+                        "INSERT INTO cases (name, query_data, investigation) VALUES (?, ?, ?)",
+                        (name, query_data, investigation),
                     )
                     case_id = cursor.lastrowid
                 except sqlite3.IntegrityError:
@@ -102,6 +124,7 @@ class DBManager:
                     return False, f"A case named '{name}' already exists.", True
 
                 self._insert_results(conn, case_id, results)
+                self._insert_evidence(conn, case_id, current_case.get("evidence", []))
                 return True, f"Case '{name}' saved successfully.", False
 
         except Exception as e:
@@ -116,6 +139,7 @@ class DBManager:
             (success, message)
         """
         query_data = json.dumps(current_case.get("search_params", {}), ensure_ascii=False)
+        investigation = self._dump_investigation(current_case)
         results = current_case.get("results", [])
 
         try:
@@ -131,11 +155,14 @@ class DBManager:
                 now = datetime.now(timezone.utc).isoformat()
 
                 conn.execute(
-                    "UPDATE cases SET query_data = ?, updated_at = ? WHERE id = ?",
-                    (query_data, now, case_id),
+                    "UPDATE cases SET query_data = ?, investigation = ?, updated_at = ? "
+                    "WHERE id = ?",
+                    (query_data, investigation, now, case_id),
                 )
                 conn.execute("DELETE FROM results WHERE case_id = ?", (case_id,))
+                conn.execute("DELETE FROM evidence WHERE case_id = ?", (case_id,))
                 self._insert_results(conn, case_id, results)
+                self._insert_evidence(conn, case_id, current_case.get("evidence", []))
 
             return True, f"Case '{name}' updated successfully."
 
@@ -177,17 +204,19 @@ class DBManager:
 
     def get_case_by_id(self, case_id: int) -> dict | None:
         """
-        Deep-fetches a case by ID, joining root metadata with its result nodes.
+        Deep-fetches a case by ID, joining root metadata with its result nodes
+        and evidence.
 
         Returns:
-            dict with keys 'name', 'search_params', 'results', or None on failure.
+            dict with keys 'name', 'search_params', 'results', 'evidence' and
+            'investigation', or None on failure.
         """
         try:
             with self._connect() as conn:
                 conn.row_factory = sqlite3.Row
 
                 case_row = conn.execute(
-                    "SELECT name, query_data FROM cases WHERE id = ?", (case_id,)
+                    "SELECT name, query_data, investigation FROM cases WHERE id = ?", (case_id,)
                 ).fetchone()
 
                 if not case_row:
@@ -196,6 +225,12 @@ class DBManager:
                 result_rows = conn.execute(
                     "SELECT result_id, title, description, link "
                     "FROM results WHERE case_id = ? ORDER BY result_id ASC",
+                    (case_id,),
+                ).fetchall()
+
+                evidence_rows = conn.execute(
+                    "SELECT category, value, confidence, source, tool, found_at, content_sha256 "
+                    "FROM evidence WHERE case_id = ? ORDER BY id ASC",
                     (case_id,),
                 ).fetchall()
 
@@ -210,7 +245,14 @@ class DBManager:
                 for row in result_rows
             ]
 
-            return {"name": case_row["name"], "search_params": search_params, "results": results}
+            investigation = case_row["investigation"]
+            return {
+                "name":          case_row["name"],
+                "search_params": search_params,
+                "results":       results,
+                "evidence":      [dict(row) for row in evidence_rows],
+                "investigation": json.loads(investigation) if investigation else None,
+            }
 
         except Exception as e:
             console.print(f"  [{THEME['ERROR']}]✘[/]  Error loading case: {e}")
@@ -219,6 +261,26 @@ class DBManager:
     # ------------------------------------------------------------------
     # Private helpers
     # ------------------------------------------------------------------
+
+    @staticmethod
+    def _dump_investigation(current_case: dict) -> str | None:
+        investigation = current_case.get("investigation")
+        return json.dumps(investigation, ensure_ascii=False) if investigation else None
+
+    def _insert_evidence(self, conn: sqlite3.Connection,
+                         case_id: int, evidence: list) -> None:
+        """Batch-inserts evidence rows, keeping one row per value and source."""
+        conn.executemany(
+            "INSERT OR IGNORE INTO evidence "
+            "(case_id, category, value, confidence, source, tool, found_at, content_sha256) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            [
+                (case_id, e["category"], e["value"], e.get("confidence", ""),
+                 e.get("source", ""), e.get("tool", ""), e.get("found_at", ""),
+                 e.get("content_sha256", ""))
+                for e in evidence
+            ],
+        )
 
     def _insert_results(self, conn: sqlite3.Connection,
                         case_id: int, results: list) -> None:

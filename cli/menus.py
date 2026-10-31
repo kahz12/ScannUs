@@ -40,7 +40,7 @@ from analysis.domain_osint import (
     tls_certificate, http_security_headers,
     subdomains_crtsh, shodan_host, _normalize_target, _resolve_first_ip,
 )
-from search.smart_search import extract_information
+from search.smart_search import build_evidence, extract_information, flatten_extracted
 from search.username_enum import username_enum
 from search.email_enum import email_enum
 from search.phone_osint import phone_osint
@@ -104,6 +104,36 @@ def _agent_label(ia_agent) -> str:
     gen = getattr(ia_agent, "generator", None)
     name = type(gen).__name__ if gen else "unknown"
     return name.replace("Generator", "")
+
+
+def _record_evidence(data: dict, text: str, url: str, tool: str) -> int:
+    """Adds extracted values to the active case and the hub; returns new hub findings."""
+    records = build_evidence(data, text, url, tool)
+    state.add_evidence(records)
+    return get_hub().ingest_evidence(records)
+
+
+def _show_evidence() -> None:
+    """Renders the active case's evidence with the origin of each value."""
+    evidence = state.CURRENT_CASE.get("evidence") or []
+    if not evidence:
+        print_info("No evidence in this case yet.")
+        return
+    tbl = make_table(
+        f"Evidence  [{THEME['DIM']}]({len(evidence)} values)[/]",
+        ("Category",   THEME["PRIMARY"]),
+        ("Value",      "white"),
+        ("Confidence", THEME["ACCENT"]),
+        ("Source",     THEME["LINK"]),
+        ("Tool",       THEME["DIM"]),
+        show_lines=False,
+    )
+    for record in evidence:
+        tbl.add_row(record["category"].replace("_", " "), record["value"],
+                    record.get("confidence") or "—", record.get("source") or "—",
+                    record.get("tool") or "—")
+    console.print()
+    console.print(tbl)
 
 
 # ---------------------------------------------------------------------------
@@ -229,13 +259,13 @@ def process_selected_url(url: str, ia_agent=None) -> None:
                         ("Category", THEME["PRIMARY"]), ("Values", "white"),
                         show_lines=True,
                     )
-                    for key, values in data.items():
+                    for key, values in flatten_extracted(data).items():
                         tbl.add_row(key.replace("_", " ").capitalize(), "\n".join(values))
                     console.print(tbl)
                     # Pivot fuel: push extracted emails/usernames/IPs/phones into
                     # the findings hub so the user can chain straight into Holehe,
                     # HIBP, or a fresh search without re-typing anything.
-                    added = get_hub().ingest_pii(data, source="url-pii")
+                    added = _record_evidence(data, page_text, url, "url-pii")
                     if added:
                         print_info(f"{added} new finding(s) added to the hub.")
                 else:
@@ -310,10 +340,10 @@ def process_selected_url(url: str, ia_agent=None) -> None:
                         ("Category", THEME["PRIMARY"]), ("Values", "white"),
                         show_lines=True,
                     )
-                    for key, values in data.items():
+                    for key, values in flatten_extracted(data).items():
                         tbl.add_row(key.replace("_", " ").capitalize(), "\n".join(values))
                     console.print(tbl)
-                    added = get_hub().ingest_pii(data, source="url-pii-deep")
+                    added = _record_evidence(data, page_text, url, "url-pii-deep")
                     if added:
                         print_info(f"{added} new finding(s) added to the hub.")
                 else:
@@ -361,6 +391,7 @@ def _render_results_page(results: list, page: int) -> None:
         f"  ID to analyse  ·  {nav_str}\n"
         f"  [{THEME['ACCENT']}]media[/] download  ·  "
         f"[{THEME['PRIMARY']}]next[/] hub  ·  "
+        f"[{THEME['PRIMARY']}]evidence[/]  ·  "
         f"[{THEME['WARN']}]save[/]  ·  "
         f"[green]excel[/]  ·  [red]exit[/]"
     )
@@ -376,6 +407,7 @@ def interactive_analysis_menu(results: list, ia_agent=None) -> None:
       <ID>                         → analyse result by number
       media                        → batch media download
       next                         → open the Findings Hub (pivot onward)
+      evidence                     → values found so far, with their origin
       save · excel · exit          → case/export/quit
     """
     state.LAST_RESULTS = results
@@ -431,6 +463,7 @@ def interactive_analysis_menu(results: list, ia_agent=None) -> None:
                     f"  ID to analyse  ·  [{THEME['PRIMARY']}]page[/] back to paginated view\n"
                     f"  [{THEME['ACCENT']}]media[/] download  ·  "
                     f"[{THEME['PRIMARY']}]next[/] hub  ·  "
+                    f"[{THEME['PRIMARY']}]evidence[/]  ·  "
                     f"[{THEME['WARN']}]save[/]  ·  [green]excel[/]  ·  [red]exit[/]",
                     border_style=THEME["BORDER"],
                     padding=(0, 1),
@@ -488,6 +521,10 @@ def interactive_analysis_menu(results: list, ia_agent=None) -> None:
         elif choice in ("exit", "salir"):
             break
 
+        elif choice in ("evidence", "evidencia"):
+            _show_evidence()
+            continue
+
         elif choice in ("save", "guardar"):
             save_case()
             continue
@@ -496,7 +533,8 @@ def interactive_analysis_menu(results: list, ia_agent=None) -> None:
             filename = ask("Excel filename", default="results.xlsx")
             if not filename.endswith(".xlsx"):
                 filename += ".xlsx"
-            ResultsParser(all_results).export_excel(filename)
+            evidence = state.CURRENT_CASE.get("evidence") or None
+            ResultsParser(all_results, extracted=evidence).export_excel(filename)
             continue
 
         elif choice == "media":

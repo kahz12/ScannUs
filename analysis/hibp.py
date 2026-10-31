@@ -641,8 +641,11 @@ def check_account(email: str, *, include_pastes: bool = True) -> dict:
     if the user only cares about breaches, or wants to save an API call).
 
     Returns a serialisable dict suitable for JSON export / case storage:
-      {"email", "breaches": [...], "pastes": [...] | None,
+      {"email", "checked", "breaches": [...], "pastes": [...] | None,
        "breach_count", "paste_count", "checked_at"}
+
+    ``checked`` is False when the lookup could not run, for example without
+    an API key, so an empty breach list is not mistaken for a clean account.
     """
     breaches = hibp_breached_account(email)
     render_breached_account(email, breaches)
@@ -652,6 +655,7 @@ def check_account(email: str, *, include_pastes: bool = True) -> dict:
         render_pastes_for_account(email, pastes)
     return {
         "email":        email,
+        "checked":      breaches is not None,
         "breaches":     breaches or [],
         "pastes":       pastes or [],
         "breach_count": len(breaches or []),

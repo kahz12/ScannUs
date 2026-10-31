@@ -1,15 +1,18 @@
 import os
 from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime, timezone
+from rich.markdown import Markdown
 from rich.panel import Panel
 from rich.text import Text
 from cli.ui import console, THEME, print_success, print_error, print_warn, print_info, make_table
+from core.config import DIR_REPORTS
 from search.engines import SEARCH_ENGINES
 from search.engines.duckduckgosearch import DuckDuckGoSearch, SearchBlockedError
 from search.engines.bravesearch import BraveSearch
 from core import state
 from core.findings import get_hub
 from analysis.web_analyzer import get_text_from_url
-from search.smart_search import extract_information, iter_extracted
+from search.smart_search import build_evidence, extract_information
 from core.logging_setup import get_logger
 
 _log = get_logger(__name__)
@@ -130,13 +133,14 @@ def do_deep_search(query: str, engine: str, pages: int,
     console.print()
 
     all_extracted: dict = {}
-    extracted: list[dict] = []
+    evidence: list[dict] = []
     for url, text in _fetch_search_texts(resultados):
         console.print(f"  [{THEME['DIM']}]🔗[/]  [{THEME['LINK']}]{url}[/]")
         if text:
-            for category, value in iter_extracted(extract_information(text)):
-                all_extracted.setdefault(category, set()).add(value)
-                extracted.append({"category": category, "value": value, "source": url})
+            records = build_evidence(extract_information(text), text, url, "deep-search")
+            evidence.extend(records)
+            for record in records:
+                all_extracted.setdefault(record["category"], set()).add(record["value"])
 
     console.print()
     console.rule(f"[{THEME['ACCENT']}]Deep Search Results[/]")
@@ -157,7 +161,8 @@ def do_deep_search(query: str, engine: str, pages: int,
 
     state.CURRENT_CASE["search_params"] = {"type": "deep", "value": query}
     state.LAST_RESULTS = resultados
-    state.LAST_EXTRACTED = extracted
+    state.add_results(resultados)
+    state.add_evidence(evidence)
 
     # Feed the findings hub so the deep-search yield is pivotable: the crawled
     # result URLs become "url" findings, and every PII identifier we extracted
@@ -165,7 +170,7 @@ def do_deep_search(query: str, engine: str, pages: int,
     # what lets a deep search chain straight into Holehe/HIBP or a fresh search.
     hub = get_hub()
     hub.ingest_results(resultados, source="deep-search")
-    hub.ingest_pii({k: sorted(v) for k, v in all_extracted.items()}, source="deep-search")
+    hub.ingest_evidence(evidence)
     return resultados
 
 
@@ -188,6 +193,7 @@ def do_search(query: str, engine: str, pages: int, start_page: int,
 
     state.CURRENT_CASE["search_params"] = {"type": "direct", "value": query}
     state.LAST_RESULTS = resultados
+    state.add_results(resultados)
 
     # Pool the result URLs into the findings hub so they can be pivoted into
     # downloads, PII extraction, recon, etc. — even when this search was run
@@ -204,87 +210,62 @@ def do_search(query: str, engine: str, pages: int, start_page: int,
     return resultados
 
 
-def do_query_planner(goal: str | None = None) -> None:
-    """
-    LLM-driven OSINT query planner.
+def _save_report(report: str) -> str:
+    """Writes an investigation report to the reports folder and returns its path."""
+    os.makedirs(DIR_REPORTS, exist_ok=True)
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+    path = os.path.join(DIR_REPORTS, f"investigation_{stamp}.md")
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(report)
+    return path
 
-    Flow: select AI provider → prompt for goal → LLM generates a structured
-    plan of dork/tool calls → user approves → ReAct-style stepwise execution
-    with per-step confirmation → optional re-plan using observations.
+
+def do_query_planner(goal: str | None = None) -> dict | None:
+    """
+    LLM-driven OSINT investigation.
+
+    Flow: select AI provider → prompt for goal → the model picks one tool at a
+    time, seeing every earlier result → final report, shown on screen, saved to
+    the reports folder and kept in the active case.
+
+    Text from websites reaches the model and could try to steer it, so each
+    step asks for confirmation unless the user opts out.
+
+    Returns:
+        The investigation dict, or None if it could not start.
     """
     from cli.menus import select_ia_agent
     from cli.ui import ask, confirm, header_bar, panel
 
     ia_agent = select_ia_agent()
     if not ia_agent:
-        return
+        return None
 
     if not goal:
-        header_bar("AI Query Planner", "ReAct-style multi-tool investigation")
+        header_bar("AI Query Planner", "Step-by-step multi-tool investigation")
         goal = ask("Describe your investigation goal").strip()
     if not goal:
         print_error("Goal cannot be empty.")
-        return
+        return None
+
+    ask_each_step = confirm("Ask before each step?", default=True)
+    approve_step = (lambda step: confirm("Run this step?", default=True)) if ask_each_step else None
+    investigation = ia_agent.investigate(goal, confirm_step=approve_step)
+
+    state.CURRENT_CASE["search_params"] = {"type": "plan", "value": goal}
+    state.CURRENT_CASE["investigation"] = investigation
+
+    steps = investigation["steps"]
+    ok   = sum(1 for s in steps if s["status"] == "ok")
+    err  = sum(1 for s in steps if s["status"] == "error")
+    skip = sum(1 for s in steps if s["status"] == "skip")
 
     console.print()
-    with console.status(f"[{THEME['PRIMARY']}]Planning investigation…[/]", spinner="dots2"):
-        plan = ia_agent.plan(goal)
-
-    if not plan.steps:
-        print_error("The planner did not return any usable steps. Try rephrasing the goal.")
-        return
-
-    if plan.summary:
-        panel(plan.summary, title="Strategy", border="bright_black")
-
-    tbl = make_table(
-        f"Generated Plan · {len(plan.steps)} steps",
-        ("#",         THEME["DIM"]),
-        ("Tool",      THEME["PRIMARY"]),
-        ("Arguments", "white"),
-        ("Rationale", THEME["DIM"]),
-        show_lines=True,
-    )
-    for i, step in enumerate(plan.steps, 1):
-        args_text = ", ".join(f"{k}={v}" for k, v in step.args.items()) or "—"
-        tbl.add_row(str(i), step.tool, args_text, step.rationale or "—")
-    console.print()
-    console.print(tbl)
-    console.print()
-
-    if not confirm("Execute this plan now?", default=True):
-        return
-
-    confirm_each = confirm("Ask before each step?", default=False)
-    observations = ia_agent.execute_plan(plan, interactive=True, confirm_each=confirm_each)
-
-    console.print()
-    ok   = sum(1 for o in observations if o["status"] == "ok")
-    err  = sum(1 for o in observations if o["status"] == "error")
-    skip = sum(1 for o in observations if o["status"] == "skip")
-    print_success(f"Plan finished — {ok} ok · {err} errors · {skip} skipped")
-
-    if (err or skip) and confirm(
-        "Re-plan with observations to refine the remaining strategy?",
-        default=False,
-    ):
-        console.print()
-        with console.status(f"[{THEME['PRIMARY']}]Re-planning…[/]", spinner="dots2"):
-            new_plan = ia_agent.replan(goal, observations)
-        if new_plan.steps:
-            print_info("Revised plan generated. Invoke the planner again to run it.")
-            tbl2 = make_table(
-                f"Revised Plan · {len(new_plan.steps)} steps",
-                ("#",         THEME["DIM"]),
-                ("Tool",      THEME["PRIMARY"]),
-                ("Arguments", "white"),
-                ("Rationale", THEME["DIM"]),
-                show_lines=True,
-            )
-            for i, step in enumerate(new_plan.steps, 1):
-                args_text = ", ".join(f"{k}={v}" for k, v in step.args.items()) or "—"
-                tbl2.add_row(str(i), step.tool, args_text, step.rationale or "—")
-            console.print(tbl2)
+    panel(Markdown(investigation["report"]), title="Investigation Report", border="green")
+    print_info(f"{ok} ok · {err} failed · {skip} skipped — "
+               f"stopped because {investigation['stopped_because']}.")
+    print_success(f"Report saved → {_save_report(investigation['report'])}")
+    return investigation
 
 
 def do_generate_dork_ia() -> None:

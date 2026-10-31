@@ -3,6 +3,8 @@ import os
 import re
 import html
 import argparse
+import hashlib
+from datetime import datetime, timezone
 from functools import lru_cache
 from urllib.parse import urlparse
 
@@ -23,6 +25,12 @@ _FP_EMAIL_DOMAINS = frozenset({
     'domain.com', 'email.com', 'yoursite.com', 'sentry.io',
 })
 
+# Top-level domains that are really file extensions, as in "logo@2x.png"
+_ASSET_EXTENSIONS = frozenset({
+    'png', 'jpg', 'jpeg', 'gif', 'svg', 'webp', 'ico', 'css', 'js', 'map',
+    'woff', 'woff2', 'ttf',
+})
+
 # Local-part patterns that indicate tooling / auto-generated addresses
 _FP_EMAIL_LOCAL_RE = re.compile(
     r'^(noreply|no-reply|donotreply|mailer-daemon|postmaster|'
@@ -30,6 +38,13 @@ _FP_EMAIL_LOCAL_RE = re.compile(
     r'\d+\.\d+\.\d+)$',          # version numbers like "1.2.3"
     re.IGNORECASE
 )
+
+
+def _has_context(text: str, start: int, end: int, keywords: "re.Pattern[str]",
+                 window: int = 40) -> bool:
+    """Tells whether *keywords* appear close to ``text[start:end]``."""
+    return bool(keywords.search(text[max(0, start - window):end + window]))
+
 
 # Normalise obfuscated email text BEFORE running the main regex.
 # Handles: [at], (at), " at ", [dot], (dot), " dot ", HTML entities like &#64;
@@ -93,6 +108,9 @@ def _extract_emails_from_text(text: str) -> set[str]:
         # Filter: domain in known false-positive list
         if domain in _FP_EMAIL_DOMAINS:
             continue
+        # Filter: an asset file name, not an address
+        if domain.rsplit('.', 1)[-1] in _ASSET_EXTENSIONS:
+            continue
         # Filter: local part matches bot/tooling patterns
         if _FP_EMAIL_LOCAL_RE.match(local):
             continue
@@ -127,6 +145,14 @@ def _extract_emails_from_html(text: str) -> set[str]:
 # domestic number first; canonical E.164 deduplication handles overlaps.
 _PHONE_REGIONS = ("US", "ES", "MX", "AR", "GB")
 
+# A bare run of digits is more often a reference than a phone number, so it
+# only counts next to one of these words.
+_PHONE_CONTEXT_RE = re.compile(
+    r"\b(?:tel|tlf|tfno|phone|telephone|tel[eé]fono|mobile|m[oó]vil|cell|celular|"
+    r"whatsapp|fax|call|llama|llamar|llamanos|contact|contacto)\b",
+    re.IGNORECASE,
+)
+
 
 def _to_e164(num) -> str | None:
     """Return the E.164 canonical form of *num* if it is a valid number."""
@@ -142,8 +168,9 @@ def _extract_phones_from_text(text: str) -> set[str]:
     Strategy:
       1. Scan for fully-international (``+CC…``) numbers via region ``ZZ``.
       2. Re-scan under a small set of common regions to catch domestically
-         formatted numbers (``(555) 867-5309``, ``5558675309``,
-         ``912 34 56 78`` …).
+         formatted numbers (``(555) 867-5309``, ``912 34 56 78`` …). Digits
+         with no separators, like ``5558675309``, also need a nearby word
+         such as "phone", because invoice and order numbers look the same.
       3. Deduplicate by E.164 canonical form so the same number written in
          different styles is reported once. The human-readable form is the
          one originally written in the text.
@@ -159,7 +186,11 @@ def _extract_phones_from_text(text: str) -> set[str]:
             canonical = _to_e164(match.number)
             if not canonical or canonical in seen_canonical:
                 continue
-            seen_canonical[canonical] = text[match.start:match.end].strip()
+            written = text[match.start:match.end].strip()
+            if written.isdigit() and not _has_context(
+                    text, match.start, match.end, _PHONE_CONTEXT_RE):
+                continue
+            seen_canonical[canonical] = written
 
     return set(seen_canonical.values())
 
@@ -239,8 +270,41 @@ def _extract_ibans(text: str) -> set[str]:
 
 
 # ---------------------------------------------------------------------------
-# Credit cards — Luhn-verified
+# Credit cards — brand prefix + Luhn, plus formatting or context
 # ---------------------------------------------------------------------------
+
+# Luhn alone accepts one random number in ten, so a card written as a plain
+# digit run also needs one of these nearby: a card word or an expiry date.
+_CARD_CONTEXT_RE = re.compile(
+    r"\b(?:card|tarjeta|visa|mastercard|amex|american express|discover|cvv|cvc|"
+    r"credit|debit|cr[eé]dito|d[eé]bito)\b|\b(?:0[1-9]|1[0-2])[/-]\d{2,4}\b",
+    re.IGNORECASE,
+)
+_CARD_GROUPED_RE = re.compile(
+    r"\d{4}(?:[ -]\d{4}){3}(?:[ -]\d{3})?|\d{4}[ -]\d{6}[ -]\d{4,5}"
+)
+
+
+def _card_brand_ok(digits: str) -> bool:
+    """Checks the issuer prefix and length of the main card networks."""
+    length = len(digits)
+    two, three, four = int(digits[:2]), int(digits[:3]), int(digits[:4])
+    if digits[0] == "4":                                # Visa
+        return length in (16, 19)
+    if 51 <= two <= 55 or 2221 <= four <= 2720:         # Mastercard
+        return length == 16
+    if two in (34, 37):                                 # American Express
+        return length == 15
+    if four == 6011 or two == 65 or 644 <= three <= 649:  # Discover
+        return length in (16, 19)
+    if 300 <= three <= 305 or two in (36, 38):          # Diners Club
+        return length == 14
+    if 3528 <= four <= 3589:                            # JCB
+        return length in (16, 19)
+    if two == 62:                                       # UnionPay
+        return 16 <= length <= 19
+    return False
+
 
 def _luhn_ok(number: str) -> bool:
     """Returns True if ``number`` (digits-only) passes the Luhn checksum."""
@@ -261,13 +325,18 @@ def _extract_credit_cards(text: str) -> set[str]:
     Extracts credit/debit card numbers from text.
 
     Candidates are 13–19 digit sequences (with optional spaces or hyphens)
-    that pass the Luhn checksum. Returns digit-only canonical forms.
+    with a valid issuer prefix that pass the Luhn checksum. A plain digit run
+    also needs card context nearby, because tracking numbers and timestamps
+    pass those checks by chance. Returns digit-only canonical forms.
     """
     pattern = re.compile(r"(?<!\d)(?:\d[ -]?){12,18}\d(?!\d)")
     found: set[str] = set()
     for m in pattern.finditer(text):
         digits = re.sub(r"\D", "", m.group(0))
-        if 13 <= len(digits) <= 19 and _luhn_ok(digits):
+        if not (13 <= len(digits) <= 19 and _card_brand_ok(digits) and _luhn_ok(digits)):
+            continue
+        if _CARD_GROUPED_RE.fullmatch(m.group(0)) or _has_context(
+                text, m.start(), m.end(), _CARD_CONTEXT_RE):
             found.add(digits)
     return found
 
@@ -276,9 +345,14 @@ def _extract_credit_cards(text: str) -> set[str]:
 # Country-specific identifiers: CUIT (AR), DNI (ES/AR), RFC (MX)
 # ---------------------------------------------------------------------------
 
+# Type prefixes issued for people (20-27) and companies (30-34).
+_CUIT_PREFIXES = frozenset({"20", "23", "24", "25", "26", "27", "30", "33", "34"})
+_CUIT_CONTEXT_RE = re.compile(r"\b(?:cuit|cuil)\b", re.IGNORECASE)
+
+
 def _cuit_is_valid(digits: str) -> bool:
-    """Argentine CUIT/CUIL — 11 digits with mod-11 check digit."""
-    if len(digits) != 11 or not digits.isdigit():
+    """Argentine CUIT/CUIL — 11 digits, a known type prefix, and a mod-11 check digit."""
+    if len(digits) != 11 or not digits.isdigit() or digits[:2] not in _CUIT_PREFIXES:
         return False
     weights = [5, 4, 3, 2, 7, 6, 5, 4, 3, 2]
     total = sum(int(d) * w for d, w in zip(digits[:10], weights))
@@ -290,12 +364,20 @@ def _cuit_is_valid(digits: str) -> bool:
 
 
 def _extract_cuit(text: str) -> set[str]:
-    """Extracts Argentine CUIT/CUIL identifiers in ``XX-XXXXXXXX-X`` form."""
-    pattern = re.compile(r"\b(\d{2}[- ]?\d{8}[- ]?\d)\b")
+    """
+    Extracts Argentine CUIT/CUIL identifiers in ``XX-XXXXXXXX-X`` form.
+
+    Eleven plain digits also need the word CUIT or CUIL nearby, and a leading
+    ``+`` rules a match out, since that is an international phone number.
+    """
+    pattern = re.compile(r"(?<![\d+])(\d{2}[- ]?\d{8}[- ]?\d)(?!\d)")
     found: set[str] = set()
     for m in pattern.finditer(text):
-        digits = re.sub(r"\D", "", m.group(1))
-        if _cuit_is_valid(digits):
+        written = m.group(1)
+        digits = re.sub(r"\D", "", written)
+        if not _cuit_is_valid(digits):
+            continue
+        if written != digits or _has_context(text, m.start(), m.end(), _CUIT_CONTEXT_RE):
             found.add(f"{digits[:2]}-{digits[2:10]}-{digits[10]}")
     return found
 
@@ -586,10 +668,24 @@ def _extract_sin(text: str) -> set[str]:
 # Network identifiers: public IPv4, IPv6, MAC
 # ---------------------------------------------------------------------------
 
+# Software versions share the shape of an IPv4 address, as in "Chrome/124.0.0.0".
+# Product names only count with the slash, because "edge 8.8.8.8" is an address.
+_VERSION_PREFIX_RE = re.compile(
+    r"\b(?:version|ver|build|release|firmware)[\s:=v.]*$"
+    r"|\b(?:chrome|chromium|firefox|safari|edg|edge|opera|android)/$",
+    re.IGNORECASE,
+)
+
+
 def _extract_ipv4(text: str) -> set[str]:
-    """Extract public IPv4 addresses (filters RFC1918, loopback, link-local, multicast, reserved)."""
+    """
+    Extract public IPv4 addresses (filters RFC1918, loopback, link-local,
+    multicast, reserved, and software version numbers).
+    """
     found: set[str] = set()
-    for m in re.finditer(r"\b((?:\d{1,3}\.){3}\d{1,3})\b", text):
+    for m in re.finditer(r"(?<![\d.])((?:\d{1,3}\.){3}\d{1,3})(?!\.?\d)", text):
+        if _VERSION_PREFIX_RE.search(text[max(0, m.start() - 20):m.start()]):
+            continue
         try:
             ip = _ipaddr.IPv4Address(m.group(1))
         except ValueError:
@@ -632,6 +728,11 @@ def _extract_mac(text: str) -> set[str]:
 # Optional Microsoft Presidio integration
 # ---------------------------------------------------------------------------
 
+# The other Presidio entities repeat what the extractors above find, or fire on
+# plain numbers, as US_BANK_NUMBER does on phone numbers.
+_PRESIDIO_ENTITIES = frozenset({"PERSON", "LOCATION"})
+
+
 @lru_cache(maxsize=1)
 def _get_presidio():
     """
@@ -658,6 +759,9 @@ def _extract_presidio_entities(text: str) -> dict[str, list[str]]:
     Runs Microsoft Presidio (if installed) and returns a dict keyed by entity
     type with deduplicated match strings. Returns an empty dict if Presidio
     is not available or the analyzer fails.
+
+    Only people and places are kept, and a person needs at least two words,
+    because single words are often ordinary terms read as names.
     """
     if not text:
         return {}
@@ -671,13 +775,37 @@ def _extract_presidio_entities(text: str) -> dict[str, list[str]]:
 
     grouped: dict[str, set[str]] = {}
     for r in results:
-        grouped.setdefault(r.entity_type, set()).add(text[r.start:r.end])
+        value = text[r.start:r.end].strip()
+        if r.entity_type not in _PRESIDIO_ENTITIES:
+            continue
+        if r.entity_type == "PERSON" and len(value.split()) < 2:
+            continue
+        grouped.setdefault(r.entity_type, set()).add(value)
     return {k: sorted(v) for k, v in grouped.items()}
 
 
 # ---------------------------------------------------------------------------
 # Main extraction entry point
 # ---------------------------------------------------------------------------
+
+# Placeholder values that follow "user:" in forms, templates and config samples.
+_NOT_USERNAMES = frozenset({
+    "none", "null", "true", "false", "undefined", "password", "name", "email",
+})
+
+# Categories that rest on format alone. Everything else has a checksum or a
+# vendor prefix behind it, and Presidio entities are statistical guesses.
+_MEDIUM_CONFIDENCE = frozenset({
+    "phones", "usernames", "ipv4", "ipv6", "mac_addresses", "ssn", "rfc", "sql_errors",
+})
+
+
+def category_confidence(category: str) -> str:
+    """Returns how far a value of *category* can be trusted: high, medium or low."""
+    if category.startswith("presidio_"):
+        return "low"
+    return "medium" if category in _MEDIUM_CONFIDENCE else "high"
+
 
 def extract_information(text: str) -> dict:
     """
@@ -731,15 +859,13 @@ def extract_information(text: str) -> dict:
     # The pattern includes Spanish-language field labels ("usuario", "nombre de
     # usuario") because scraped target content may be in Spanish — these are
     # search keywords applied to external data, not Spanish identifiers in our code.
+    # A ":" or "=" is required, because "the user agent" is not a username.
     USER_RE = re.compile(
-        r'(user|username|login|usuario|nombre de usuario)[\s:=]+[\'"]?([a-zA-Z0-9._-]{3,})[\'"]?',
+        r'\b(user|username|login|usuario|nombre de usuario)\s*[:=]\s*[\'"]?([a-zA-Z0-9._-]{3,})[\'"]?',
         re.IGNORECASE,
     )
-    usernames = {
-        m.group(2).strip()
-        for m in USER_RE.finditer(text)
-        if m.group(2)
-    }
+    usernames = {m.group(2).rstrip('._-') for m in USER_RE.finditer(text)}
+    usernames = {u for u in usernames if len(u) >= 3 and u.lower() not in _NOT_USERNAMES}
     if usernames:
         extracted['usernames'] = sorted(usernames)
 
@@ -830,6 +956,44 @@ def iter_extracted(data: dict):
         else:
             for value in values:
                 yield category, value
+
+
+def flatten_extracted(data: dict) -> dict[str, list[str]]:
+    """Groups an :func:`extract_information` result as ``category -> values``."""
+    grouped: dict[str, list[str]] = {}
+    for category, value in iter_extracted(data):
+        grouped.setdefault(category, []).append(value)
+    return grouped
+
+
+def build_evidence(data: dict, text: str, source: str, tool: str) -> list[dict]:
+    """
+    Turns an :func:`extract_information` result into evidence records.
+
+    Args:
+        data:   The extraction result.
+        text:   The text the values came from; its SHA-256 identifies that content.
+        source: Where the text came from, normally a URL.
+        tool:   The ScannUs feature that found the values.
+
+    Returns:
+        One dict per value with ``category``, ``value``, ``confidence``,
+        ``source``, ``tool``, ``found_at`` (UTC) and ``content_sha256``.
+    """
+    found_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    content_sha256 = hashlib.sha256(text.encode("utf-8", "replace")).hexdigest()
+    return [
+        {
+            "category":       category,
+            "value":          value,
+            "confidence":     category_confidence(category),
+            "source":         source,
+            "tool":           tool,
+            "found_at":       found_at,
+            "content_sha256": content_sha256,
+        }
+        for category, value in iter_extracted(data)
+    ]
 
 
 # --- Main Search Implementation ---

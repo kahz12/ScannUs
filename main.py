@@ -6,11 +6,20 @@ from cli.ui import console, print_startup_banner
 from cli.parser import get_parser, show_custom_help
 from cli.menus import show_main_menu, select_ia_agent
 from search.reverse_image import do_reverse_image_search
-from core.case_manager import load_case
+from core.case_manager import load_case, save_case_as
 from utils.file_download import FileDownload
 from utils.media_downloader import download_media
-from utils.results_parse import ResultsParser
+from utils.results_parse import ResultsParser, export_report_json
 from core import state
+
+def _export_results(args, results: list, evidence: list | None) -> None:
+    """Writes the export files requested on the command line."""
+    rparser = ResultsParser(results, extracted=evidence)
+    if args.html: rparser.export_html(args.html)
+    if args.json: rparser.export_json(args.json)
+    if args.csv: rparser.export_csv(args.csv)
+    if args.excel: rparser.export_excel(args.excel)
+
 
 def main():
     """
@@ -83,8 +92,7 @@ def main():
         # check_account() calls hibp_breached_account + hibp_pastes_for_account
         # and renders both tables in one shot. Needs HIBP_API_KEY.
         from analysis.hibp import check_account
-        check_account(args.hibp_account)
-        sys.exit(0)
+        sys.exit(0 if check_account(args.hibp_account)["checked"] else 1)
 
     if getattr(args, "hibp_domain", None):
         # --hibp-domain DOMAIN: free endpoint, no API key needed.
@@ -102,17 +110,17 @@ def main():
         info = hibp_breach(args.hibp_breach)
         if not info:
             console.print(f"[bold red]No record for breach '{args.hibp_breach}'.[/bold red]")
-        else:
-            console.print(
-                f"\n[bold]{info.get('Name')}[/bold]  ({info.get('BreachDate')})"
-            )
-            console.print(f"  domain      : {info.get('Domain')}")
-            console.print(f"  accounts    : {info.get('PwnCount', 0):,}")
-            console.print(f"  data classes: {', '.join(info.get('DataClasses') or [])}")
-            console.print(f"  verified    : {info.get('IsVerified')}")
-            desc = (info.get('Description') or '').strip()
-            if desc:
-                console.print(f"\n{desc}\n")
+            sys.exit(1)
+        console.print(
+            f"\n[bold]{info.get('Name')}[/bold]  ({info.get('BreachDate')})"
+        )
+        console.print(f"  domain      : {info.get('Domain')}")
+        console.print(f"  accounts    : {info.get('PwnCount', 0):,}")
+        console.print(f"  data classes: {', '.join(info.get('DataClasses') or [])}")
+        console.print(f"  verified    : {info.get('IsVerified')}")
+        desc = (info.get('Description') or '').strip()
+        if desc:
+            console.print(f"\n{desc}\n")
         sys.exit(0)
 
     if getattr(args, "hibp_password", False):
@@ -132,44 +140,48 @@ def main():
         if not pw:
             console.print("[bold red]Password cannot be empty.[/bold red]")
             sys.exit(1)
-        check_password(pw)
-        sys.exit(0)
+        sys.exit(0 if check_password(pw) is not None else 1)
 
     # Route: Reverse Image Search payload processing
     if args.reverse:
-        do_reverse_image_search(args.reverse)
-        sys.exit(0)
+        sys.exit(0 if do_reverse_image_search(args.reverse) else 1)
 
     # Route: Domain / network OSINT recon
     if getattr(args, "recon", None):
         from analysis.domain_osint import domain_recon
-        domain_recon(args.recon)
+        report = domain_recon(args.recon)
+        if args.json:
+            export_report_json(report, args.json)
         sys.exit(0)
 
     # Route: Username enumeration via Sherlock / Maigret (400+ sites)
     if getattr(args, "username_enum", None):
         from search.username_enum import username_enum
-        username_enum(args.username_enum,
-                      backend=getattr(args, "enum_backend", "auto"))
-        sys.exit(0)
+        found = username_enum(args.username_enum,
+                              backend=getattr(args, "enum_backend", "auto"))
+        sys.exit(0 if found is not None else 1)
 
     # Route: Email enumeration via Holehe (~120 services)
     if getattr(args, "email_enum", None):
         from search.email_enum import email_enum
-        email_enum(args.email_enum,
-                   only_used=not getattr(args, "email_enum_all", False))
-        sys.exit(0)
+        found = email_enum(args.email_enum,
+                           only_used=not getattr(args, "email_enum_all", False))
+        sys.exit(0 if found is not None else 1)
 
     # Route: Phone intelligence via libphonenumber (offline metadata + footprint)
     if getattr(args, "phone_osint", None):
         from search.phone_osint import phone_osint
-        phone_osint(args.phone_osint)
-        sys.exit(0)
+        sys.exit(0 if phone_osint(args.phone_osint) is not None else 1)
 
     # Route: LLM-based query planner (multi-step ReAct investigation)
     if getattr(args, "plan", None):
         from cli.actions import do_query_planner
-        do_query_planner(args.plan)
+        investigation = do_query_planner(args.plan)
+        if investigation is None or not investigation["steps"]:
+            sys.exit(1)
+        _export_results(args, state.CURRENT_CASE["results"], state.CURRENT_CASE["evidence"])
+        if args.save_case and not save_case_as(args.save_case):
+            sys.exit(1)
         sys.exit(0)
 
     # Route: Media scraping from a target URL
@@ -188,11 +200,13 @@ def main():
 
     # Route: Reload serialized state from previous investigations
     if args.load_case:
-        if load_case():
-            from cli.menus import interactive_analysis_menu
-            interactive_analysis_menu(state.LAST_RESULTS, ia_agent)
+        if not load_case():
+            sys.exit(1)
+        from cli.menus import interactive_analysis_menu
+        interactive_analysis_menu(state.LAST_RESULTS, ia_agent)
         sys.exit(0)
-        
+
+
     # Route: LLM-based dork generation
     if args.google_dorks:
         console.print(f"Generating dork for description: '{args.google_dorks}'", style="yellow")
@@ -200,9 +214,9 @@ def main():
         if dork_generado:
             console.print("\n✅ Dork Generated:", style="bold green")
             console.print(dork_generado.strip())
-        else:
-            console.print("\n❌ Failed to generate the dork.", style="bold red")
-        sys.exit(0)
+            sys.exit(0)
+        console.print("\n❌ Failed to generate the dork.", style="bold red")
+        sys.exit(1)
 
     # Build the final search query string based on provided flags
     query = args.query
@@ -233,28 +247,27 @@ def main():
     else:
         results = do_search(query, args.engine, args.pages, args.start_page, args.interactive, ia_agent)
 
-    # A failed search (None) has nothing to export, and the interactive menu
-    # opened by do_search() handles its own exports.
-    if results is None or (args.interactive and not deep):
+    if results is None:
+        sys.exit(1)
+
+    # The interactive menu opened by do_search() handles its own exports.
+    if args.interactive and not deep:
         return
 
-    rparser = ResultsParser(results, extracted=state.LAST_EXTRACTED if deep else None)
-
-    # Batch export results to requested formats
-    if args.html: rparser.export_html(args.html)
-    if args.json: rparser.export_json(args.json)
-    if args.csv: rparser.export_csv(args.csv)
-    if args.excel: rparser.export_excel(args.excel)
+    _export_results(args, results, state.CURRENT_CASE["evidence"] if deep else None)
 
     # Execute automated file downloads and metadata extraction
     if args.download:
         file_types = [ft.strip() for ft in args.download.split(',')]
         urls = [r['link'] for r in results]
-        fdownloader = FileDownload("Downloads")
+        fdownloader = FileDownload()
         for url in urls:
             # Filter by file extension or process all if 'all' wildcard is used
             if any(url.lower().endswith(f".{file_type}") for file_type in file_types) or "all" in file_types:
                 fdownloader.download_file(url, args.metadata)
+
+    if args.save_case and not save_case_as(args.save_case):
+        sys.exit(1)
 
 if __name__ == "__main__":
     main()

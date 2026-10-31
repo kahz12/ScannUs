@@ -12,15 +12,16 @@ then reads that pool to offer the natural next step, so chains compose freely:
     recon → [subdomains] → search → [URLs] → download
     username-enum → [profile URLs] → analyse → download
 
-Like :data:`core.state.LAST_RESULTS`, the pool is intentionally session-only —
-nothing here is persisted to disk. Deduplication is by ``(kind, value)`` with a
+The pool lives in memory, and :mod:`core.case_manager` saves it with the case
+and restores it on load. Deduplication is by ``(kind, value)`` with a
 case-insensitive value, so the same artifact surfaced by two different tools is
 stored once while remembering the tool that first produced it.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from urllib.parse import urlparse
 
 
@@ -43,6 +44,21 @@ _KIND_LABELS = {
     "ip":       "IPs",
     "phone":    "phones",
 }
+
+# Evidence categories that can be pivoted from, mapped to their artifact kind.
+# Saved hub findings use the kind itself as their category.
+EVIDENCE_KINDS = {
+    "emails":    "email",
+    "usernames": "username",
+    "ipv4":      "ip",
+    "ipv6":      "ip",
+    "phones":    "phone",
+    **{kind: kind for kind in KINDS},
+}
+
+
+def _utc_now() -> str:
+    return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
 # ---------------------------------------------------------------------------
@@ -103,11 +119,13 @@ class Finding:
         source: Short label of the tool that first produced it (e.g. ``"search"``,
                 ``"recon:tls-san"``) — shown as a hint in pivot pickers.
         label:  Optional human-friendly note (e.g. a result title or site name).
+        found_at: UTC time the artifact was found.
     """
     kind: str
     value: str
     source: str = ""
     label: str = ""
+    found_at: str = field(default_factory=_utc_now)
 
 
 # ---------------------------------------------------------------------------
@@ -169,21 +187,18 @@ class FindingsHub:
                 n += self.add_url(link, source=source, label=(r.get("title") or "")[:60])
         return n
 
-    def ingest_pii(self, data: dict, source: str = "pii") -> int:
-        """Ingest the pivotable subset of an :func:`search.smart_search.extract_information`
-        result: emails, usernames, IPv4/IPv6 and phone numbers. Non-pivotable
-        categories (cards, IBANs, secrets, …) are deliberately skipped."""
-        if not isinstance(data, dict):
-            return 0
+    def ingest_evidence(self, records: list) -> int:
+        """Ingest the pivotable subset of evidence records: emails, usernames,
+        IPs and phones, plus saved hub findings. The page a value came from
+        becomes its label. Non-pivotable categories (cards, IBANs, secrets, …)
+        stay in the evidence only."""
         n = 0
-        for e in data.get("emails") or []:
-            n += self.add_email(e, source=source)
-        for u in data.get("usernames") or []:
-            n += self.add_username(u, source=source)
-        for ip in (data.get("ipv4") or []) + (data.get("ipv6") or []):
-            n += self.add_ip(ip, source=source)
-        for p in data.get("phones") or []:
-            n += self.add_phone(p, source=source)
+        for record in records or []:
+            kind = EVIDENCE_KINDS.get(record.get("category"))
+            if kind:
+                n += self.add(kind, record.get("value", ""),
+                              source=record.get("tool", ""),
+                              label=record.get("source", "")[:60])
         return n
 
     def ingest_recon(self, report: dict, source: str = "recon") -> int:

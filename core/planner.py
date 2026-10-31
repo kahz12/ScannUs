@@ -1,9 +1,14 @@
 """
-core/planner.py — ReAct query-planner primitives for the OSINT agent.
+core/planner.py — the tools of the OSINT investigation loop.
 
-Contains the plan data model (:class:`PlanStep`, :class:`QueryPlan`), the
-whitelist of read-only tools the planner may choose from (``TOOL_CATALOG``),
-and the per-tool dispatchers that actually execute a step (``TOOL_DISPATCH``).
+Contains the step model (:class:`PlanStep`), the whitelist of read-only tools
+the loop in :meth:`core.ai_agent.IAAgent.investigate` may choose from
+(``TOOL_CATALOG``), and the per-tool dispatchers that actually execute a step
+(``TOOL_DISPATCH``).
+
+Each dispatcher returns ``{status, summary, data}``. ``data`` is what the model
+reads before choosing the next step, so it has to carry the useful result of
+the tool. Sensitive values stay out of it: see :func:`_evidence_digest`.
 
 This module is intentionally decoupled from the LLM providers and from
 :class:`~core.ai_agent.IAAgent`: every dispatcher receives the agent instance
@@ -14,57 +19,76 @@ circular-prone imports are done lazily inside each dispatcher.
 from dataclasses import asdict, dataclass, field
 from typing import Any, Callable
 
+from core import state
+from core.findings import EVIDENCE_KINDS, get_hub
+
 
 # ---------------------------------------------------------------------------
-# Plan data model
+# Step model
 # ---------------------------------------------------------------------------
 
 @dataclass
 class PlanStep:
-    """One atomic step in an executable OSINT plan."""
+    """One tool call chosen by the model."""
     tool: str
     args: dict = field(default_factory=dict)
     rationale: str = ""
-    expected: str = ""
 
     def to_dict(self) -> dict:
         return asdict(self)
 
     @classmethod
     def from_dict(cls, d: dict) -> "PlanStep":
+        raw_args = d.get("args")
         return cls(
             tool=str(d.get("tool", "")).strip(),
-            args=dict(d.get("args") or {}),
+            args=dict(raw_args) if isinstance(raw_args, dict) else {},
             rationale=str(d.get("rationale", "")).strip(),
-            expected=str(d.get("expected", "")).strip(),
         )
 
 
-@dataclass
-class QueryPlan:
-    """LLM-synthesised investigation plan for a natural-language goal."""
-    goal: str
-    summary: str = ""
-    steps: list[PlanStep] = field(default_factory=list)
+# ---------------------------------------------------------------------------
+# What the model is allowed to see
+# ---------------------------------------------------------------------------
 
-    def to_dict(self) -> dict:
-        return {
-            "goal":    self.goal,
-            "summary": self.summary,
-            "steps":   [s.to_dict() for s in self.steps],
-        }
-
-    @classmethod
-    def from_dict(cls, d: dict, goal: str = "") -> "QueryPlan":
-        steps_raw = d.get("steps") or []
-        return cls(
-            goal=d.get("goal") or goal or "",
-            summary=str(d.get("summary", "")).strip(),
-            steps=[PlanStep.from_dict(s) for s in steps_raw if isinstance(s, dict)],
-        )
+# Values that can be shown to the model in full, because they are what the next
+# step pivots on. Cards, national IDs and leaked secrets stay in the local case
+# and reach the model provider only as counts.
+_SHAREABLE_CATEGORIES = frozenset(EVIDENCE_KINDS) | {"presidio_person", "presidio_location"}
+_DIGEST_LIMIT = 40
 
 
-# Whitelisted, read-only OSINT tools the planner may choose from.
+def _evidence_digest(records: list[dict]) -> dict:
+    """Summarises evidence for the model, withholding sensitive values."""
+    shared = [r for r in records if r["category"] in _SHAREABLE_CATEGORIES]
+    withheld: dict[str, int] = {}
+    for record in records:
+        if record["category"] not in _SHAREABLE_CATEGORIES:
+            withheld[record["category"]] = withheld.get(record["category"], 0) + 1
+    return {
+        "total": len(records),
+        "findings": [
+            {key: record[key] for key in ("category", "value", "confidence", "source")}
+            for record in shared[:_DIGEST_LIMIT]
+        ],
+        "withheld_counts": withheld,
+    }
+
+
+def _recon_digest(report: dict) -> dict:
+    """Keeps the parts of a recon report that can lead to the next step."""
+    whois = report.get("whois") or {}
+    return {
+        "target":     report.get("target"),
+        "registrar":  whois.get("registrar"),
+        "emails":     whois.get("emails"),
+        "dns":        report.get("dns"),
+        "tls_names":  (report.get("tls") or {}).get("san"),
+        "subdomains": (report.get("subdomains") or [])[:30],
+    }
+
+
+# Whitelisted, read-only OSINT tools the investigation loop may choose from.
 TOOL_CATALOG: dict[str, dict] = {
     "search": {
         "desc": "Run a SERP search and return the list of titles/URLs/snippets.",
@@ -227,16 +251,13 @@ TOOL_CATALOG: dict[str, dict] = {
         "args": {"name": "str (required) — e.g. 'Adobe', 'LinkedIn'"},
     },
     "hibp_password": {
-        # k-anonymity means only a hash prefix reaches HIBP. Plan steps are shown
-        # with their arguments, so the 'sha1' argument keeps a raw password out
-        # of that output.
+        # Only the hash is offered: a cleartext password would pass through the
+        # model provider and appear in the steps shown on screen.
         "desc": "Pwned Passwords k-anonymity lookup: returns how many times "
-                "a password has been seen across known breaches. The plaintext "
-                "never leaves the process — only the first 5 chars of its "
-                "SHA-1 are sent.",
+                "a password hash has been seen across known breaches. Only the "
+                "first 5 chars of the SHA-1 are sent.",
         "args": {
-            "password": "str — cleartext password (mutually exclusive with sha1)",
-            "sha1":     "str — pre-computed 40-char SHA-1 hex (alternative)",
+            "sha1": "str (required) — pre-computed 40-char SHA-1 hex",
         },
     },
 }
@@ -275,12 +296,16 @@ def _dispatch_search(args: dict, ia_agent) -> dict:
         results = get_search_engine(engine, pages, 1, query)
     except Exception as e:
         return {"status": "error", "summary": f"search failed: {e}"}
+    state.add_results(results)
+    get_hub().ingest_results(results, source="planner")
     top = [r.get("title", "") for r in results[:5]]
-    links = [r.get("link", "") for r in results[:5]]
     return {
         "status":  "ok",
         "summary": f"{len(results)} hits · top: " + " | ".join(_truncate(t, 60) for t in top),
-        "data":    {"results": results, "top_links": links},
+        "data":    {"results": [
+            {key: r.get(key) for key in ("title", "link", "description")}
+            for r in results[:10]
+        ]},
     }
 
 
@@ -290,6 +315,8 @@ def _dispatch_deep_search(args: dict, ia_agent) -> dict:
     if not query:
         return {"status": "error", "summary": "deep_search: missing 'query'"}
     engine = (args.get("engine") or "duckduckgo").lower()
+    evidence = state.CURRENT_CASE.setdefault("evidence", [])
+    known = len(evidence)
     try:
         results = do_deep_search(query, engine, pages=1, start_page=1)
     except Exception as e:
@@ -297,16 +324,17 @@ def _dispatch_deep_search(args: dict, ia_agent) -> dict:
     if results is None:
         return {"status": "error", "summary": "deep search failed"}
     count = len(results)
+    found = evidence[known:]
     return {
         "status":  "ok",
-        "summary": f"deep search over {count} URLs complete",
-        "data":    {"count": count},
+        "summary": f"deep search over {count} URLs: {len(found)} new value(s)",
+        "data":    {"count": count, **_evidence_digest(found)},
     }
 
 
 def _dispatch_extract_pii(args: dict, ia_agent) -> dict:
     from analysis.web_analyzer import get_text_from_url
-    from search.smart_search import extract_information
+    from search.smart_search import build_evidence, extract_information, flatten_extracted
     url = (args.get("url") or "").strip()
     if not url:
         return {"status": "error", "summary": "extract_pii: missing 'url'"}
@@ -316,11 +344,14 @@ def _dispatch_extract_pii(args: dict, ia_agent) -> dict:
     data = extract_information(text)
     if not data:
         return {"status": "ok", "summary": f"{url}: no identifiers found", "data": {}}
-    counts = {k: len(v) for k, v in data.items()}
+    records = build_evidence(data, text, url, "planner:extract_pii")
+    state.add_evidence(records)
+    get_hub().ingest_evidence(records)
+    counts = {k: len(v) for k, v in flatten_extracted(data).items()}
     return {
         "status":  "ok",
         "summary": "extracted: " + ", ".join(f"{k}×{n}" for k, n in counts.items()),
-        "data":    {"by_category": data, "counts": counts},
+        "data":    _evidence_digest(records),
     }
 
 
@@ -330,10 +361,18 @@ def _dispatch_tech_scan(args: dict, ia_agent) -> dict:
     if not url:
         return {"status": "error", "summary": "tech_scan: missing 'url'"}
     try:
-        tech_scan(url)
+        backend, technologies = tech_scan(url)
     except Exception as e:
         return {"status": "error", "summary": f"tech_scan failed: {e}"}
-    return {"status": "ok", "summary": f"tech_scan executed for {url}", "data": {}}
+    names = ", ".join(name for name, _, _ in technologies[:8]) or "nothing detected"
+    return {
+        "status":  "ok",
+        "summary": f"tech_scan {url}: {len(technologies)} technologies ({names})",
+        "data":    {"backend": backend, "technologies": [
+            {"name": name, "version": version, "category": category}
+            for name, version, category in technologies
+        ]},
+    }
 
 
 def _dispatch_username_enum(args: dict, ia_agent) -> dict:
@@ -350,6 +389,7 @@ def _dispatch_username_enum(args: dict, ia_agent) -> dict:
     if results is None:
         return {"status": "error",
                 "summary": "username_enum: no backend installed or empty input"}
+    get_hub().ingest_username_enum(results, source="planner")
     records = from_username_enum(username, results)
     return {
         "status":  "ok",
@@ -374,6 +414,7 @@ def _dispatch_email_enum(args: dict, ia_agent) -> dict:
         return {"status": "error", "summary": f"email_enum failed: {e}"}
     if results is None:
         return {"status": "error", "summary": "email_enum: holehe unavailable"}
+    get_hub().ingest_email_enum(results, source="planner")
     records = from_email_enum(email, results)
     claimed = sum(1 for r in records if r["status"] == "claimed")
     return {
@@ -415,10 +456,12 @@ def _dispatch_screenshot(args: dict, ia_agent) -> dict:
     if not url:
         return {"status": "error", "summary": "screenshot: missing 'url'"}
     try:
-        take_screenshot(url)
+        path = take_screenshot(url)
     except Exception as e:
         return {"status": "error", "summary": f"screenshot failed: {e}"}
-    return {"status": "ok", "summary": f"screenshot captured for {url}", "data": {}}
+    if not path:
+        return {"status": "error", "summary": f"screenshot failed for {url}"}
+    return {"status": "ok", "summary": f"screenshot captured for {url}", "data": {"path": path}}
 
 
 def _dispatch_wayback(args: dict, ia_agent) -> dict:
@@ -427,10 +470,19 @@ def _dispatch_wayback(args: dict, ia_agent) -> dict:
     if not url:
         return {"status": "error", "summary": "wayback: missing 'url'"}
     try:
-        check_wayback_machine(url)
+        snapshots = check_wayback_machine(url)
     except Exception as e:
         return {"status": "error", "summary": f"wayback failed: {e}"}
-    return {"status": "ok", "summary": f"wayback lookup completed for {url}", "data": {}}
+    if snapshots is None:
+        return {"status": "error", "summary": f"wayback lookup failed for {url}"}
+    if not snapshots:
+        return {"status": "ok", "summary": f"wayback: no snapshots of {url}", "data": {}}
+    return {
+        "status":  "ok",
+        "summary": f"wayback: {len(snapshots)} snapshots of {url}, "
+                   f"newest {snapshots[0]['date']}, oldest {snapshots[-1]['date']}",
+        "data":    {"snapshots": len(snapshots), "newest": snapshots[:5]},
+    }
 
 
 def _dispatch_domain_recon(args: dict, ia_agent) -> dict:
@@ -442,12 +494,13 @@ def _dispatch_domain_recon(args: dict, ia_agent) -> dict:
         report = domain_recon(target)
     except Exception as e:
         return {"status": "error", "summary": f"domain_recon failed: {e}"}
+    get_hub().ingest_recon(report, source="planner:recon")
     subs = len(report.get("subdomains") or [])
     hdr  = (report.get("headers") or {}).get("score", "?")
     return {
         "status":  "ok",
         "summary": f"recon complete · {subs} subdomains · headers {hdr}",
-        "data":    report,
+        "data":    _recon_digest(report),
     }
 
 
@@ -459,6 +512,7 @@ def _dispatch_whois(args: dict, ia_agent) -> dict:
     info = whois_lookup(domain)
     if not info:
         return {"status": "error", "summary": f"whois: no data for {domain}"}
+    get_hub().ingest_recon({"whois": info}, source="planner:whois")
     return {"status": "ok",
             "summary": f"whois {domain}: registrar={info.get('registrar') or '?'}, "
                        f"expires={info.get('expires') or '?'}",
@@ -473,6 +527,7 @@ def _dispatch_dns_records(args: dict, ia_agent) -> dict:
     rec = dns_records(domain)
     if not rec:
         return {"status": "error", "summary": f"dns: no records for {domain}"}
+    get_hub().ingest_recon({"dns": rec}, source="planner:dns")
     summary = "dns " + ", ".join(f"{k}×{len(v)}" for k, v in rec.items())
     return {"status": "ok", "summary": summary, "data": rec}
 
@@ -489,6 +544,7 @@ def _dispatch_tls_certificate(args: dict, ia_agent) -> dict:
     cert = tls_certificate(host, port=port)
     if not cert:
         return {"status": "error", "summary": f"tls: handshake failed for {host}:{port}"}
+    get_hub().ingest_recon({"tls": cert}, source="planner:tls")
     return {"status":  "ok",
             "summary": f"tls {host}:{port} · expires in "
                        f"{cert.get('days_left')} days · {cert.get('tls_version')}",
@@ -514,6 +570,7 @@ def _dispatch_subdomains(args: dict, ia_agent) -> dict:
     if not domain:
         return {"status": "error", "summary": "subdomains: missing 'domain'"}
     subs = subdomains_crtsh(domain)
+    get_hub().ingest_recon({"subdomains": subs}, source="planner:crt.sh")
     return {"status":  "ok",
             "summary": f"{len(subs)} subdomain(s) from crt.sh",
             "data":    {"subdomains": subs}}
@@ -555,7 +612,12 @@ def _dispatch_wayback_extract(args: dict, ia_agent) -> dict:
     counts = result.get("counts") or {}
     summary = ("extracted from " + result["date"] + ": " +
                (", ".join(f"{k}×{v}" for k, v in counts.items()) or "no identifiers"))
-    return {"status": "ok", "summary": summary, "data": result}
+    return {
+        "status":  "ok",
+        "summary": summary,
+        "data":    {"date": result["date"], "archive_url": result["archive_url"],
+                    **_evidence_digest(result["evidence"])},
+    }
 
 
 def _dispatch_wayback_diff(args: dict, ia_agent) -> dict:
@@ -716,12 +778,11 @@ def _dispatch_hibp_breach(args: dict, ia_agent) -> dict:
 def _dispatch_hibp_password(args: dict, ia_agent) -> dict:
     """AI plan dispatcher for the hibp_password tool.
 
-    Accepts either a ``password`` (cleartext — will be hashed locally before
-    any network call) or a pre-computed ``sha1`` hex string. The ``via`` field
-    in the returned data records which path was taken, useful for audit logs.
-
-    Plan steps are shown with their arguments, so a cleartext password passed
-    here appears in that output; the ``sha1`` argument avoids it.
+    Accepts a pre-computed ``sha1`` hex string. A ``password`` is also accepted
+    and hashed locally before any network call, though the tool catalog does not
+    offer it, and :func:`core.ai_agent.IAAgent.investigate` masks it in every
+    step it shows or stores. The ``via`` field in the returned data records which
+    path was taken, useful for audit logs.
     """
     from analysis.hibp import (hibp_password_pwned, hibp_password_pwned_hash,
                                render_password_pwned)

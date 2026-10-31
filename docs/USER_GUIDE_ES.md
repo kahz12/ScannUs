@@ -181,13 +181,25 @@ python main.py --hibp-account objetivo@example.com
 
 Cada flag de CLI tiene su entrada equivalente en el menú, y viceversa. La TUI internamente despacha a las mismas funciones que la CLI.
 
+#### Códigos de salida
+
+Un comando termina con `0` cuando pudo hacer su trabajo, aunque no encontrara nada, y con `1` cuando no pudo, por ejemplo porque una búsqueda fue bloqueada o falta una clave de API. `--hibp-domain` y `--media-scrape` siempre terminan con `0`, porque aún no distinguen un fallo de un resultado vacío.
+
 ### 2.2 Casos
 
-Un **caso** es una investigación con nombre — tu consulta, el motor usado, todos los resultados devueltos y una marca temporal de creación. Los casos viven en una base SQLite en `outputs/cases/cases.db`.
+Un **caso** es una investigación con nombre: tu consulta, sus resultados, cada hallazgo con su origen y, si lo usaste, el informe del planificador. Los casos viven en una base SQLite en `outputs/cases/cases.db`, legible solo por tu usuario, porque contienen datos personales.
 
 #### Guardar un caso
 
 Después de que una búsqueda devuelva resultados, escribe `save` en el prompt de resultados. Se te pedirá un nombre. Si el nombre ya existe, se te pedirá confirmar la sobrescritura.
+
+Desde la línea de comandos, añade `--save-case NOMBRE` a una búsqueda o un plan:
+
+```bash
+python main.py -q "acme" --deep --save-case acme-recon
+```
+
+Aquí un nombre que ya existe se rechaza, para no sobrescribir nada por accidente.
 
 #### Cargar un caso
 
@@ -205,7 +217,8 @@ CREATE TABLE cases (
     name       TEXT    UNIQUE NOT NULL,
     query_data TEXT,             -- JSON: {"type": "direct", "value": "..."}
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    investigation TEXT           -- JSON: objetivo, pasos e informe del planificador
 );
 
 CREATE TABLE results (
@@ -217,7 +230,23 @@ CREATE TABLE results (
     link        TEXT,
     FOREIGN KEY (case_id) REFERENCES cases (id) ON DELETE CASCADE
 );
+
+CREATE TABLE evidence (
+    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+    case_id        INTEGER NOT NULL,
+    category       TEXT NOT NULL,   -- emails, ipv4, domain, presidio_person...
+    value          TEXT NOT NULL,
+    confidence     TEXT,            -- high, medium o low
+    source         TEXT NOT NULL DEFAULT '',  -- página de la que salió el valor
+    tool           TEXT,            -- deep-search, wayback, recon:dns...
+    found_at       TEXT,            -- hora UTC
+    content_sha256 TEXT,            -- hash del texto del que salió el valor
+    UNIQUE (case_id, category, value, source),
+    FOREIGN KEY (case_id) REFERENCES cases (id) ON DELETE CASCADE
+);
 ```
+
+Las bases antiguas reciben la tabla y la columna nuevas automáticamente la próxima vez que se abren.
 
 ### 2.3 La Caché Persistente
 
@@ -344,11 +373,11 @@ Flags guiadas disponibles:
 
 | Flag | Corta | Propósito |
 |---|---|---|
-| `--nombre` | `-n` | Nombre legal completo |
-| `--usuario` | `-u` | Nombre de usuario / handle |
+| `--name` | `-n` | Nombre legal completo |
+| `--username` | `-u` | Nombre de usuario / handle |
 | `--email` | `-e` | Email (activa `--deep`) |
-| `--telefono` | `-t` | Teléfono (activa `--deep`) |
-| `--buscar` | `-b` | Palabra clave genérica |
+| `--phone` | `-t` | Teléfono (activa `--deep`) |
+| `--search` | `-b` | Palabra clave genérica |
 
 ### 3.3 Comparativa de Motores
 
@@ -417,36 +446,47 @@ O por TUI: menú principal → **Generador de Dorks con IA**.
 
 ### 4.3 Planificador de Consultas con IA (ReAct)
 
-El planificador toma un objetivo en lenguaje natural y produce un **plan de investigación multi-paso** compuesto por llamadas a herramientas en lista blanca. Cada paso es confirmable interactivamente, y el planificador puede replanificar tras cada observación.
+El planificador toma un objetivo en lenguaje natural y lo investiga **paso a paso**. El modelo elige una herramienta de la lista blanca, ScannUs la ejecuta y el modelo ve el resultado antes de decidir el siguiente paso, de modo que un dominio o un email hallado en un paso puede guiar el siguiente. Cuando tiene suficiente, escribe un informe final con las fuentes de cada dato.
 
 ```bash
 python main.py -p "Investigar brechas que afectan a acme.com y encontrar PII filtrada"
 ```
 
-Un plan típico se ve así:
+Una ejecución típica se ve así:
 
 ```
-Resumen del plan: Reconocer el dominio objetivo, enumerar exposición a brechas,
-                  luego rastrear superficie de PII filtrada.
+Ask before each step? [Y/n]
 
-Paso 1/5 · domain_recon
-  por qué: Establecer línea base (WHOIS, DNS, TLS, cabeceras, subdominios)
-  espera: Stack tecnológico y panorama de infraestructura
-  args:   {'target': 'acme.com'}
-  ¿Ejecutar este paso? [S/n]
+Step 1 · domain_recon
+  why:   Establecer línea base (WHOIS, DNS, TLS, cabeceras, subdominios)
+  args:  {'target': 'acme.com'}
+Run this step? [Y/n]
+  ✔  recon complete · 14 subdomains · headers 3/7
 
-Paso 2/5 · hibp_domain
-  por qué: Comprobar si acme.com ha aparecido en alguna brecha registrada
+Step 2 · extract_pii
+  why:   Leer la página de contacto hallada en dev.acme.com
+  args:  {'url': 'https://dev.acme.com/contact'}
+Run this step? [Y/n]
   ...
 ```
 
 Puedes:
 
-- **Aceptar** cada paso → se ejecuta; los resultados se resumen e imprimen.
-- **Saltar** un paso → el planificador continúa.
-- **Abortar** a mitad del plan → ScannUs registra las observaciones y puede replanificar.
+- **Aceptar** un paso → se ejecuta y el modelo lee el resultado.
+- **Rechazar** un paso → el modelo lo sabe y busca otra vía. Tras dos pasos seguidos omitidos, la investigación termina.
+- **Dejar de preguntar** → responde que no a la primera pregunta. Hazlo solo con objetivos de confianza, por lo que se explica abajo.
 
-El plan se guarda en el caso actual para que puedas reproducirlo más tarde.
+Una investigación termina cuando el modelo finaliza, tras 12 pasos o cuando se omiten varios pasos seguidos. Si el modelo deja de responder, ScannUs genera igualmente un informe con los pasos ejecutados.
+
+El informe se muestra en pantalla y se guarda en `outputs/reports/investigation_<fecha>.md`. Todo lo hallado entra en el caso activo, así que `--save-case`, `--json`, `--csv`, `--html` y `--excel` también funcionan con `-p`.
+
+#### Qué llega al proveedor de IA
+
+El modelo lee los resultados de cada paso, incluido el texto de los sitios web, así que esas páginas llegan a tu proveedor de IA. Tenlo en cuenta según su política de datos.
+
+- **Valores retenidos:** los números de tarjeta, documentos de identidad y secretos filtrados llegan al modelo solo como conteos. Sus valores se quedan en tu caso local.
+- **Contraseñas:** el planificador ofrece `hibp_password` con un hash SHA-1, y cualquier contraseña en claro se enmascara en todo lo que se muestra o guarda.
+- **El contenido web no es de confianza:** una página podría incluir texto escrito para desviar al modelo. ScannUs marca ese texto como datos para el modelo, pero ningún filtro es perfecto, y por eso cada paso pide confirmación por defecto.
 
 ### 4.4 El Catálogo de Herramientas
 
@@ -479,7 +519,7 @@ El planificador solo puede invocar herramientas en lista blanca. A la fecha de e
 | `hibp_breach` | Metadatos de una brecha individual (gratis) |
 | `hibp_password` | Pwned Passwords con k-anonimato (gratis) |
 
-Cada herramienta devuelve `{status, summary, data}`. El planificador ve el resumen y lo usa para informar el siguiente paso.
+Cada herramienta devuelve `{status, summary, data}`. El modelo lee el resumen y los datos de los últimos 8 pasos, y solo el resumen de los anteriores, para elegir el siguiente paso.
 
 ---
 
@@ -557,7 +597,7 @@ Descarga HTTP directa de la URL con extracción automática de metadatos:
 | XLSX | Propiedades del libro de trabajo |
 | Imágenes | EXIF (modelo de cámara, GPS, marca temporal, software) |
 
-Se guarda en `outputs/downloads/<tipo>/`.
+Se guarda en `outputs/downloads/`.
 
 ### 5.5 Descargar Medios
 
@@ -1032,8 +1072,10 @@ El motor de extracción de ScannUs detecta y valida **25+ categorías de identif
 
 | Categoría | Validación |
 |---|---|
-| **Emails** | Regex + decodificación de ofuscación (`[at]`, `(dot)`, `&#64;`, con espacios); filtro de falsos positivos excluye `noreply@*`, bots, dominios de prueba |
-| **Teléfonos** | libphonenumber (internacional, consciente del país) |
+| **Emails** | Regex + decodificación de ofuscación (`[at]`, `(dot)`, `&#64;`, con espacios); filtro de falsos positivos excluye `noreply@*`, bots, dominios de prueba y nombres de recursos como `logo@2x.png` |
+| **Teléfonos** | libphonenumber (internacional, consciente del país). Los dígitos sin `+` ni separadores necesitan además una palabra cercana como "teléfono" o "tel" |
+| **Usuarios** | Una etiqueta como `user:` o `login=`; un texto normal como "the user agent" no cuenta |
+| **Personas y lugares** | Presidio, si está instalado. Una persona necesita al menos dos palabras |
 
 ### Documentos de identidad
 
@@ -1042,7 +1084,8 @@ El motor de extracción de ScannUs detecta y valida **25+ categorías de identif
 | **SSN de EE. UU.** | Regex + rechaza área 000/666/9xx, grupo 00, serie 0000 |
 | **CPF brasileño** | Checksum de dos dígitos módulo 11; rechaza dígitos todos iguales |
 | **SIN canadiense** | Algoritmo Luhn |
-| **DNI/CUIT argentinos** | Estructural |
+| **CUIT/CUIL argentinos** | Prefijo de tipo + dígito verificador módulo 11. Once dígitos seguidos necesitan además la palabra CUIT o CUIL cerca |
+| **DNI argentino** | Necesita una etiqueta `DNI` |
 | **RFC mexicano** | Estructural |
 
 ### Financiero
@@ -1050,7 +1093,7 @@ El motor de extracción de ScannUs detecta y valida **25+ categorías de identif
 | Categoría | Validación |
 |---|---|
 | **IBAN** | Regex por código de país + checksum |
-| **Tarjetas de crédito** | Algoritmo Luhn |
+| **Tarjetas de crédito** | Prefijo de emisor + longitud + Luhn. Los números sin agrupar necesitan además una palabra cercana como "tarjeta" o una fecha de caducidad |
 
 ### Secretos de nube y API
 
@@ -1079,9 +1122,19 @@ El motor de extracción de ScannUs detecta y valida **25+ categorías de identif
 
 | Categoría | Validación |
 |---|---|
-| **IPv4 pública** | `ipaddress` de stdlib; filtra privadas, loopback, link-local, multicast |
+| **IPv4 pública** | `ipaddress` de stdlib; filtra privadas, loopback, link-local, multicast y versiones de software como `Chrome/124.0.0.0` |
 | **IPv6 pública** | `ipaddress` de stdlib; mismos filtros |
 | **MAC** | `XX:XX:XX:XX:XX:XX` o `XX-XX-…` |
+
+### Niveles de confianza
+
+Cada hallazgo guardado tiene un nivel de confianza:
+
+| Nivel | Significado | Ejemplos |
+|---|---|---|
+| **high** | Lo respalda un checksum o un prefijo de proveedor | Emails, IBAN, tarjetas, identificadores fiscales, claves de API, carteras |
+| **medium** | Se basa solo en el formato | Teléfonos, usuarios, IPs, MAC, SSN, RFC |
+| **low** | Es una estimación estadística, trátalo como una pista | Personas y lugares de Presidio |
 
 ### Ejemplo de salida de extracción
 
@@ -1089,21 +1142,19 @@ El motor de extracción de ScannUs detecta y valida **25+ categorías de identif
 from search.smart_search import extract_information
 
 text = """
-Contacto: alicia@acme.com o llamar al +34-600-123-456
+Contacto: alicia@acme-corp.io o llamar al +34 912 34 56 78
 AWS: AKIAIOSFODNN7EXAMPLE
-JWT: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...
 BTC: 1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa
 ETH: 0x5aAeb6053F3E94C9b9A09f33669435E7Ef1BeAed
 """
 
 print(extract_information(text))
 # {
-#   "emails":      {"alicia@acme.com"},
-#   "phones":      {"+34-600-123-456"},
-#   "aws_keys":    {"AKIAIOSFODNN7EXAMPLE"},
-#   "jwts":        {"eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."},
-#   "btc_wallets": {"1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa"},
-#   "eth_wallets": {"0x5aAeb6053F3E94C9b9A09f33669435E7Ef1BeAed"},
+#   "emails":          ["alicia@acme-corp.io"],
+#   "phones":          ["+34 912 34 56 78"],
+#   "btc_addresses":   ["1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa"],
+#   "eth_addresses":   ["0x5aAeb6053F3E94C9b9A09f33669435E7Ef1BeAed"],
+#   "aws_access_keys": ["AKIAIOSFODNN7EXAMPLE"],
 # }
 ```
 
@@ -1172,6 +1223,14 @@ Si el nombre ya existe, se te pedirá confirmar la sobrescritura:
 El caso 'jperez-investigacion-2025-03' ya existe. ¿Sobrescribir? [s/N]
 ```
 
+Desde la línea de comandos, usa `--save-case NOMBRE`, que rechaza un nombre que ya existe.
+
+Un caso guardado contiene los resultados, cada hallazgo de la sesión con su fuente, herramienta, fecha, hash del contenido y confianza, y el informe del planificador. También se guardan los hallazgos de recon, como subdominios e IPs.
+
+### Revisar la evidencia
+
+Escribe `evidence` en el prompt de resultados para ver lo que ha encontrado la sesión y de dónde salió cada valor. El comando `excel` incluye esos mismos datos en una hoja `Extracted`.
+
 ### Cargar
 
 ```bash
@@ -1192,7 +1251,7 @@ Verás todos los casos con marcas temporales:
 ╰──┴───────────────────────────────────┴─────────────────────╯
 ```
 
-Selecciona por ID; los resultados se restauran y se abre el menú de análisis.
+Selecciona por ID; los resultados y hallazgos se restauran, el Findings Hub se rellena y se abre el menú de análisis.
 
 ### Actualizar
 
@@ -1266,7 +1325,7 @@ python main.py -q "consulta" --excel out.xlsx --json out.json --html out.html
 
 ### Búsquedas profundas
 
-Con `--deep`, `-e` o `-t`, las exportaciones incluyen además cada valor extraído con su categoría y página de origen:
+Con `--deep`, `-e`, `-t` o `-p`, las exportaciones incluyen además cada valor hallado, con su categoría, confianza, página de origen, herramienta y fecha. Excel y CSV añaden el SHA-256 del texto del que salió:
 
 | Formato | Dónde van los valores extraídos |
 |---|---|
@@ -1662,7 +1721,7 @@ Todas las llamadas cacheadas funcionan transparentemente — no necesitas conect
 | **OSINT** | Open-Source Intelligence: recolección de información de fuentes públicas |
 | **PEM** | Privacy-Enhanced Mail — formato de texto para claves criptográficas (bloques `-----BEGIN…-----`) |
 | **PII** | Personally Identifiable Information (información personalmente identificable) |
-| **Plan** | Estrategia de investigación multi-paso producida por el Planificador de Consultas con IA |
+| **Plan** | Investigación paso a paso ejecutada por el Planificador de Consultas con IA |
 | **PWA / SPA** | Single-Page Application — sitio renderizado por JS que el HTTP estático no puede ver |
 | **ReAct** | Reasoning + Acting: un patrón de agente LLM que intercala planificación, acción y observación |
 | **SAN** | Subject Alternative Name — nombres de host adicionales cubiertos por un cert TLS |
