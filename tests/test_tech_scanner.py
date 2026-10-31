@@ -1,3 +1,4 @@
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -24,6 +25,23 @@ def test_importing_the_scanner_prints_no_library_warnings():
     )
     assert result.returncode == 0
     assert "Warning" not in result.stderr
+
+
+def test_webtech_loads_on_a_system_without_a_data_folder(tmp_path):
+    env = {key: value for key, value in os.environ.items() if key != "XDG_DATA_HOME"}
+    env["HOME"] = str(tmp_path)
+
+    result = subprocess.run(
+        [sys.executable, "-c", "from analysis import tech_scanner; "
+                               "print(tech_scanner._HAS_WEBTECH)"],
+        cwd=Path(tech_scanner.__file__).resolve().parent.parent,
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.split()[-1] == "True"
 
 
 def test_wappalyzer_sends_browser_headers_and_detects_stack(monkeypatch):

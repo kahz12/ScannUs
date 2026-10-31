@@ -12,6 +12,7 @@ Public API:
 """
 
 import os
+import sys
 import warnings
 
 import requests
@@ -44,6 +45,11 @@ except Exception:
         _WAPPALYZER_FLAVOUR = None
 
 try:
+    # On import, webtech creates its data folder but not the parent folders,
+    # which a new Linux system may not have yet.
+    if sys.platform not in ("win32", "darwin"):
+        os.makedirs(os.getenv("XDG_DATA_HOME", os.path.expanduser("~/.local/share")),
+                    exist_ok=True)
     from webtech import WebTech  # type: ignore
     _HAS_WEBTECH = True
 except Exception:
@@ -57,10 +63,6 @@ _HEADERS = {
         "Chrome/124.0.0.0 Safari/537.36"
     )
 }
-
-# Ensure WebTech's fingerprint DB dir exists when that backend is active
-if _HAS_WEBTECH:
-    os.makedirs(os.path.expanduser("~/.local/share/webtech"), exist_ok=True)
 
 
 # ---------------------------------------------------------------------------
