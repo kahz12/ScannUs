@@ -18,7 +18,7 @@ Primitives provided here:
   * :func:`get_bucket`           — process-wide singleton per namespace.
   * :func:`DEFAULT_RATES`        — sensible defaults per upstream.
   * :func:`backoff_delay`        — exponential backoff with full jitter.
-  * :class:`TransientError`      — opt-in sentinel for "retry me".
+  * transient-failure sentinel   — opt-in marker for "retry me".
   * :func:`throttled` /          — decorators that combine rate-limit +
     :func:`throttled_async`         retry. Sync and async variants.
   * :func:`retry_http_sync`      — helper for the common HIBP/crt.sh

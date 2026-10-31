@@ -2,8 +2,8 @@
 core/providers/backoff.py — transient-failure retry with exponential backoff.
 
 Shared by every provider wrapper in this package so a flaky 429 / 5xx from an
-LLM API is retried a few times (with jitter) before the error surfaces to the
-caller. Non-transient errors propagate immediately.
+LLM API is retried a few times (with jitter) before the failure surfaces to the
+caller. Non-transient failures propagate immediately.
 """
 
 import random
@@ -19,7 +19,7 @@ _DEFAULT_MAX_DELAY = 30.0
 
 
 def _is_transient_error(exc: Exception) -> bool:
-    """Best-effort detection of retryable provider errors across SDK variants."""
+    """Best-effort detection of retryable provider failures across SDK variants."""
     msg = str(exc).lower()
     status = getattr(exc, "status_code", None) or getattr(exc, "code", None)
     if isinstance(status, int) and (status == 429 or 500 <= status < 600):
@@ -42,7 +42,7 @@ def _retry_with_backoff(
 ):
     """
     Invokes ``fn(*args, **kwargs)`` with exponential-backoff retry on transient
-    errors. Non-transient errors propagate immediately.
+    failures. Non-transient failures propagate immediately.
     """
     last_exc: Exception | None = None
     for attempt in range(max_retries + 1):

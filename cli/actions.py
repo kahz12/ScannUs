@@ -3,13 +3,13 @@ from concurrent.futures import ThreadPoolExecutor
 from rich.panel import Panel
 from rich.text import Text
 from cli.ui import console, THEME, print_success, print_error, print_warn, print_info, make_table
-from search.engines.duckduckgosearch import DuckDuckGoSearch
+from search.engines import SEARCH_ENGINES
+from search.engines.duckduckgosearch import DuckDuckGoSearch, SearchBlockedError
 from search.engines.bravesearch import BraveSearch
-from search.engines.googlesearch import GoogleSearch
 from core import state
 from core.findings import get_hub
 from analysis.web_analyzer import get_text_from_url
-from search.smart_search import extract_information
+from search.smart_search import extract_information, iter_extracted
 from core.logging_setup import get_logger
 
 _log = get_logger(__name__)
@@ -19,30 +19,35 @@ _log = get_logger(__name__)
 # Internal helpers
 # ---------------------------------------------------------------------------
 
-def get_search_engine(engine: str, pages: int, start_page: int, lang: str, query: str):
+def get_search_engine(engine: str, pages: int, start_page: int, query: str):
     """
     Instantiates the correct search engine and runs the query.
-    Returns a list of result dicts or raises on config error.
+    Returns a list of result dicts or raises on bad configuration.
+
+    When DuckDuckGo blocks a search and a Brave key is configured, the search
+    moves to Brave so one anti-bot check does not stop an investigation.
     """
     engine = engine.lower()
     _log.info("search: engine=%s query=%r pages=%s start=%s", engine, query, pages, start_page)
 
+    if engine not in SEARCH_ENGINES:
+        raise ValueError(f"Unknown search engine '{engine}'. Use: {', '.join(SEARCH_ENGINES)}.")
+
+    brave_key = os.getenv("BRAVE_API_KEY")
+
     if engine == 'duckduckgo':
-        results = DuckDuckGoSearch().search(query, pages=pages)
-    elif engine == 'brave':
-        key = os.getenv("BRAVE_API_KEY")
-        if not key:
+        try:
+            results = DuckDuckGoSearch().search(query, pages=pages, start_page=start_page)
+        except SearchBlockedError:
+            if not brave_key:
+                raise
+            print_warn("DuckDuckGo blocked this search — using Brave instead.")
+            engine = 'brave'
+
+    if engine == 'brave':
+        if not brave_key:
             raise EnvironmentError("BRAVE_API_KEY not found in .env")
-        results = BraveSearch(key).search(query, pages=pages)
-    else:
-        # Default → Google
-        api_key     = os.getenv("API_KEY_GOOGLE")
-        engine_id   = os.getenv("SEARCH_ENGINE_ID")
-        if not api_key or not engine_id:
-            raise EnvironmentError("API_KEY_GOOGLE or SEARCH_ENGINE_ID not found in .env")
-        results = GoogleSearch(api_key, engine_id).search(
-            query, start_page=start_page, pages=pages, lang=lang
-        )
+        results = BraveSearch(brave_key).search(query, pages=pages, start_page=start_page)
 
     _log.info("search: engine=%s returned %d result(s)", engine, len(results or []))
     return results
@@ -107,8 +112,8 @@ def _fetch_search_texts(results: list[dict]):
 # Public actions
 # ---------------------------------------------------------------------------
 
-def do_deep_search(query: str, engine: str, pages: int, start_page: int,
-                   lang: str) -> list[dict] | None:
+def do_deep_search(query: str, engine: str, pages: int,
+                   start_page: int) -> list[dict] | None:
     """
     Intensive search: retrieves SERP results then crawls each URL to extract PII.
     Returns search results on success (including an empty list), or None on failure.
@@ -116,7 +121,7 @@ def do_deep_search(query: str, engine: str, pages: int, start_page: int,
     _print_search_header(engine, query, mode="Deep / PII Extraction")
 
     try:
-        resultados = get_search_engine(engine, pages, start_page, lang, query)
+        resultados = get_search_engine(engine, pages, start_page, query)
     except Exception as e:
         print_error(str(e))
         return
@@ -125,14 +130,13 @@ def do_deep_search(query: str, engine: str, pages: int, start_page: int,
     console.print()
 
     all_extracted: dict = {}
+    extracted: list[dict] = []
     for url, text in _fetch_search_texts(resultados):
         console.print(f"  [{THEME['DIM']}]🔗[/]  [{THEME['LINK']}]{url}[/]")
         if text:
-            data = extract_information(text)
-            for key, values in data.items():
-                if key not in all_extracted:
-                    all_extracted[key] = set()
-                all_extracted[key].update(values)
+            for category, value in iter_extracted(extract_information(text)):
+                all_extracted.setdefault(category, set()).add(value)
+                extracted.append({"category": category, "value": value, "source": url})
 
     console.print()
     console.rule(f"[{THEME['ACCENT']}]Deep Search Results[/]")
@@ -153,6 +157,7 @@ def do_deep_search(query: str, engine: str, pages: int, start_page: int,
 
     state.CURRENT_CASE["search_params"] = {"type": "deep", "value": query}
     state.LAST_RESULTS = resultados
+    state.LAST_EXTRACTED = extracted
 
     # Feed the findings hub so the deep-search yield is pivotable: the crawled
     # result URLs become "url" findings, and every PII identifier we extracted
@@ -165,14 +170,15 @@ def do_deep_search(query: str, engine: str, pages: int, start_page: int,
 
 
 def do_search(query: str, engine: str, pages: int, start_page: int,
-              lang: str, interactive: bool, ia_agent) -> None:
+              interactive: bool, ia_agent) -> list[dict] | None:
     """
     Standard search: dispatches query to engine and renders results.
+    Returns search results on success (including an empty list), or None on failure.
     """
     _print_search_header(engine, query)
 
     try:
-        resultados = get_search_engine(engine, pages, start_page, lang, query)
+        resultados = get_search_engine(engine, pages, start_page, query)
     except Exception as e:
         print_error(str(e))
         return
@@ -195,6 +201,7 @@ def do_search(query: str, engine: str, pages: int, start_page: int,
         interactive_analysis_menu(resultados, ia_agent)
     else:
         _print_results_table(resultados)
+    return resultados
 
 
 def do_query_planner(goal: str | None = None) -> None:
@@ -282,7 +289,7 @@ def do_query_planner(goal: str | None = None) -> None:
 
 def do_generate_dork_ia() -> None:
     """
-    NLP-driven Google Dork generation using the configured LLM.
+    NLP-driven dork generation using the configured LLM.
     """
     from cli.menus import select_ia_agent
     ia_agent = select_ia_agent()
@@ -309,8 +316,8 @@ def do_generate_dork_ia() -> None:
         )
         ans = console.input(f"\n  Run a search with this dork? (y/n) [{THEME['DIM']}]n[/] [{THEME['INPUT']}]❯[/] ").strip().lower()
         if ans in ("y", "s"):
-            engine = console.input(f"  Engine (google/duckduckgo/brave) [{THEME['DIM']}]duckduckgo[/] [{THEME['INPUT']}]❯[/] ").strip().lower() or "duckduckgo"
+            engine = console.input(f"  Engine (duckduckgo/brave) [{THEME['DIM']}]duckduckgo[/] [{THEME['INPUT']}]❯[/] ").strip().lower() or "duckduckgo"
             do_search(query=dork, engine=engine, pages=1, start_page=1,
-                      lang="lang_es", interactive=True, ia_agent=ia_agent)
+                      interactive=True, ia_agent=ia_agent)
     else:
         print_error("Failed to generate a dork. Check your AI configuration.")

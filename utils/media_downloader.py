@@ -121,8 +121,8 @@ def _fetch_with_retry(url: str, headers: dict, max_retries: int = 3,
     """
     Performs an HTTP GET with exponential backoff retry on transient failures.
 
-    Retry is triggered for connection errors and 5xx / 429 status codes.
-    Client-side errors (4xx except 429) are not retried, as they are permanent.
+    Retry is triggered for connection failures and 5xx / 429 status codes.
+    Client-side failures (4xx except 429) are not retried, as they are permanent.
 
     Args:
         url:         Target URL.
@@ -144,7 +144,7 @@ def _fetch_with_retry(url: str, headers: dict, max_retries: int = 3,
         try:
             response = requests.get(url, headers=headers, stream=True, timeout=timeout)
 
-            # Don't retry permanent client errors (400, 401, 403, 404 …)
+            # Permanent client failures (400, 401, 403, 404 …) are not retried
             if response.status_code not in retryable_status_codes:
                 response.raise_for_status()
                 return response
@@ -417,7 +417,7 @@ async def _download_media_async(
     max_concurrent: int = 16,
 ) -> tuple[int, int, int]:
     """
-    aiohttp-based concurrent downloader. Returns (success, skip, error) counts.
+    aiohttp-based concurrent downloader. Returns (success, skip, failure) counts.
     """
     timeout = aiohttp.ClientTimeout(total=None, sock_connect=15, sock_read=30)
     connector = aiohttp.TCPConnector(limit=max_concurrent, ssl=False)

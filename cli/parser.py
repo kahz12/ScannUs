@@ -12,6 +12,7 @@ from rich.table import Table
 from rich.columns import Columns
 
 from cli.ui import console, THEME
+from search.engines import SEARCH_ENGINES
 
 
 # ---------------------------------------------------------------------------
@@ -76,7 +77,7 @@ def show_custom_help(parser: argparse.ArgumentParser) -> None:
         ("AI Dork generation",
          'python main.py -gd "Find Excel price lists of tech companies"'),
         ("Guided multi-parameter search",
-         'python main.py -n "John Doe" -u "jdoe88" --engine google'),
+         'python main.py -n "John Doe" -u "jdoe88" --engine brave'),
         ("Media scraper pipeline",
          'python main.py --media-scrape "https://example.com/gallery"'),
         ("Interactive TUI mode",
@@ -128,7 +129,7 @@ def get_parser() -> argparse.ArgumentParser:
     general.add_argument("-h", "--help",        action="store_true",
                          help="Display this help screen.")
     general.add_argument("-q", "--query",       type=str,
-                         help="Primary search string or Google Dork.")
+                         help="Primary search string or dork.")
     general.add_argument("-c", "--configure",   action="store_true",
                          help="Launch the .env API credential setup wizard.")
     general.add_argument("-i", "--interactive", action="store_true",
@@ -143,8 +144,10 @@ def get_parser() -> argparse.ArgumentParser:
 
     # ── Search parameters ─────────────────────────────────────────────────
     search = parser.add_argument_group("Search Parameters")
-    search.add_argument("--engine",     type=str, default="duckduckgo", metavar="ENGINE",
-                        help="Search engine: google | duckduckgo | brave  (default: duckduckgo).")
+    search.add_argument("--engine",     type=str.lower, default="duckduckgo", metavar="ENGINE",
+                        choices=SEARCH_ENGINES,
+                        help="Search engine: duckduckgo | brave  (default: duckduckgo). "
+                             "With BRAVE_API_KEY set, a blocked DuckDuckGo search moves to Brave.")
     search.add_argument("-n", "--name",     metavar="NAME",
                         help="Target's full legal name.")
     search.add_argument("-u", "--username", metavar="HANDLE",
@@ -175,13 +178,11 @@ def get_parser() -> argparse.ArgumentParser:
                         help="Starting SERP page index (default: 1).")
     search.add_argument("--pages",         type=int, default=1, metavar="N",
                         help="Number of result pages to retrieve (default: 1).")
-    search.add_argument("--lang",          type=str, default="lang_es", metavar="CODE",
-                        help="Language restrict code (default: lang_es).")
 
     # ── AI / NLP ──────────────────────────────────────────────────────────
     ia = parser.add_argument_group("AI & NLP Options")
     ia.add_argument("-gd", "--google-dorks", type=str, metavar='"DESCRIPTION"',
-                    help="Generate a Google Dork from a natural-language description via LLM.")
+                    help="Generate a dork from a natural-language description via LLM.")
     ia.add_argument("-p", "--plan", type=str, metavar='"GOAL"',
                     help="LLM-based OSINT planner: generate + execute a multi-step investigation.")
 
@@ -201,8 +202,8 @@ def get_parser() -> argparse.ArgumentParser:
     # Two require a paid HIBP_API_KEY (account, pastes);
     # two are free (domain, breach metadata).
     # The password check uses k-anonymity so the plaintext is never sent anywhere
-    # — which is why it's interactive (getpass) rather than a CLI argument;
-    # you *really* don't want your password in shell history or process listings.
+    # — which is why it's interactive (getpass) rather than a CLI argument: the
+    # password stays out of shell history and process listings.
     hibp = parser.add_argument_group("Breach & Leak Checks (HIBP)")
     hibp.add_argument("--hibp-account", type=str, metavar="EMAIL",
                       help="List every Have I Been Pwned breach (and paste) "

@@ -48,7 +48,7 @@ HOLEHE_AVAILABLE = _HOLEHE_BIN is not None
 
 
 # Holehe CSV columns (from holehe/core.py argparse + module output keys):
-#   name · domain · rateLimit · error · exists · emailrecovery · phoneNumber · others
+#   name · domain · rateLimit · <failure flag> · exists · emailrecovery · phoneNumber · others
 # The "exists" field is the string "True" / "False".
 _FOUND_VALUES = {"true", "1", "yes"}
 

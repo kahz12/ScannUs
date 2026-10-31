@@ -12,6 +12,10 @@ Public API:
 """
 
 import os
+import warnings
+
+import requests
+
 from cli.ui import console, THEME, print_info, print_warn, print_error, make_table
 
 
@@ -23,8 +27,12 @@ _WAPPALYZER = None  # instance-like callable returning {tech: {...}}
 _WAPPALYZER_FLAVOUR = None  # 'python-Wappalyzer' | 'wappalyzer'
 
 try:  # Preferred: python-Wappalyzer (Wappalyzer + WebPage)
-    from Wappalyzer import Wappalyzer, WebPage  # type: ignore
-    _WAPPALYZER = Wappalyzer.latest()
+    # The library warns about its pkg_resources import and its own signature
+    # regexes; this module loads at startup, so that would print on every run.
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        from Wappalyzer import Wappalyzer, WebPage  # type: ignore
+        _WAPPALYZER = Wappalyzer.latest()
     _WAPPALYZER_FLAVOUR = "python-Wappalyzer"
 except Exception:
     try:  # Alternative: wappalyzer (newer fork)
@@ -63,7 +71,10 @@ def _detect_wappalyzer(url: str) -> list[tuple[str, str, str]]:
     """Fingerprint via python-Wappalyzer."""
     if _WAPPALYZER_FLAVOUR == "python-Wappalyzer":
         try:
-            webpage = WebPage.new_from_url(url, headers=_HEADERS, timeout=12, verify=False)
+            # WebPage.new_from_url() cannot send custom headers, so fetch the page
+            # here to keep the browser User-Agent.
+            response = requests.get(url, headers=_HEADERS, timeout=12, verify=False)
+            webpage = WebPage.new_from_response(response)
         except Exception as e:
             print_warn(f"Wappalyzer fetch error: {e}")
             return []
@@ -109,7 +120,8 @@ def _detect_webtech(url: str) -> list[tuple[str, str, str]]:
     if not _HAS_WEBTECH:
         return []
     try:
-        wt = WebTech(options={"timeout": 12})
+        # Without "json", WebTech returns a plain-text report.
+        wt = WebTech(options={"timeout": 12, "json": True})
         report = wt.start_from_url(url, timeout=12)
     except Exception as e:
         print_warn(f"WebTech error: {e}")
@@ -133,6 +145,13 @@ def _parse_webtech_report(report) -> list[tuple[str, str, str]]:
         return out
 
     if isinstance(report, dict):
+        # WebTech's JSON report: {"tech": [{"name": ..., "version": ...}], "headers": [...]}
+        if isinstance(report.get("tech"), list):
+            return [
+                (t["name"], str(t.get("version") or ""), _infer_category_from_name(t["name"]))
+                for t in report["tech"]
+                if isinstance(t, dict) and t.get("name")
+            ]
         return [(name, str(v or ""), _infer_category_from_name(name)) for name, v in report.items()]
 
     return []

@@ -20,12 +20,11 @@ gives every per-target finding the same five fields:
   ``identifier``      — the queried string (e.g. ``"alice@example.com"``)
   ``identifier_type`` — ``email`` | ``username`` | ``domain`` | ``phone`` | ``ip``
   ``service``         — where the finding came from (LinkedIn, Spotify, …)
-  ``status``          — ``claimed`` | ``available`` | ``leaked`` | ``rate_limited`` | ``error``
+  ``status``          — ``claimed`` | ``available`` | ``leaked`` | ``rate_limited``, or a failed check
   ``evidence``        — tool-specific extra context (dict, may be empty)
 
-The three ``from_*`` converters here are the canonical entry points;
-new tools should add their own converter rather than emitting unified
-records inline (keeps the conversion logic centralised and testable).
+The three ``from_*`` converters here are the canonical entry points, which
+keeps the conversion logic centralised and testable.
 """
 
 from __future__ import annotations
@@ -88,9 +87,9 @@ def from_email_enum(email: str,
     """
     Convert Holehe rows to unified records.
 
-    Status priority: ``error`` > ``rate_limited`` > ``claimed`` > ``available``.
+    Status priority: a failed check > ``rate_limited`` > ``claimed`` > ``available``.
     That order reflects which condition is most actionable for downstream
-    analysis (an error is worth knowing about; a claimed account is
+    analysis (a failed check is worth knowing about; a claimed account is
     actionable; an "available" hint is just the absence of a signal).
     """
     out: list[dict] = []

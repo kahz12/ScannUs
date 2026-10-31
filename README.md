@@ -29,7 +29,7 @@
 
 | Capability | What you get |
 |---|---|
-| **Multi-engine search** | Google CSE · DuckDuckGo · Brave — persistent SQLite cache |
+| **Multi-engine search** | DuckDuckGo · Brave, with automatic fallback — persistent SQLite cache |
 | **Four AI providers** | Gemini · GPT-4o · Claude Sonnet 4.6 · local Ollama — token-streamed |
 | **AI Query Planner** | ReAct multi-step plans using 23 whitelisted tools |
 | **Breach intelligence** | HIBP — accounts, domains, breaches, k-anon passwords |
@@ -50,6 +50,7 @@ git clone https://github.com/kahz12/scannus.git
 cd scannus
 python3 -m venv venv && source venv/bin/activate
 pip install -r requirements.txt
+python -m spacy download en_core_web_lg   # language model for PII detection (401 MB)
 python main.py -c          # configure .env (interactive wizard)
 python main.py             # launch interactive TUI
 ```

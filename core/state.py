@@ -10,6 +10,10 @@
 # Reset on each new search; read by menus and the AI planner for post-processing.
 LAST_RESULTS = []
 
+# LAST_EXTRACTED — values found by the latest deep search, one dict per value:
+#   {"category": "emails", "value": "...", "source": "<page URL>"}.
+LAST_EXTRACTED = []
+
 # CURRENT_CASE — structured dict for the active investigation session.
 #   "search_params": dict  — the query, engine, and other parameters used to
 #                            produce the current result set. Serialised to the

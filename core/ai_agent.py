@@ -41,7 +41,7 @@ from core.planner import (
 class IAAgent:
     """
     Orchestrator that wraps any text generator (Strategy Pattern) and
-    exposes domain-specific OSINT tasks: Google Dork generation, etc.
+    exposes domain-specific OSINT tasks: dork generation, etc.
     """
 
     def __init__(self, generator):
@@ -49,10 +49,10 @@ class IAAgent:
 
     def generate_gdork(self, description: str) -> str | None:
         """
-        Synthesizes an optimized Google Dork from a natural-language description.
+        Synthesizes an optimized dork from a natural-language description.
         Streams tokens live to the terminal (real token-by-token rendering)
         and returns the assembled dork. Retries automatically on transient
-        provider errors via the underlying generator.
+        provider failures via the underlying generator.
 
         Args:
             description: Human-readable target description.
@@ -85,28 +85,36 @@ class IAAgent:
 
     def _build_prompt(self, description: str) -> str:
         return f"""
-Your task is to act as an OSINT expert and generate a precise and effective Google Dork
-based on the user's description. A Google Dork uses advanced search operators to find
+Your task is to act as an OSINT expert and generate a precise and effective search dork
+based on the user's description. A dork uses advanced search operators to find
 specific information that is not easily accessible through conventional searches.
+
+The dork must work on both DuckDuckGo and Brave Search, so use only these operators:
+- `site:` to limit results to a domain
+- `filetype:` with pdf, doc, docx, xls, xlsx, ppt, pptx or html
+- `intitle:` to require a word in the page title
+- "double quotes" for an exact phrase
+- `-word` to exclude a term
+Do not use `inurl:`, `intext:`, `OR`, `AND` or `|`, even when they would fit.
 
 Instructions:
 1. Analyze the user's description to identify keywords, file types, domains, and any other constraints.
-2. Translate these requirements into the corresponding Google operators (e.g., `site:`, `filetype:`, `inurl:`, `intitle:`, etc.).
+2. Translate these requirements into the operators listed above.
 3. Combine the operators logically to create a cohesive and efficient dork.
 4. Return ONLY the generated dork, without any additional explanations or text.
 
 Examples:
 
 User description: "Find annual reports in PDF format from Microsoft."
-Google Dork: filetype:pdf "annual report" site:microsoft.com
+Dork: filetype:pdf "annual report" site:microsoft.com
 
 User description: "Search for admin login pages on educational sites in Colombia."
-Google Dork: site:.edu.co intitle:"admin login" | inurl:"admin"
+Dork: site:.edu.co intitle:"admin login"
 
 User description: "I want to find Excel spreadsheets containing price lists for electronic products."
-Google Dork: filetype:xlsx "price list" "electronic products"
+Dork: filetype:xlsx "price list" "electronic products"
 
-Now, generate the Google Dork for the following description:
+Now, generate the dork for the following description:
 
 User description: "{description}"
 """
@@ -163,7 +171,7 @@ User description: "{description}"
         """
         Execute the plan step-by-step. Returns a list of observations:
           {step, tool, args, status, summary, data}
-        where status ∈ {"ok", "skip", "error"}.
+        where status says whether the step succeeded, was skipped or failed.
         """
         observations: list[dict] = []
         confirm_fn = None
@@ -261,8 +269,8 @@ Available tools (use ONLY these names — any other will be rejected):
 Rules:
 1. Decompose the goal into 3 to 8 ordered steps, each a single tool call.
 2. Prefer breadth first (search, username_enum) before depth (extract_pii, tech_scan).
-3. For `search` / `deep_search`, craft the query like a Google Dork when useful
-   (operators: site:, filetype:, intitle:, inurl:, "exact phrase", AND, OR, -exclude).
+3. For `search` / `deep_search`, craft the query like a dork when useful, using only
+   the operators both engines share: site:, filetype:, intitle:, "exact phrase", -exclude.
 4. Every step must be self-contained — results are observed AFTER each call,
    so do not embed placeholders like {{{{previous_url}}}} in args.
 5. Output ONLY one JSON object. No markdown fences, no prose, no comments.

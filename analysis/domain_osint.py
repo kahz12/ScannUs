@@ -12,7 +12,7 @@ Covers the foundational reconnaissance surface that wasn't in the project before
   - shodan_host(ip)                  optional, needs SHODAN_API_KEY
 
 The orchestrator ``domain_recon(target)`` fans out every free, no-key probe
-concurrently via ``asyncio.gather`` and renders the results in fixed order
+concurrently via ``asyncio.gather`` and renders the results in a stable order
 after all probes have completed (deferred rendering — keeps output ordered
 even though probes finish in arbitrary order). Sync entry points are
 preserved so individual callers (CLI menu, AI Query Planner dispatchers) are
@@ -488,7 +488,7 @@ def email_security(domain: str) -> dict:
 def _tls_fetch(host: str, port: int = 443, timeout: float = 8.0) -> dict:
     """
     Connects to ``host:port`` over TLS and returns parsed certificate info.
-    On failure returns ``{"_error": str}``.
+    On failure returns a single-key dict that holds the reason.
     """
     try:
         ctx = ssl.create_default_context()
@@ -598,8 +598,8 @@ _SECURITY_HEADERS = {
 
 def _http_headers_fetch(url: str) -> dict:
     """
-    Sync HEAD-with-GET-fallback fetch. Returns ``{url, status, headers}`` or
-    ``{"_error": str}`` on failure.
+    Sync HEAD-with-GET-fallback fetch. Returns ``{url, status, headers}``, or a
+    single-key dict that holds the reason on failure.
     """
     try:
         resp = requests.head(url, headers=_HEADERS, timeout=10, allow_redirects=True)
@@ -712,7 +712,7 @@ def _crtsh_parse(entries, domain: str, include_wildcards: bool) -> list[str]:
 
 def _crtsh_fetch(domain: str, timeout: float = 30.0,
                  include_wildcards: bool = False) -> dict:
-    """Sync crt.sh fetch. Returns ``{"subdomains": [...]}`` or ``{"_error": str}``."""
+    """Sync crt.sh fetch. Returns ``{"subdomains": [...]}``, or a single-key failure dict."""
     try:
         resp = requests.get(
             "https://crt.sh/",
@@ -808,7 +808,7 @@ def subdomains_crtsh(domain: str, timeout: float = 30.0,
 
 @throttled(namespace="shodan")
 def _shodan_fetch(ip: str) -> dict:
-    """Sync Shodan fetch. Returns the raw API dict, or ``{"_error": ...}``.
+    """Sync Shodan fetch. Returns the raw API dict, or a single-key failure dict.
 
     Rate-limited via the shared ``shodan`` bucket (Shodan's free tier is
     ~1 rps and 429s on violation, so the bucket keeps us under the line).
@@ -923,7 +923,7 @@ def shodan_host(ip: str) -> dict:
 async def _domain_recon_async(target: str, include_shodan: bool | None) -> dict:
     """
     Concurrent fan-out: fire all six independent probes in parallel via
-    ``asyncio.gather``, then render the results in fixed order (WHOIS → DNS
+    ``asyncio.gather``, then render the results in a stable order (WHOIS → DNS
     → email-auth → TLS → headers → subdomains → optional Shodan).
     """
     domain, url = _normalize_target(target)
@@ -1049,7 +1049,7 @@ def domain_recon(target: str, include_shodan: bool | None = None) -> dict:
       - Shodan (only if SHODAN_API_KEY set, or include_shodan=True)
 
     Output ordering is preserved via deferred rendering: probes run
-    concurrently, but Rich tables are printed in fixed order after all
+    concurrently, but Rich tables are printed in a stable order after all
     fetches complete.
     """
     return asyncio.run(_domain_recon_async(target, include_shodan))

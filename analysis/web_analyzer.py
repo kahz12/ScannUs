@@ -131,7 +131,7 @@ _CHUNK_OVERLAP = 500     # overlap to preserve context at boundaries
 def _split_into_chunks(text: str, chunk_size: int = _CHUNK_SIZE,
                        overlap: int = _CHUNK_OVERLAP) -> list[str]:
     """
-    Splits a long text into overlapping fixed-size character chunks.
+    Splits a long text into overlapping equal-size character chunks.
 
     Args:
         text:       Source text.

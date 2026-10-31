@@ -27,8 +27,6 @@ print("Verifying target environment variable hydration...")
 
 # List of critical credentials required for ScannUs operations.
 variables_to_check = [
-    "API_KEY_GOOGLE",
-    "SEARCH_ENGINE_ID",
     "GOOGLE_API_KEY_FOR_GEMINI",
     "BRAVE_API_KEY",
     "OPENAI_API_KEY"

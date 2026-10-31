@@ -3,12 +3,12 @@ import os
 import re
 import html
 import argparse
+from functools import lru_cache
 from urllib.parse import urlparse
 
 import phonenumbers
 
-# Engine-specific imports
-from search.engines.googlesearch import GoogleSearch
+from cli.ui import print_warn
 from core.logging_setup import get_logger
 
 _log = get_logger(__name__)
@@ -632,13 +632,25 @@ def _extract_mac(text: str) -> set[str]:
 # Optional Microsoft Presidio integration
 # ---------------------------------------------------------------------------
 
-try:
-    from presidio_analyzer import AnalyzerEngine  # type: ignore
-    _PRESIDIO = AnalyzerEngine()
-    _HAS_PRESIDIO = True
-except Exception:
-    _PRESIDIO = None
-    _HAS_PRESIDIO = False
+@lru_cache(maxsize=1)
+def _get_presidio():
+    """
+    Returns the shared Presidio analyzer, or None when it cannot be used.
+
+    Loading it pulls in spaCy and a large language model, so it happens on first
+    use instead of at import time and commands that extract no PII start faster.
+    """
+    try:
+        from presidio_analyzer import AnalyzerEngine  # type: ignore
+        return AnalyzerEngine()
+    except ImportError:
+        return None
+    except (Exception, SystemExit):
+        # SystemExit: spaCy exits the process when it cannot get the model.
+        _log.warning("Presidio could not start", exc_info=True)
+        print_warn("Presidio could not start, so its entities are skipped. "
+                   "Install its model with: python -m spacy download en_core_web_lg")
+        return None
 
 
 def _extract_presidio_entities(text: str) -> dict[str, list[str]]:
@@ -647,10 +659,13 @@ def _extract_presidio_entities(text: str) -> dict[str, list[str]]:
     type with deduplicated match strings. Returns an empty dict if Presidio
     is not available or the analyzer fails.
     """
-    if not _HAS_PRESIDIO or not text:
+    if not text:
+        return {}
+    analyzer = _get_presidio()
+    if analyzer is None:
         return {}
     try:
-        results = _PRESIDIO.analyze(text=text, language="en")
+        results = analyzer.analyze(text=text, language="en")
     except Exception:
         return {}
 
@@ -674,7 +689,7 @@ def extract_information(text: str) -> dict:
     - Phones: parses international and domestic formats via libphonenumber,
       deduplicated by E.164 canonical form; also reads tel: hrefs.
     - HTML:   mailto:/tel: attributes are extracted alongside visible text.
-    - Also: SQL-error signatures, usernames, national IDs, financial and crypto
+    - Also: SQL-failure signatures, usernames, national IDs, financial and crypto
       identifiers, leaked secrets, and public network addresses.
 
     Args:
@@ -698,7 +713,7 @@ def extract_information(text: str) -> dict:
     if phones:
         extracted['phones'] = sorted(phones)
 
-    # --- SQL Errors ---
+    # --- SQL failure messages ---
     SQL_RE = re.compile(
         r'(SQL(ite)?|MySQL|PostgreSQL|Oracle)\s(error|exception|failed|denied)'
         r'|(unclosed quotation mark|syntax error|invalid query)',
@@ -800,28 +815,39 @@ def extract_information(text: str) -> dict:
     return extracted
 
 
+def iter_extracted(data: dict):
+    """
+    Yields ``(category, value)`` pairs from an :func:`extract_information` result.
+
+    Presidio entities are nested by type, so they come out flattened under
+    categories such as ``presidio_person``.
+    """
+    for category, values in data.items():
+        if isinstance(values, dict):
+            for entity, entity_values in values.items():
+                for value in entity_values:
+                    yield f"{category}_{entity.lower()}", value
+        else:
+            for value in values:
+                yield category, value
+
+
 # --- Main Search Implementation ---
 
 class SmartSearch:
     """
-    Orchestrator for multi-vector searches, supporting local file analysis, 
-    SERP (Search Engine Results Page) scraping via Google, and automated 
-    Reverse Image Search.
+    Orchestrator for local file analysis and automated Reverse Image Search.
     """
-    def __init__(self, dir_path=None, api_key=None, engine_id=None):
+    def __init__(self, dir_path=None):
         """
         Initializes the search context.
-        
+
         Args:
             dir_path (str, optional): Root directory for local file scraping.
-            api_key (str, optional): Google API credential for cloud search.
-            engine_id (str, optional): Google CX ID for custom search targeting.
         """
         self.dir_path = dir_path
         # Populate file cache if a valid directory is provided
         self.files = self._read_files() if self.dir_path else {}
-        # Strategy pattern initialization for the Google Search engine
-        self.google_search_engine = GoogleSearch(api_key, engine_id) if api_key and engine_id else None
 
     def _read_files(self):
         """
@@ -878,21 +904,13 @@ class SmartSearch:
                 print("  No relevant information found.")
         return all_extracted_data
 
-    def search_google(self, query, pages=1):
-        """
-        Proxies the search request to the Google Custom Search instance.
-        """
-        if not self.google_search_engine:
-            raise Exception("Google Search is not initialized. Provide an API key and engine ID.")
-        return self.google_search_engine.search(query, pages=pages)
-
     def reverse_image_search(self, image_url):
         """
         Yandex reverse image search via Selenium (one of several engines —
         see ``search.reverse_image_engines`` for the orchestrated fallback chain).
 
         Returns ``[]`` on any failure (missing browser, geckodriver not found,
-        selector drift, network error) so callers can compose this with other
+        selector drift, network failure) so callers can compose this with other
         engines without exception handling.
         """
         try:
@@ -960,28 +978,11 @@ if __name__ == "__main__":
     group = parser.add_mutually_exclusive_group(required=True)
     group.add_argument("-r", "--regex", type=str, help="Custom regex for local search.")
     group.add_argument("-e", "--extract", action="store_true", help="Batch extract sensitive patterns.")
-    group.add_argument("-g", "--google", type=str, help="Execute Google search query.")
     group.add_argument("--reverse-image", type=str, help="Target image URL for reverse search.")
-    
-    parser.add_argument("-p", "--pages", type=int, default=1, help="SERP pagination depth.")
 
     args = parser.parse_args()
 
-    if args.google:
-        from dotenv import load_dotenv
-        load_dotenv(dotenv_path='../.env')
-        api_key = os.getenv("API_KEY_GOOGLE")
-        engine_id = os.getenv("SEARCH_ENGINE_ID")
-        if not api_key or not engine_id:
-            print("Error: API_KEY_GOOGLE and SEARCH_ENGINE_ID required in .env configuration.")
-        else:
-            searcher = SmartSearch(api_key=api_key, engine_id=engine_id)
-            resultados = searcher.search_google(args.google, pages=args.pages)
-            print("\nGoogle Search Results:")
-            for r in resultados:
-                print(f"\n- Title: {r['title']}\n  Description: {r['description']}\n  Link: {r['link']}")
-    
-    elif args.reverse_image:
+    if args.reverse_image:
         searcher = SmartSearch()
         resultados = searcher.reverse_image_search(args.reverse_image)
         print("\nReverse Image Search Results:")

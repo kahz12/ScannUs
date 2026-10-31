@@ -13,10 +13,15 @@ class GeminiGenerator:
     """
     Google Gemini API wrapper via the `google-genai` SDK.
     Supports buffered and streaming generation.
+
+    Override the default model with the ``GEMINI_MODEL`` env var or by passing
+    ``model_name`` directly.
     """
 
-    def __init__(self, model_name: str = "gemini-2.0-flash", timeout: float = 60.0):
-        self.model_name = model_name
+    DEFAULT_MODEL = "gemini-3.6-flash"
+
+    def __init__(self, model_name: str | None = None, timeout: float = 60.0):
+        self.model_name = model_name or os.getenv("GEMINI_MODEL") or self.DEFAULT_MODEL
         self.timeout = timeout
         self.client = None
         self._initialize_client()

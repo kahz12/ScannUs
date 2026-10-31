@@ -19,7 +19,7 @@ DIR_LOGS        = os.path.join(OUTPUT_DIR, "logs")
 def init_directories():
     """
     Verifies and creates the required directory scaffold for application output.
-    Silently succeeds if dirs exist; reports any permission errors.
+    Silently succeeds if dirs exist; reports any permission problems.
     """
     for directory in [OUTPUT_DIR, DIR_CASES, DIR_DOWNLOADS,
                       DIR_MEDIA, DIR_REPORTS, DIR_SCREENSHOTS, DIR_GRAPHS,
@@ -51,16 +51,6 @@ def env_config():
     """
     Interactive TUI wizard to capture and persist API credentials to `.env`.
     """
-    print_section("Google Custom Search API")
-    api_key_search = _prompt("Google Custom Search API KEY",
-                             "Required for Google engine searches")
-    engine_id      = _prompt("Search Engine ID (CX)",
-                             "From console.developers.google.com")
-    set_key(".env", "API_KEY_GOOGLE", api_key_search)
-    set_key(".env", "SEARCH_ENGINE_ID", engine_id)
-    if api_key_search:
-        print_success("Google Search credentials saved.")
-
     print_section("Google AI (Gemini)")
     api_key_gemini = _prompt("Google AI Studio API KEY",
                              "From aistudio.google.com — needed for AI features")
@@ -71,7 +61,8 @@ def env_config():
 
     print_section("Brave Search API")
     api_key_brave = _prompt("Brave Search API KEY",
-                            "From api.search.brave.com — optional")
+                            "From api.search.brave.com — optional, also used "
+                            "when DuckDuckGo blocks a search")
     set_key(".env", "BRAVE_API_KEY", api_key_brave)
     os.environ["BRAVE_API_KEY"] = api_key_brave
     if api_key_brave:

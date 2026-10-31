@@ -35,7 +35,7 @@ class OpenAIGenerator:
     def stream(self, prompt: str, render: bool = False) -> Iterator[str]:
         """
         Streams the model response token-by-token, with retry/backoff on
-        transient provider errors.
+        transient provider failures.
 
         Args:
             prompt: The instruction for the model.

@@ -150,7 +150,7 @@ def bing_visual_search(image_url: str, api_key: str | None = None,
 def yandex_search(image_url: str) -> list[dict]:
     """
     Delegate to ``SmartSearch.reverse_image_search``. Returns ``[]`` on any
-    failure (missing browser, selector drift, network error) so a broken
+    failure (missing browser, selector drift, network failure) so a broken
     Yandex engine doesn't poison the fallback chain.
     """
     try:

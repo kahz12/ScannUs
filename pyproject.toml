@@ -57,8 +57,8 @@ target-version = "py310"
 extend-exclude = ["spacy-env", "outputs"]
 
 [tool.ruff.lint]
-# Keep Ruff's default rule set (pyflakes `F` + a curated pycodestyle `E`
-# subset — real errors, not formatting). We only waive the stylistic checks
+# Uses Ruff's default rule set (pyflakes `F` + a curated pycodestyle `E`
+# subset — real defects, not formatting). We only waive the stylistic checks
 # this codebase uses on purpose:
 #   E701     — compact one-line guards (`if x: append(...)`)
 #   E402      — imports deliberately placed next to the section that uses them

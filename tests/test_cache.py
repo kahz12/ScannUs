@@ -125,7 +125,7 @@ class TestSerialisation:
     def test_unserialisable_payload_is_skipped(self, tmp_path):
         c = make_cache(tmp_path)
         circular: list = []
-        circular.append(circular)  # json.dumps raises ValueError on this
+        circular.append(circular)  # json.dumps rejects this
         c.set("search", "k", circular)  # must not raise
         assert c.get("search", "k") is None
 

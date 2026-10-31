@@ -2,7 +2,7 @@
 utils/file_download.py — Artifact retrieval and metadata extraction.
 
 Supported metadata extractors:
-  - PDF   → ``pypdf`` (falls back to ``PyPDF2`` if ``pypdf`` is absent)
+  - PDF   → ``pypdf``
   - DOCX  → ``python-docx`` core properties
   - XLSX  → ``openpyxl`` workbook properties
   - Images → ``exifread`` EXIF
@@ -21,24 +21,13 @@ from core.config import DIR_DOWNLOADS
 
 
 # ---------------------------------------------------------------------------
-# PDF backend — prefer ``pypdf``, fall back to ``PyPDF2``
+# Optional metadata backends
 # ---------------------------------------------------------------------------
 
 try:
-    from pypdf import PdfReader as _PdfReader  # modern replacement
-    _PDF_BACKEND = "pypdf"
+    from pypdf import PdfReader as _PdfReader
 except ImportError:
-    try:
-        from PyPDF2 import PdfReader as _PdfReader  # legacy
-        _PDF_BACKEND = "PyPDF2"
-    except ImportError:
-        _PdfReader = None
-        _PDF_BACKEND = None
-
-
-# ---------------------------------------------------------------------------
-# Optional metadata backends
-# ---------------------------------------------------------------------------
+    _PdfReader = None
 
 try:
     from docx import Document as _DocxDocument  # python-docx
@@ -81,7 +70,7 @@ class FileDownload:
 
     def _extract_pdf_metadata(self, file_path: str) -> None:
         if _PdfReader is None:
-            print_warn("No PDF backend installed (pypdf / PyPDF2).")
+            print_warn("pypdf not installed — cannot read PDF metadata.")
             return
         try:
             reader = _PdfReader(file_path)
@@ -109,10 +98,7 @@ class FileDownload:
                 if value:
                     rows.append((label, str(value)))
 
-            self._render_table(
-                f"PDF Metadata — {os.path.basename(file_path)} (via {_PDF_BACKEND})",
-                rows,
-            )
+            self._render_table(f"PDF Metadata — {os.path.basename(file_path)}", rows)
         except Exception as e:
             print_error(f"PDF metadata error: {e}")
 

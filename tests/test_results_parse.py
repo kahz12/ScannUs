@@ -82,6 +82,86 @@ class TestExcel:
         assert ws.cell(row=3, column=1).value == 2
 
 
+class TestExtracted:
+    EXTRACTED = [
+        {"category": "emails", "value": "alice@acme-corp.io",
+         "source": "https://a.example/1"},
+        {"category": "presidio_person", "value": "<b>Maria</b>",
+         "source": "https://b.example/2?x=1&y=2"},
+    ]
+
+    def parser(self):
+        return ResultsParser(SAMPLE, extracted=self.EXTRACTED)
+
+    def test_json_holds_results_and_extracted(self, tmp_path):
+        self.parser().export_json("out.json")
+        data = json.loads((tmp_path / "out.json").read_text(encoding="utf-8"))
+        assert data == {"results": SAMPLE, "extracted": self.EXTRACTED}
+
+    def test_json_shape_stays_the_same_when_nothing_was_extracted(self, tmp_path):
+        ResultsParser(SAMPLE, extracted=[]).export_json("out.json")
+        data = json.loads((tmp_path / "out.json").read_text(encoding="utf-8"))
+        assert data == {"results": SAMPLE, "extracted": []}
+
+    def test_csv_writes_a_companion_file(self, tmp_path):
+        self.parser().export_csv("out.csv")
+        with (tmp_path / "out.csv").open(encoding="utf-8") as f:
+            assert next(csv.reader(f)) == ["ID", "Title", "Description", "Link"]
+        with (tmp_path / "out_extracted.csv").open(encoding="utf-8") as f:
+            rows = list(csv.reader(f))
+        assert rows[0] == ["Category", "Value", "Source"]
+        assert rows[1] == ["emails", "alice@acme-corp.io", "https://a.example/1"]
+        assert len(rows) == 3
+
+    def test_plain_search_writes_no_companion_csv(self, tmp_path):
+        ResultsParser(SAMPLE).export_csv("out.csv")
+        assert not (tmp_path / "out_extracted.csv").exists()
+
+    def test_html_section_is_escaped(self, tmp_path):
+        self.parser().export_html("out.html")
+        html = (tmp_path / "out.html").read_text(encoding="utf-8")
+        assert "Extracted data (2)" in html
+        assert "alice@acme-corp.io" in html
+        assert "<b>Maria</b>" not in html
+        assert "&lt;b&gt;Maria&lt;/b&gt;" in html
+        assert 'href="https://b.example/2?x=1&amp;y=2"' in html
+
+    def test_plain_search_html_has_no_extracted_section(self, tmp_path):
+        ResultsParser(SAMPLE).export_html("out.html")
+        html = (tmp_path / "out.html").read_text(encoding="utf-8")
+        assert "Extracted data" not in html
+        assert "{{ extracted }}" not in html
+
+    def test_html_placeholder_inside_scraped_text_stays_literal(self, tmp_path):
+        rows = [{"title": "{{ extracted }}", "description": "{{ total }}", "link": ""}]
+        ResultsParser(rows, extracted=self.EXTRACTED).export_html("out.html")
+        html = (tmp_path / "out.html").read_text(encoding="utf-8")
+        assert "<h5>{{ extracted }}</h5>" in html
+        assert "<p>{{ total }}</p>" in html
+        assert html.count("Extracted data (2)") == 1
+
+    def test_excel_adds_a_sheet_with_literal_text_and_links(self, tmp_path):
+        extracted = [{"category": "usernames", "value": "=1+1",
+                      "source": "https://a.example/1"}]
+        ResultsParser(SAMPLE, extracted=extracted).export_excel("out.xlsx")
+        wb = openpyxl.load_workbook(tmp_path / "out.xlsx")
+        assert wb.sheetnames == ["Results", "Extracted"]
+        ws = wb["Extracted"]
+        assert [c.value for c in ws[1]] == ["Category", "Value", "Source"]
+        assert ws["B2"].value == "=1+1"
+        assert ws["B2"].data_type == "s"
+        assert ws["C2"].hyperlink.target == "https://a.example/1"
+
+    def test_excel_sheet_exists_when_nothing_was_extracted(self, tmp_path):
+        ResultsParser(SAMPLE, extracted=[]).export_excel("out.xlsx")
+        wb = openpyxl.load_workbook(tmp_path / "out.xlsx")
+        assert wb["Extracted"].max_row == 1
+
+    def test_plain_search_excel_has_one_sheet(self, tmp_path):
+        ResultsParser(SAMPLE).export_excel("out.xlsx")
+        assert openpyxl.load_workbook(tmp_path / "out.xlsx").sheetnames == ["Results"]
+
+
 class TestTable:
     def test_row_and_column_counts(self):
         table = ResultsParser(SAMPLE).to_table()

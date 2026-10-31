@@ -56,8 +56,7 @@ import cli.actions
 
 _ENGINE_CHOICES = [
     ("DuckDuckGo",  "duckduckgo", "privacy-friendly · default"),
-    ("Google",      "google",     "broadest coverage · API key"),
-    ("Brave",       "brave",      "independent index"),
+    ("Brave",       "brave",      "independent index · API key"),
 ]
 
 _MEDIA_CHOICES = [
@@ -115,10 +114,11 @@ def select_ia_agent():
     """Arrow-key picker for the AI provider, returning an initialised IAAgent."""
     header_bar("AI Provider", "Pick the LLM used for summarisation and dorking")
 
+    gemini_model = os.getenv("GEMINI_MODEL") or GeminiGenerator.DEFAULT_MODEL
     choice = select_menu(
         "Select AI provider",
         [
-            ("Google Gemini",     "ge",     "gemini-2.0-flash · free tier"),
+            ("Google Gemini",     "ge",     f"{gemini_model} · free tier"),
             ("OpenAI GPT-4o",     "op",     "paid · high quality"),
             ("Anthropic Claude",  "claude", "claude-sonnet-4-6 · paid"),
             ("Ollama (local)",    "ollama", "free · runs on your machine"),
@@ -652,7 +652,7 @@ def _hub_search_pivot(hub, ia_agent) -> None:
     # Quote multi-word values so the engine treats them as a single phrase.
     query = f'"{value}"' if " " in value else value
     cli.actions.do_search(query, engine, pages=1, start_page=1,
-                          lang="lang_es", interactive=False, ia_agent=ia_agent)
+                          interactive=False, ia_agent=ia_agent)
     print_info("Result URLs added to the hub — use “Analyse a URL” to act on them.")
 
 
@@ -722,7 +722,7 @@ def _phone_footprint_followup(report: dict, ia_agent=None) -> None:
         if fp["kind"] == "search":
             engine = _select_engine()
             cli.actions.do_search(fp["value"], engine, pages=1, start_page=1,
-                                  lang="lang_es", interactive=False, ia_agent=ia_agent)
+                                  interactive=False, ia_agent=ia_agent)
             print_info("Result URLs added to the hub — use “Analyse a URL” to act on them.")
         else:
             get_hub().add_url(fp["value"], source="phone-footprint", label=fp["label"])
@@ -922,7 +922,7 @@ def _offer_hub(ia_agent=None) -> None:
 
 _MAIN_MENU_CHOICES = [
     ("Guided Search",          "guided",   "Name · Username · Email · Phone"),
-    ("Direct Search",          "direct",   "Raw query or Google Dork"),
+    ("Direct Search",          "direct",   "Raw query or dork"),
     ("AI Dork Generator",      "dork",     "LLM-assisted dork creation"),
     ("AI Query Planner",       "planner",  "ReAct-style multi-tool plan"),
     ("Findings Hub",           "hub",      "Pivot discovered URLs/domains/emails onward"),
@@ -971,8 +971,8 @@ def _run_hibp_menu() -> None:
         if action == "email":
             # Full account check: breaches + optional pastes.
             # This is the most useful HIBP lookup for person OSINT.
-            # Requires HIBP_API_KEY — if it's missing, analysis.hibp will
-            # print an error message automatically.
+            # Requires HIBP_API_KEY — if it's missing, analysis.hibp reports
+            # it automatically.
             from analysis.hibp import check_account
             email = ask("Email address")
             if not email:
@@ -1148,24 +1148,24 @@ def _run_guided_search() -> None:
 
     if email or phone:
         print_info("PII detected — switching to deep extraction mode…")
-        cli.actions.do_deep_search(query, engine, pages=1, start_page=1, lang="lang_es")
+        cli.actions.do_deep_search(query, engine, pages=1, start_page=1)
         _offer_hub()
     else:
         cli.actions.do_search(query, engine, pages=1, start_page=1,
-                              lang="lang_es", interactive=False, ia_agent=None)
+                              interactive=False, ia_agent=None)
         if state.LAST_RESULTS:
             interactive_analysis_menu(state.LAST_RESULTS, ia_agent=None)
 
 
 def _run_direct_search() -> None:
-    header_bar("Direct Search", "Raw query or Google-style Dork")
+    header_bar("Direct Search", "Raw query or dork")
     query = ask("Search query / dork")
     if not query:
         print_error("Query cannot be empty.")
         return
     engine = _select_engine()
     cli.actions.do_search(query, engine, pages=1, start_page=1,
-                          lang="lang_es", interactive=False, ia_agent=None)
+                          interactive=False, ia_agent=None)
     if state.LAST_RESULTS:
         interactive_analysis_menu(state.LAST_RESULTS, ia_agent=None)
 
@@ -1282,7 +1282,7 @@ def show_main_menu() -> None:
         elif choice == "direct":
             _run_direct_search()
         elif choice == "dork":
-            header_bar("AI Dork Generator", "Turn a natural-language brief into a Google Dork")
+            header_bar("AI Dork Generator", "Turn a natural-language brief into a dork")
             cli.actions.do_generate_dork_ia()
         elif choice == "planner":
             cli.actions.do_query_planner()

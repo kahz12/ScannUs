@@ -19,7 +19,7 @@ Recorrido exhaustivo de cada función, flujo de trabajo y opción de configuraci
    - 3.1 [Búsqueda Directa](#31-búsqueda-directa)
    - 3.2 [Búsqueda Guiada](#32-búsqueda-guiada)
    - 3.3 [Comparativa de Motores](#33-comparativa-de-motores)
-   - 3.4 [Paginación e Idiomas](#34-paginación-e-idiomas)
+   - 3.4 [Paginación](#34-paginación)
 4. [Funciones de IA](#4-funciones-de-ia)
    - 4.1 [Elección de Proveedor](#41-elección-de-proveedor)
    - 4.2 [Generador de Dorks con IA](#42-generador-de-dorks-con-ia)
@@ -65,6 +65,7 @@ cd scannus
 python3 -m venv venv
 source venv/bin/activate          # Windows: venv\Scripts\activate
 pip install -r requirements.txt
+python -m spacy download en_core_web_lg   # modelo de idioma para detección de PII (401 MB)
 ```
 
 #### Termux (Android)
@@ -119,13 +120,10 @@ python main.py -c
 
 ### 1.3 Asistente de Configuración
 
-El asistente (`python main.py -c`) te guía por 7 secciones, solicitando una clave a la vez. Pulsa Enter para omitir cualquier campo.
+El asistente (`python main.py -c`) te guía por 6 secciones, solicitando una clave a la vez. Pulsa Enter para omitir cualquier campo.
 
 ```
-┌─ Google Custom Search API ───────────────────────
-│   API_KEY_GOOGLE      (desde console.cloud.google.com)
-│   SEARCH_ENGINE_ID    (desde cse.google.com)
-├─ Google AI (Gemini) ─────────────────────────────
+┌─ Google AI (Gemini) ─────────────────────────────
 │   GOOGLE_API_KEY_FOR_GEMINI (desde aistudio.google.com)
 ├─ Brave Search API ───────────────────────────────
 │   BRAVE_API_KEY       (desde api.search.brave.com)
@@ -157,7 +155,7 @@ Puedes usar ScannUs con **cero claves de API**:
 - ✅ Fingerprinting de tecnologías web
 - ✅ Imagen inversa — URLs de respaldo manuales
 
-Para desbloquear toda la potencia, añade como mínimo una clave de Gemini (capa gratuita) y una clave de Google Custom Search.
+Para desbloquear toda la potencia, añade como mínimo una clave de Gemini (capa gratuita) y una clave de Brave Search.
 
 ---
 
@@ -285,16 +283,17 @@ ScannUs soporta cuatro proveedores de IA, todos detrás de un contrato unificado
 
 | Proveedor | Modelo | Coste | Configuración |
 |---|---|---|---|
-| **Google Gemini** | `gemini-2.0-flash` | Capa gratuita | `GOOGLE_API_KEY_FOR_GEMINI` |
+| **Google Gemini** | `gemini-3.6-flash` (configurable) | Capa gratuita | `GOOGLE_API_KEY_FOR_GEMINI` |
 | **OpenAI** | `gpt-4o` | De pago | `OPENAI_API_KEY` |
 | **Anthropic** | `claude-sonnet-4-6` | De pago | `ANTHROPIC_API_KEY` |
 | **Ollama** | `llama3` (configurable) | Gratis (local) | Daemon `OLLAMA_HOST` |
 
 Los proveedores transmiten tokens en streaming — la salida aparece progresivamente en lugar de toda al final.
 
-Sobrescribe cualquier modelo mediante variables de entorno:
+Sobrescribe el modelo de Gemini, Anthropic u Ollama con una variable de entorno, o defínelo en `.env`:
 
 ```bash
+GEMINI_MODEL=gemini-3.8-flash python main.py -i
 ANTHROPIC_MODEL=claude-opus-4-7 python main.py -i
 OLLAMA_MODEL=qwen2.5:7b python main.py -i
 ```
@@ -313,17 +312,17 @@ python main.py -q 'site:linkedin.com "project manager" "New York"'
 python main.py -q 'filetype:xlsx "lista de precios" "productos electrónicos"'
 ```
 
-Los operadores de Google Dorks se pasan tal cual:
+Los operadores de dork se pasan al motor tal cual. Estos funcionan en los dos motores:
 
 | Operador | Efecto |
 |---|---|
 | `site:` | Restringir a un dominio |
-| `filetype:` | Restringir a una extensión de archivo |
+| `filetype:` | Restringir a una extensión de archivo (DuckDuckGo: pdf, doc(x), xls(x), ppt(x), html) |
 | `intitle:` | Coincidir en `<title>` |
-| `inurl:` | Coincidir en la ruta de la URL |
 | `"frase exacta"` | Coincidencia literal |
 | `-excluir` | Excluir términos |
-| `AND` / `OR` | Combinadores booleanos |
+
+`inurl:` solo está documentado en DuckDuckGo, y `AND` / `OR` / `NOT` solo en Brave. Los dos motores avisan de que sus operadores no son del todo fiables, y DuckDuckGo muestra resultados relacionados cuando un dork no encuentra nada, así que comprueba que los resultados coincidan de verdad.
 
 ### 3.2 Búsqueda Guiada
 
@@ -355,26 +354,26 @@ Flags guiadas disponibles:
 
 | Motor | Autenticación | Pros | Contras |
 |---|---|---|---|
-| **DuckDuckGo** | Ninguna | Gratis, sin rate limits visibles | Scraping HTML — puede romperse con cambios de maquetación |
-| **Google CSE** | API key + CX | Mejor calidad de resultados | 100 consultas gratis/día, luego $5 por 1000 |
-| **Brave Search** | API key | Índice independiente, menos correlacionado con Google | Índice menor que Google |
+| **DuckDuckGo** | Ninguna | Gratis | Scraping HTML — puede romperse con cambios de maquetación, y un control anti-bot puede bloquear las búsquedas durante un tiempo |
+| **Brave Search** | API key y tarjeta | Índice independiente, API oficial, admite también los operadores `lang:` y `loc:` | De pago tras el crédito mensual gratuito, 10 páginas por consulta |
 
 Elige en tiempo de ejecución:
 
 ```bash
 python main.py -q "consulta" --engine duckduckgo    # por defecto
-python main.py -q "consulta" --engine google
 python main.py -q "consulta" --engine brave
 ```
 
-### 3.4 Paginación e Idiomas
+Si DuckDuckGo bloquea una búsqueda y `BRAVE_API_KEY` está configurada, ScannUs pasa esa búsqueda a Brave y te avisa. Esto consume crédito de Brave. Sin clave, verás un error que explica el bloqueo.
+
+### 3.4 Paginación
 
 ```bash
 python main.py -q "consulta" --pages 3              # traer 3 páginas
 python main.py -q "consulta" --start-page 5         # empezar desde la página 5
-python main.py -q "consulta" --lang lang_en         # solo inglés
-python main.py -q "consulta" --lang lang_es         # español (por defecto)
 ```
+
+Para filtrar por idioma en Brave, añade el operador a la consulta, por ejemplo `lang:es`.
 
 ---
 
@@ -396,7 +395,7 @@ Cuando la TUI necesita un agente de IA, muestra un selector. Desde la CLI, el pr
 
 ### 4.2 Generador de Dorks con IA
 
-Convierte lenguaje natural en un dork de Google preciso:
+Convierte lenguaje natural en un dork preciso que funciona en los dos motores:
 
 ```bash
 python main.py -gd "Encontrar listas de precios en Excel de empresas de electrónica"
@@ -1265,6 +1264,19 @@ Reporte estilizado autocontenido. Sin assets externos — compártelo por email.
 python main.py -q "consulta" --excel out.xlsx --json out.json --html out.html
 ```
 
+### Búsquedas profundas
+
+Con `--deep`, `-e` o `-t`, las exportaciones incluyen además cada valor extraído con su categoría y página de origen:
+
+| Formato | Dónde van los valores extraídos |
+|---|---|
+| Excel | Hoja `Extracted` |
+| HTML | Sección `Extracted data` |
+| JSON | `{"results": [...], "extracted": [...]}` en lugar de la lista simple de resultados |
+| CSV | Un segundo archivo, `<nombre>_extracted.csv` |
+
+Estos archivos pueden contener datos personales y secretos filtrados en texto plano, así que guárdalos y compártelos con cuidado. Si la búsqueda falla, no se exporta nada.
+
 ---
 
 ## 15. Gestión de Caché
@@ -1558,8 +1570,7 @@ Estimaciones aproximadas para uso moderado (50 investigaciones/mes):
 | Anthropic Claude | ~$2-5/mes |
 | Ollama | $0 (local) |
 | HIBP (de pago) | $3,50/mes a tanto alzado |
-| Google Custom Search | Primeras 100 consultas/día gratis, luego $5 por 1000 |
-| Brave Search | $3/mes por 2000 consultas |
+| Brave Search | $5 de crédito gratis al mes (unas 1.000 consultas), luego $5 por 1.000 |
 | Shodan | $59/mes por el plan básico |
 
 Puedes ejecutar ScannUs con **cero servicios de pago** quedándote con DuckDuckGo + endpoints gratuitos de HIBP + Ollama para IA.
@@ -1586,6 +1597,7 @@ RUN wget https://github.com/mozilla/geckodriver/releases/download/v0.34.0/geckod
 WORKDIR /app
 COPY . .
 RUN pip install -r requirements.txt
+RUN python -m spacy download en_core_web_lg
 CMD ["python", "main.py", "-i"]
 ```
 
@@ -1640,11 +1652,10 @@ Todas las llamadas cacheadas funcionan transparentemente — no necesitas conect
 | Término | Definición |
 |---|---|
 | **CDX** | API de índice de capturas de Internet Archive |
-| **CSE** | Producto Custom Search Engine de Google (API SERP de pago) |
 | **CT log** | Certificate Transparency log — registro público y append-only de certs TLS emitidos. crt.sh es un frontend. |
 | **Deep search** | Modo `--deep` de ScannUs: buscar, luego rastrear cada URL de resultado y extraer PII |
 | **DKIM** | DomainKeys Identified Mail — autenticación de email vía claves públicas publicadas en DNS |
-| **Dork** | Una consulta de Google usando operadores avanzados (`site:`, `filetype:`, etc.) para encontrar contenido no obvio |
+| **Dork** | Una consulta de búsqueda que usa operadores avanzados (`site:`, `filetype:`, etc.) para encontrar contenido no obvio |
 | **EIP-55** | Esquema de checksum mixed-case para direcciones Ethereum |
 | **HIBP** | Have I Been Pwned — base de datos de inteligencia de brechas de Troy Hunt |
 | **k-anonimato** | Consulta que preserva la privacidad: enviar un prefijo de hash, comparar el sufijo localmente. Usado por Pwned Passwords. |

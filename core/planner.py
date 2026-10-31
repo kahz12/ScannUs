@@ -69,8 +69,8 @@ TOOL_CATALOG: dict[str, dict] = {
     "search": {
         "desc": "Run a SERP search and return the list of titles/URLs/snippets.",
         "args": {
-            "query":  "str (required) — search string, Google-Dork operators welcome",
-            "engine": "str — duckduckgo | google | brave (default: duckduckgo)",
+            "query":  "str (required) — search string, dork operators welcome",
+            "engine": "str — duckduckgo | brave (default: duckduckgo)",
             "pages":  "int — SERP pages to retrieve (default: 1)",
         },
     },
@@ -227,9 +227,9 @@ TOOL_CATALOG: dict[str, dict] = {
         "args": {"name": "str (required) — e.g. 'Adobe', 'LinkedIn'"},
     },
     "hibp_password": {
-        # k-anonymity means the plaintext never leaves the process — safe to use
-        # in automated investigation plans. Prefer 'sha1' arg in plan steps
-        # so the raw password doesn't appear in execution logs.
+        # k-anonymity means only a hash prefix reaches HIBP. Plan steps are shown
+        # with their arguments, so the 'sha1' argument keeps a raw password out
+        # of that output.
         "desc": "Pwned Passwords k-anonymity lookup: returns how many times "
                 "a password has been seen across known breaches. The plaintext "
                 "never leaves the process — only the first 5 chars of its "
@@ -272,7 +272,7 @@ def _dispatch_search(args: dict, ia_agent) -> dict:
     except (TypeError, ValueError):
         pages = 1
     try:
-        results = get_search_engine(engine, pages, 1, "lang_es", query)
+        results = get_search_engine(engine, pages, 1, query)
     except Exception as e:
         return {"status": "error", "summary": f"search failed: {e}"}
     top = [r.get("title", "") for r in results[:5]]
@@ -291,7 +291,7 @@ def _dispatch_deep_search(args: dict, ia_agent) -> dict:
         return {"status": "error", "summary": "deep_search: missing 'query'"}
     engine = (args.get("engine") or "duckduckgo").lower()
     try:
-        results = do_deep_search(query, engine, pages=1, start_page=1, lang="lang_es")
+        results = do_deep_search(query, engine, pages=1, start_page=1)
     except Exception as e:
         return {"status": "error", "summary": f"deep_search failed: {e}"}
     if results is None:
@@ -633,7 +633,7 @@ def _dispatch_hibp_account(args: dict, ia_agent) -> dict:
     from core.unified import from_hibp_breaches, from_hibp_pastes
     email = (args.get("email") or "").strip()
     if not email:
-        # Can't look up an account with no email. Tell the planner to retry.
+        # Can't look up an account with no email; the summary explains why.
         return {"status": "error", "summary": "hibp_account: missing 'email'"}
     include_pastes = args.get("include_pastes", True)
     # Handle the case where the LLM passes "false" as a string instead of False.
@@ -720,19 +720,18 @@ def _dispatch_hibp_password(args: dict, ia_agent) -> dict:
     any network call) or a pre-computed ``sha1`` hex string. The ``via`` field
     in the returned data records which path was taken, useful for audit logs.
 
-    Reminder: this dispatcher should NOT be called with the user's actual
-    password in a plan step that gets logged. Prefer the ``sha1`` arg in
-    automated contexts where the hash can be computed upstream.
+    Plan steps are shown with their arguments, so a cleartext password passed
+    here appears in that output; the ``sha1`` argument avoids it.
     """
     from analysis.hibp import (hibp_password_pwned, hibp_password_pwned_hash,
                                render_password_pwned)
     password = args.get("password") or ""
     sha1 = (args.get("sha1") or "").strip()
     if not (password or sha1):
-        # Neither argument provided — tell the planner it needs one or the other.
+        # Neither argument provided; the summary says one of them is needed.
         return {"status": "error",
                 "summary": "hibp_password: provide either 'password' or 'sha1'"}
-    # Prefer sha1 if supplied (avoids re-hashing and is safer in log contexts).
+    # sha1 takes priority when supplied (no re-hashing, safer in log contexts).
     count = (hibp_password_pwned_hash(sha1) if sha1
              else hibp_password_pwned(password))
     render_password_pwned(count)

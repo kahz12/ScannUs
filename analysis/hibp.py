@@ -110,18 +110,18 @@ def _get(url: str, *, api_key: str | None = None,
     That makes mocking in tests painless (replace ``requests.get``, done).
 
     Returns ``(status_code, body)`` where body is parsed JSON for 2xx, the
-    raw text for non-2xx (so we can surface a useful error), or ``status=0``
+    raw text for non-2xx (so we can surface a useful message), or ``status=0``
     on transport failure.
 
     ``namespace`` selects the rate-limit bucket: the paid account/paste
     endpoints use ``hibp_account`` (~1.5 rps — HIBP throttles those), while
     the free catalog endpoints pass ``hibp_breach`` (~5 rps — Cloudflare-
     fronted and far more lenient). Requests are retried on transient HTTP
-    errors (429/502/503/504) via :func:`core.throttle.retry_http_sync`, and
+    failures (429/502/503/504) via :func:`core.throttle.retry_http_sync`, and
     ``Retry-After`` is honoured when present so we back off as much as HIBP
     wants us to.
 
-    Why not raise on errors? Because OSINT tools should degrade gracefully —
+    Why not raise on failures? Because OSINT tools should degrade gracefully —
     a network hiccup shouldn't abort a 30-step investigation plan.
     """
     def _once() -> tuple[int, Any, str | None]:
@@ -133,7 +133,7 @@ def _get(url: str, *, api_key: str | None = None,
 
     status, body = retry_http_sync(_once, namespace=namespace, max_retries=2)
 
-    # body is the requests.Response (or the transport-error string for status=0)
+    # body is the requests.Response (or the transport-failure string for status=0)
     if status == 0:
         return 0, body if isinstance(body, str) else "transport failure"
     if status == 200:
@@ -144,7 +144,7 @@ def _get(url: str, *, api_key: str | None = None,
             return 200, body.text
     if status == 404:
         # HIBP uses 404 to mean "no records" — treat as a soft empty
-        # (NOT a bug — this is documented HIBP API behaviour).
+        # (this is documented HIBP API behaviour).
         return 404, []
     return status, body.text if hasattr(body, "text") else body
 
@@ -266,7 +266,7 @@ def _fetch_breaches_for_domain(domain: str) -> list[dict]:
     status, body = _get(url, namespace="hibp_breach")
     if status == 200 and isinstance(body, list):
         return body
-    return []  # On error, return empty rather than crashing
+    return []  # On failure, return empty rather than crashing
 
 
 def hibp_breaches_for_domain(domain: str) -> list[dict]:
@@ -359,7 +359,7 @@ def _fetch_pwned_range(prefix: str) -> str | None:
         ...
 
     The ``Add-Padding: true`` header asks HIBP to pad the response to a
-    fixed size (~800 entries) so traffic analysis can't reveal whether
+    uniform size (~800 entries) so traffic analysis can't reveal whether
     a specific prefix exists in the corpus. Extra privacy! 🎉
 
     Rate-limited and retried via the shared ``hibp_password`` bucket
@@ -389,7 +389,7 @@ def hibp_password_pwned_hash(sha1_hex: str) -> int | None:
     """
     K-anonymity lookup for an already-computed SHA-1 password hash.
 
-    Use this when you already have the SHA-1 and don't want to re-hash.
+    Useful when the SHA-1 is already known, since nothing is re-hashed.
     The public ``hibp_password_pwned`` function calls this after hashing.
 
     How the cache works here: the entire range response (~800 entries) is
@@ -439,12 +439,11 @@ def hibp_password_pwned(password: str) -> int | None:
     This is the user-facing function. It hashes the password with SHA-1
     locally, then delegates to ``hibp_password_pwned_hash``.
 
-    THE PLAINTEXT NEVER LEAVES THIS PROCESS. For real. Look at the code —
-    ``hashlib.sha1`` runs locally, only ``sha1_hex[:5]`` hits the network.
-    You can verify this by running a packet sniffer while calling it. Go ahead.
+    The plaintext never leaves this process: ``hashlib.sha1`` runs locally and
+    only ``sha1_hex[:5]`` hits the network.
 
     Args:
-        password: The cleartext password to check. Please don't log this anywhere.
+        password: The cleartext password to check.
 
     Returns:
         Number of breach occurrences (0 if clean), or ``None`` on failure.
@@ -484,10 +483,10 @@ def render_breached_account(email: str, breaches: list[dict] | None) -> None:
     Builds a Rich table with one row per breach: name, domain, date, account
     count, and which categories of data were stolen. If the list is empty,
     prints a reassuring success message. If it's None, assumes the caller
-    already printed the relevant error and stays silent.
+    already printed the reason and stays silent.
     """
     if breaches is None:
-        return  # caller already explained why (missing key, network error, etc.)
+        return  # caller already explained why (missing key, network failure, etc.)
     if not breaches:
         # Great news! The email hasn't been caught in any known breach.
         # (Or they signed up for everything under an alias. Smart.)
@@ -598,7 +597,7 @@ def render_password_pwned(count: int | None) -> None:
       - 10+:     Very common password — abandon all hope. Change it everywhere.
 
     The colour coding uses Rich styles from THEME for consistency with the
-    rest of ScannUs output: green (success) / yellow (warn) / red (error).
+    rest of ScannUs output: green (success) / yellow (warn) / red (failure).
     """
     if count is None:
         print_error("Pwned Passwords lookup failed (network or invalid hash).")
@@ -609,8 +608,8 @@ def render_password_pwned(count: int | None) -> None:
         print_success("Password not found in any known HIBP breach corpus.")
         return
     if count < 10:
-        # Technically compromised but rare. Someone probably used it once in 2009
-        # in a forum that got breached. Still: change it. Don't be that person.
+        # Technically compromised but rare: probably a single use on a forum
+        # that was later breached.
         print_warn(f"Password seen in HIBP corpus: {_fmt_int(count)} time(s) — change it.")
     else:
         # Seen 10+ times means this is a genuinely popular bad password.
@@ -680,8 +679,7 @@ def check_password(password: str) -> int | None:
     Returns the raw count so callers can make programmatic decisions
     (e.g. the AI dispatcher uses this to summarise findings).
 
-    Remember: the plaintext password is NOT stored or logged anywhere in
-    this call chain. It hashes and evaporates. 🔥
+    The plaintext password is not stored or logged anywhere in this call chain.
     """
     count = hibp_password_pwned(password)
     render_password_pwned(count)

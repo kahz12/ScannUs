@@ -19,7 +19,7 @@ A comprehensive walkthrough of every feature, workflow, and configuration option
    - 3.1 [Direct Search](#31-direct-search)
    - 3.2 [Guided Search](#32-guided-search)
    - 3.3 [Engines Compared](#33-engines-compared)
-   - 3.4 [Pagination & Languages](#34-pagination--languages)
+   - 3.4 [Pagination](#34-pagination)
 4. [AI Features](#4-ai-features)
    - 4.1 [Choosing a Provider](#41-choosing-a-provider)
    - 4.2 [AI Dork Generator](#42-ai-dork-generator)
@@ -65,6 +65,7 @@ cd scannus
 python3 -m venv venv
 source venv/bin/activate          # Windows: venv\Scripts\activate
 pip install -r requirements.txt
+python -m spacy download en_core_web_lg   # language model for PII detection (401 MB)
 ```
 
 #### Termux (Android)
@@ -119,13 +120,10 @@ python main.py -c
 
 ### 1.3 Configuration Wizard
 
-The wizard (`python main.py -c`) walks you through 7 sections, prompting one key at a time. Press Enter to skip any field.
+The wizard (`python main.py -c`) walks you through 6 sections, prompting one key at a time. Press Enter to skip any field.
 
 ```
-┌─ Google Custom Search API ───────────────────────
-│   API_KEY_GOOGLE      (from console.cloud.google.com)
-│   SEARCH_ENGINE_ID    (from cse.google.com)
-├─ Google AI (Gemini) ─────────────────────────────
+┌─ Google AI (Gemini) ─────────────────────────────
 │   GOOGLE_API_KEY_FOR_GEMINI (from aistudio.google.com)
 ├─ Brave Search API ───────────────────────────────
 │   BRAVE_API_KEY       (from api.search.brave.com)
@@ -157,7 +155,7 @@ You can use ScannUs with **zero API keys**:
 - ✅ Web technology fingerprinting
 - ✅ Reverse image — manual fallback URLs
 
-To unlock the full power, add at minimum a Gemini key (free tier) and a Google Custom Search key.
+To unlock the full power, add at minimum a Gemini key (free tier) and a Brave Search key.
 
 ---
 
@@ -285,16 +283,17 @@ ScannUs supports four AI providers, all behind a unified `generate(prompt)` + `s
 
 | Provider | Model | Cost | Setup |
 |---|---|---|---|
-| **Google Gemini** | `gemini-2.0-flash` | Free tier | `GOOGLE_API_KEY_FOR_GEMINI` |
+| **Google Gemini** | `gemini-3.6-flash` (configurable) | Free tier | `GOOGLE_API_KEY_FOR_GEMINI` |
 | **OpenAI** | `gpt-4o` | Paid | `OPENAI_API_KEY` |
 | **Anthropic** | `claude-sonnet-4-6` | Paid | `ANTHROPIC_API_KEY` |
 | **Ollama** | `llama3` (configurable) | Free (local) | `OLLAMA_HOST` daemon |
 
 Providers stream tokens — output appears incrementally rather than all-at-once at the end.
 
-Override any model via env var:
+Override the Gemini, Anthropic or Ollama model via env var, or set it in `.env`:
 
 ```bash
+GEMINI_MODEL=gemini-3.8-flash python main.py -i
 ANTHROPIC_MODEL=claude-opus-4-7 python main.py -i
 OLLAMA_MODEL=qwen2.5:7b python main.py -i
 ```
@@ -313,17 +312,17 @@ python main.py -q 'site:linkedin.com "project manager" "New York"'
 python main.py -q 'filetype:xlsx "price list" "electronic products"'
 ```
 
-Google Dork operators are passed through verbatim:
+Dork operators are passed to the engine verbatim. These work on both engines:
 
 | Operator | Effect |
 |---|---|
 | `site:` | Restrict to a domain |
-| `filetype:` | Restrict to file extension |
+| `filetype:` | Restrict to file extension (DuckDuckGo: pdf, doc(x), xls(x), ppt(x), html) |
 | `intitle:` | Match in `<title>` |
-| `inurl:` | Match in URL path |
 | `"exact phrase"` | Verbatim match |
 | `-exclude` | Exclude terms |
-| `AND` / `OR` | Boolean combinators |
+
+`inurl:` is documented only by DuckDuckGo, and `AND` / `OR` / `NOT` only by Brave. Both engines warn that their operators are not fully reliable, and DuckDuckGo shows related results when a dork finds nothing, so check that results really match.
 
 ### 3.2 Guided Search
 
@@ -355,26 +354,26 @@ Available guided flags:
 
 | Engine | Auth | Pros | Cons |
 |---|---|---|---|
-| **DuckDuckGo** | None | Free, no rate limits visible | HTML scraping — can break on layout changes |
-| **Google CSE** | API key + CX | Highest quality results | 100 free queries/day, then $5 per 1000 |
-| **Brave Search** | API key | Independent index, less Google-correlated | Smaller index than Google |
+| **DuckDuckGo** | None | Free | HTML scraping — can break on layout changes, and an anti-bot check can block searches for a while |
+| **Brave Search** | API key and card | Independent index, official API, also takes the `lang:` and `loc:` operators | Paid after the monthly free credit, 10 pages per query |
 
 Pick at runtime:
 
 ```bash
 python main.py -q "query" --engine duckduckgo    # default
-python main.py -q "query" --engine google
 python main.py -q "query" --engine brave
 ```
 
-### 3.4 Pagination & Languages
+If DuckDuckGo blocks a search and `BRAVE_API_KEY` is set, ScannUs moves that search to Brave and tells you. This spends Brave credit. Without a key, you get an error explaining the block.
+
+### 3.4 Pagination
 
 ```bash
 python main.py -q "query" --pages 3              # fetch 3 pages
 python main.py -q "query" --start-page 5         # start from page 5
-python main.py -q "query" --lang lang_en         # English only
-python main.py -q "query" --lang lang_es         # Spanish (default)
 ```
+
+To filter by language on Brave, add the operator to the query, for example `lang:es`.
 
 ---
 
@@ -396,7 +395,7 @@ When the TUI needs an AI agent, it shows a picker. From the CLI, the provider is
 
 ### 4.2 AI Dork Generator
 
-Converts plain English into a precise Google Dork:
+Converts plain English into a precise dork that works on both engines:
 
 ```bash
 python main.py -gd "Find Excel price lists of electronics companies"
@@ -1260,6 +1259,19 @@ Self-contained styled report. No external assets — share it via email.
 python main.py -q "query" --excel out.xlsx --json out.json --html out.html
 ```
 
+### Deep searches
+
+With `--deep`, `-e` or `-t`, exports also include every extracted value with its category and source page:
+
+| Format | Where the extracted values go |
+|---|---|
+| Excel | `Extracted` sheet |
+| HTML | `Extracted data` section |
+| JSON | `{"results": [...], "extracted": [...]}` instead of the plain result list |
+| CSV | A second file, `<name>_extracted.csv` |
+
+These files can hold personal data and leaked secrets in plain text, so store and share them with care. If the search fails, nothing is exported.
+
 ---
 
 ## 15. Cache Management
@@ -1553,8 +1565,7 @@ Rough estimates for moderate use (50 investigations/month):
 | Anthropic Claude | ~$2-5/month |
 | Ollama | $0 (local) |
 | HIBP (paid) | $3.50/month flat |
-| Google Custom Search | First 100 queries/day free, then $5 per 1000 |
-| Brave Search | $3/month for 2000 queries |
+| Brave Search | $5 free credit per month (about 1,000 queries), then $5 per 1,000 |
 | Shodan | $59/month for the basic plan |
 
 You can run ScannUs with **zero paid services** by sticking to DuckDuckGo + free HIBP endpoints + Ollama for AI.
@@ -1581,6 +1592,7 @@ RUN wget https://github.com/mozilla/geckodriver/releases/download/v0.34.0/geckod
 WORKDIR /app
 COPY . .
 RUN pip install -r requirements.txt
+RUN python -m spacy download en_core_web_lg
 CMD ["python", "main.py", "-i"]
 ```
 
@@ -1635,11 +1647,10 @@ All cached calls work transparently — no need to wire up the cache yourself.
 | Term | Definition |
 |---|---|
 | **CDX** | Internet Archive's snapshot index API |
-| **CSE** | Google's Custom Search Engine product (paid SERP API) |
 | **CT log** | Certificate Transparency log — public, append-only registry of issued TLS certs. crt.sh is a frontend. |
 | **Deep search** | ScannUs's `--deep` mode: search, then crawl each result URL and extract PII |
 | **DKIM** | DomainKeys Identified Mail — email authentication via DNS-published public keys |
-| **Dork** | A Google search query using advanced operators (`site:`, `filetype:`, etc.) to find non-obvious content |
+| **Dork** | A search query using advanced operators (`site:`, `filetype:`, etc.) to find non-obvious content |
 | **EIP-55** | Ethereum address mixed-case checksum scheme |
 | **HIBP** | Have I Been Pwned — Troy Hunt's breach intelligence database |
 | **k-anonymity** | Privacy-preserving lookup: send a hash prefix, match the suffix locally. Used by Pwned Passwords. |

@@ -7,12 +7,16 @@ Formats supported:
   - CSV          (export_csv)
   - Excel .xlsx  (export_excel)  — styled: colors, autofit, freeze panes, hyperlinks
   - JSON         (export_json)
+
+Deep searches also pass the values they extracted, and every export then
+includes them with the page each one came from.
 """
 
 import json
 import os
 import csv
 import html
+import re
 import openpyxl
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
@@ -41,6 +45,12 @@ _HTML_TEMPLATE = """<!doctype html>
   .result p  { margin: 0 0 .6rem 0; color: #b8b8b8; line-height: 1.45; }
   .result a  { color: #00d7ff; text-decoration: none; word-break: break-all; }
   .result a:hover { text-decoration: underline; }
+  .extracted h2 { margin: 2rem 0 .75rem 0; font-size: 1.1rem; color: #00d7ff; }
+  .extracted table { width: 100%; border-collapse: collapse; background: #161a23; }
+  .extracted th, .extracted td { border: 1px solid #232836; padding: .5rem .75rem;
+                                 text-align: left; word-break: break-all; }
+  .extracted th { color: #888; }
+  .extracted a { color: #00d7ff; text-decoration: none; }
 </style>
 </head>
 <body>
@@ -49,9 +59,12 @@ _HTML_TEMPLATE = """<!doctype html>
     <div class="meta">{{ total }} result(s)</div>
   </header>
   {{ results }}
+  {{ extracted }}
 </body>
 </html>
 """
+
+_HTML_PLACEHOLDER = re.compile(r"\{\{ (results|total|extracted) \}\}")
 
 
 class ResultsParser:
@@ -59,8 +72,16 @@ class ResultsParser:
     Data transformation layer for search result sets.
     """
 
-    def __init__(self, results: list):
+    def __init__(self, results: list, extracted: list | None = None):
+        """
+        Args:
+            results:   Search results.
+            extracted: Values from a deep search, as dicts with ``category``,
+                       ``value`` and ``source``. Leave as None for a plain
+                       search; an empty list means a deep search found nothing.
+        """
         self.results = results
+        self.extracted = extracted
 
     # ------------------------------------------------------------------
     # Helpers
@@ -69,6 +90,27 @@ class ResultsParser:
     def _output_path(self, filename: str) -> str:
         """Returns the absolute path inside DIR_REPORTS."""
         return os.path.join(DIR_REPORTS, os.path.basename(filename))
+
+    def _extracted_html(self) -> str:
+        """Renders the extracted-data section, or nothing for a plain search."""
+        if self.extracted is None:
+            return ""
+        rows = []
+        for item in self.extracted:
+            source_attr = html.escape(item["source"], quote=True)
+            rows.append(
+                f'<tr><td>{html.escape(item["category"])}</td>'
+                f'<td>{html.escape(item["value"])}</td>'
+                f'<td><a href="{source_attr}" target="_blank" rel="noopener noreferrer">'
+                f'{html.escape(item["source"])}</a></td></tr>'
+            )
+        return (
+            '<section class="extracted">'
+            f'<h2>Extracted data ({len(self.extracted)})</h2>'
+            '<table><thead><tr><th>Category</th><th>Value</th><th>Source</th></tr></thead>'
+            f'<tbody>{"".join(rows)}</tbody></table>'
+            '</section>'
+        )
 
     # ------------------------------------------------------------------
     # HTML export
@@ -97,8 +139,13 @@ class ResultsParser:
                     '</div>'
                 )
 
-            report = _HTML_TEMPLATE.replace("{{ results }}", "\n".join(fragments))
-            report = report.replace("{{ total }}", str(len(self.results)))
+            sections = {
+                "results": "\n".join(fragments),
+                "total": str(len(self.results)),
+                "extracted": self._extracted_html(),
+            }
+            # A single pass, so placeholder text inside scraped data stays literal.
+            report = _HTML_PLACEHOLDER.sub(lambda m: sections[m.group(1)], _HTML_TEMPLATE)
 
             with open(path, "w", encoding="utf-8") as f:
                 f.write(report)
@@ -115,7 +162,10 @@ class ResultsParser:
     # ------------------------------------------------------------------
 
     def export_csv(self, output_path: str) -> None:
-        """Dumps results to a flat UTF-8 CSV file."""
+        """
+        Dumps results to a flat UTF-8 CSV file. A CSV holds one table, so a deep
+        search's extracted values go to a companion ``<name>_extracted.csv``.
+        """
         path = self._output_path(output_path)
         try:
             with open(path, "w", newline="", encoding="utf-8") as f:
@@ -129,6 +179,16 @@ class ResultsParser:
                         r.get("link", ""),
                     ])
             print_success(f"CSV saved → {path}")
+
+            if self.extracted is not None:
+                stem, ext = os.path.splitext(path)
+                extracted_path = f"{stem}_extracted{ext}"
+                with open(extracted_path, "w", newline="", encoding="utf-8") as f:
+                    writer = csv.writer(f)
+                    writer.writerow(["Category", "Value", "Source"])
+                    for item in self.extracted:
+                        writer.writerow([item["category"], item["value"], item["source"]])
+                print_success(f"Extracted data CSV saved → {extracted_path}")
         except IOError as e:
             print_error(f"I/O error exporting CSV: {e}")
         except Exception as e:
@@ -140,88 +200,33 @@ class ResultsParser:
 
     def export_excel(self, output_path: str) -> None:
         """
-        Generates a polished Excel .xlsx file with:
-        - Styled header row (dark background, white bold text)
-        - Alternating row colours (white / light blue)
-        - Freeze pane on the first row
-        - Auto-fitted column widths
-        - Clickable hyperlinks in the Link column
-        - Thin borders on all cells
+        Generates a polished Excel .xlsx file with a "Results" sheet, plus an
+        "Extracted" sheet for a deep search's extracted values.
         """
         path = self._output_path(output_path)
         try:
             wb = openpyxl.Workbook()
             ws = wb.active
             ws.title = "Results"
+            self._fill_sheet(
+                ws,
+                ["ID", "Title", "Description", "Link"],
+                [[i, r.get("title", ""), r.get("description", ""), r.get("link", "")]
+                 for i, r in enumerate(self.results, 1)],
+                link_col=4,
+                wrap_col=3,
+                max_widths={1: 5, 2: 45, 3: 80, 4: 60},
+            )
 
-            # ── Styles ────────────────────────────────────────────────
-            header_fill   = PatternFill("solid", fgColor="1E3A5F")   # dark navy
-            header_font   = Font(bold=True, color="FFFFFF", size=11)
-            header_align  = Alignment(horizontal="center", vertical="center")
-
-            row_fill_even = PatternFill("solid", fgColor="EAF2FB")   # light blue
-            row_fill_odd  = PatternFill("solid", fgColor="FFFFFF")   # white
-            row_font      = Font(size=10)
-            link_font     = Font(size=10, color="1155CC", underline="single")
-
-            thin = Side(style="thin", color="BFBFBF")
-            border = Border(left=thin, right=thin, top=thin, bottom=thin)
-
-            # ── Header row ────────────────────────────────────────────
-            headers = ["ID", "Title", "Description", "Link"]
-            ws.append(headers)
-            ws.row_dimensions[1].height = 22
-
-            for col_idx, cell in enumerate(ws[1], 1):
-                cell.font      = header_font
-                cell.fill      = header_fill
-                cell.alignment = header_align
-                cell.border    = border
-
-            # ── Freeze top row ────────────────────────────────────────
-            ws.freeze_panes = "A2"
-
-            # ── Data rows ─────────────────────────────────────────────
-            for row_num, r in enumerate(self.results, 2):
-                fill = row_fill_even if row_num % 2 == 0 else row_fill_odd
-                url  = r.get("link", "")
-
-                ws.append([
-                    row_num - 1,
-                    r.get("title", ""),
-                    r.get("description", ""),
-                    url,
-                ])
-                ws.row_dimensions[row_num].height = 16
-
-                for col_idx, cell in enumerate(ws[row_num], 1):
-                    # Search results are untrusted text, never spreadsheet formulas.
-                    if col_idx > 1 and isinstance(cell.value, str):
-                        cell.data_type = "s"
-                    cell.fill   = fill
-                    cell.border = border
-                    cell.alignment = Alignment(
-                        vertical="center",
-                        wrap_text=(col_idx == 3)  # wrap description column
-                    )
-
-                    if col_idx == 4 and url:
-                        # Hyperlink in Link column
-                        cell.hyperlink = url
-                        cell.font = link_font
-                    else:
-                        cell.font = row_font
-
-            # ── Auto-fit column widths ────────────────────────────────
-            col_max_widths = {1: 5, 2: 45, 3: 80, 4: 60}
-            for col_idx, col_cells in enumerate(ws.iter_cols(), 1):
-                max_len = max(
-                    (len(str(cell.value)) if cell.value else 0)
-                    for cell in col_cells
+            if self.extracted is not None:
+                self._fill_sheet(
+                    wb.create_sheet("Extracted"),
+                    ["Category", "Value", "Source"],
+                    [[e["category"], e["value"], e["source"]] for e in self.extracted],
+                    link_col=3,
+                    wrap_col=2,
+                    max_widths={1: 25, 2: 60, 3: 60},
                 )
-                # Cap at defined max to prevent unreasonably wide columns
-                fitted = min(max_len + 4, col_max_widths.get(col_idx, 40))
-                ws.column_dimensions[get_column_letter(col_idx)].width = fitted
 
             wb.save(path)
             print_success(f"Excel report saved → {path}")
@@ -229,16 +234,95 @@ class ResultsParser:
         except Exception as e:
             print_error(f"Unexpected error exporting Excel: {e}")
 
+    @staticmethod
+    def _fill_sheet(ws, headers: list, rows: list, link_col: int, wrap_col: int,
+                    max_widths: dict) -> None:
+        """
+        Writes a styled table into a worksheet:
+        - Styled header row (dark background, white bold text)
+        - Alternating row colours (white / light blue)
+        - Freeze pane on the first row
+        - Auto-fitted column widths
+        - Clickable hyperlinks in ``link_col`` and wrapped text in ``wrap_col``
+        - Thin borders on all cells
+        """
+        # ── Styles ────────────────────────────────────────────────
+        header_fill   = PatternFill("solid", fgColor="1E3A5F")   # dark navy
+        header_font   = Font(bold=True, color="FFFFFF", size=11)
+        header_align  = Alignment(horizontal="center", vertical="center")
+
+        row_fill_even = PatternFill("solid", fgColor="EAF2FB")   # light blue
+        row_fill_odd  = PatternFill("solid", fgColor="FFFFFF")   # white
+        row_font      = Font(size=10)
+        link_font     = Font(size=10, color="1155CC", underline="single")
+
+        thin = Side(style="thin", color="BFBFBF")
+        border = Border(left=thin, right=thin, top=thin, bottom=thin)
+
+        # ── Header row ────────────────────────────────────────────
+        ws.append(headers)
+        ws.row_dimensions[1].height = 22
+
+        for cell in ws[1]:
+            cell.font      = header_font
+            cell.fill      = header_fill
+            cell.alignment = header_align
+            cell.border    = border
+
+        # ── Freeze top row ────────────────────────────────────────
+        ws.freeze_panes = "A2"
+
+        # ── Data rows ─────────────────────────────────────────────
+        for row_num, row in enumerate(rows, 2):
+            fill = row_fill_even if row_num % 2 == 0 else row_fill_odd
+            url  = row[link_col - 1]
+
+            ws.append(row)
+            ws.row_dimensions[row_num].height = 16
+
+            for col_idx, cell in enumerate(ws[row_num], 1):
+                # Scraped data is untrusted text, never spreadsheet formulas.
+                if isinstance(cell.value, str):
+                    cell.data_type = "s"
+                cell.fill   = fill
+                cell.border = border
+                cell.alignment = Alignment(
+                    vertical="center",
+                    wrap_text=(col_idx == wrap_col)
+                )
+
+                if col_idx == link_col and url:
+                    cell.hyperlink = url
+                    cell.font = link_font
+                else:
+                    cell.font = row_font
+
+        # ── Auto-fit column widths ────────────────────────────────
+        for col_idx, col_cells in enumerate(ws.iter_cols(), 1):
+            max_len = max(
+                (len(str(cell.value)) if cell.value else 0)
+                for cell in col_cells
+            )
+            # Cap at defined max to prevent unreasonably wide columns
+            fitted = min(max_len + 4, max_widths.get(col_idx, 40))
+            ws.column_dimensions[get_column_letter(col_idx)].width = fitted
+
     # ------------------------------------------------------------------
     # JSON export
     # ------------------------------------------------------------------
 
     def export_json(self, output_path: str) -> None:
-        """Serialises the result list to a pretty-printed JSON file."""
+        """
+        Serialises results to a pretty-printed JSON file: the plain result list,
+        or ``{"results": [...], "extracted": [...]}`` for a deep search.
+        """
         path = self._output_path(output_path)
+        payload = self.results
+        if self.extracted is not None:
+            payload = {"results": self.results, "extracted": self.extracted}
         try:
             with open(path, "w", encoding="utf-8") as f:
-                json.dump(self.results, f, ensure_ascii=False, indent=4)
+                json.dump(payload, f, ensure_ascii=False, indent=4)
             print_success(f"JSON saved → {path}")
         except IOError as e:
             print_error(f"I/O error exporting JSON: {e}")

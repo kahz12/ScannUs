@@ -1,5 +1,4 @@
 import sys
-import os
 
 from core.config import load_environment, env_config, openai_config, init_directories
 from core.logging_setup import setup_logging, get_logger
@@ -46,8 +45,8 @@ def main():
 
     args = parser.parse_args()
 
-    # --- Configuration Verification & Setup ---
-    env_exists = os.path.exists(".env")
+    # --- Configuration ---
+    # .env is optional: each feature that needs a key says so when it runs.
     if args.configure:
         print("Initializing environment configuration...")
         env_config()
@@ -56,10 +55,6 @@ def main():
         # Exit gracefully if -c was the only flag passed
         if all(a in ("-c", "--configure") for a in sys.argv[1:]):
             sys.exit(0)
-    elif not env_exists and not args.help:
-        console.print("[bold red]Error: The .env file does not exist or is not configured.[/bold red]")
-        console.print("Please run the script with the -c flag or use the interactive menu to configure it.")
-        sys.exit(1)
 
     # Route: Cache management
     if getattr(args, "cache_stats", False):
@@ -198,7 +193,7 @@ def main():
             interactive_analysis_menu(state.LAST_RESULTS, ia_agent)
         sys.exit(0)
         
-    # Route: LLM-based Google Dork generation
+    # Route: LLM-based dork generation
     if args.google_dorks:
         console.print(f"Generating dork for description: '{args.google_dorks}'", style="yellow")
         dork_generado = ia_agent.generate_gdork(args.google_dorks)
@@ -232,31 +227,34 @@ def main():
     from cli.actions import do_search, do_deep_search
 
     # Dispatch to appropriate search engine or deep analysis pipeline
-    if args.deep or args.email or args.phone:
-        do_deep_search(query, args.engine, args.pages, args.start_page, args.lang)
+    deep = bool(args.deep or args.email or args.phone)
+    if deep:
+        results = do_deep_search(query, args.engine, args.pages, args.start_page)
     else:
-        do_search(query, args.engine, args.pages, args.start_page, args.lang, args.interactive, ia_agent)
+        results = do_search(query, args.engine, args.pages, args.start_page, args.interactive, ia_agent)
 
-    # Post-processing and export logic (active only if not in interactive mode)
-    if not args.interactive and not (args.deep or args.email or args.phone):
-        results = state.LAST_RESULTS
-        rparser = ResultsParser(results)
+    # A failed search (None) has nothing to export, and the interactive menu
+    # opened by do_search() handles its own exports.
+    if results is None or (args.interactive and not deep):
+        return
 
-        # Batch export results to requested formats
-        if args.html: rparser.export_html(args.html)
-        if args.json: rparser.export_json(args.json)
-        if args.csv: rparser.export_csv(args.csv)
-        if args.excel: rparser.export_excel(args.excel)
+    rparser = ResultsParser(results, extracted=state.LAST_EXTRACTED if deep else None)
 
-        # Execute automated file downloads and metadata extraction
-        if args.download:
-            file_types = [ft.strip() for ft in args.download.split(',')]
-            urls = [r['link'] for r in results]
-            fdownloader = FileDownload("Downloads")
-            for url in urls:
-                # Filter by file extension or process all if 'all' wildcard is used
-                if any(url.lower().endswith(f".{file_type}") for file_type in file_types) or "all" in file_types:
-                    fdownloader.download_file(url, args.metadata)
+    # Batch export results to requested formats
+    if args.html: rparser.export_html(args.html)
+    if args.json: rparser.export_json(args.json)
+    if args.csv: rparser.export_csv(args.csv)
+    if args.excel: rparser.export_excel(args.excel)
+
+    # Execute automated file downloads and metadata extraction
+    if args.download:
+        file_types = [ft.strip() for ft in args.download.split(',')]
+        urls = [r['link'] for r in results]
+        fdownloader = FileDownload("Downloads")
+        for url in urls:
+            # Filter by file extension or process all if 'all' wildcard is used
+            if any(url.lower().endswith(f".{file_type}") for file_type in file_types) or "all" in file_types:
+                fdownloader.download_file(url, args.metadata)
 
 if __name__ == "__main__":
     main()

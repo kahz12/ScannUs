@@ -13,6 +13,7 @@ import requests
 from bs4 import BeautifulSoup
 from urllib.parse import unquote
 
+from cli.ui import print_warn
 from search.engines.cache import search_cache
 
 
@@ -29,6 +30,24 @@ _HEADERS = {
 # DuckDuckGo's HTML endpoint returns approximately this many results per page.
 _PAGE_OFFSET_STEP = 30
 
+# Asset path of the captcha DuckDuckGo serves when it suspects a bot.
+_CHALLENGE_MARKER = "assets/anomaly/"
+
+
+class SearchBlockedError(RuntimeError):
+    """DuckDuckGo refused the search with its anti-bot check."""
+
+
+def _is_challenge(response: requests.Response) -> bool:
+    """
+    Tells whether a page without results is DuckDuckGo's anti-bot captcha.
+
+    The captcha normally arrives as HTTP 202, which ``raise_for_status()`` lets
+    through. Call this only for pages that yielded no results, so a search
+    that merely mentions the marker is never mistaken for a block.
+    """
+    return response.status_code == 202 or _CHALLENGE_MARKER in response.text
+
 
 class DuckDuckGoSearch:
     """
@@ -43,19 +62,25 @@ class DuckDuckGoSearch:
     def __init__(self):
         self.base_url = _BASE_URL
 
-    def search(self, query: str, pages: int = 1) -> list[dict]:
+    def search(self, query: str, pages: int = 1, start_page: int = 1) -> list[dict]:
         """
         Executes a search query against DuckDuckGo.
 
         Args:
-            query: The search string.
-            pages: Number of result pages to retrieve (default 1, ~30 per page).
+            query:      The search string.
+            pages:      Number of result pages to retrieve (default 1, ~30 per page).
+            start_page: First page to retrieve (1-based).
 
         Returns:
             Normalised list of result dictionaries (title, description, link).
+
+        Raises this module's blocked-search exception when DuckDuckGo blocks
+        the search before any result was retrieved, and a runtime exception on
+        a network failure.
         """
         pages = max(1, int(pages))
-        cache_key = search_cache.make_key("duckduckgo", query, pages=pages)
+        first_page = max(1, int(start_page)) - 1
+        cache_key = search_cache.make_key("duckduckgo", query, pages=pages, start=first_page + 1)
         cached = search_cache.get(cache_key)
         if cached is not None:
             return cached
@@ -65,7 +90,7 @@ class DuckDuckGoSearch:
 
         with requests.Session() as session:
             session.headers.update(_HEADERS)
-            for page in range(pages):
+            for page in range(first_page, first_page + pages):
                 offset = page * _PAGE_OFFSET_STEP
                 params = {"q": query}
                 if offset:
@@ -82,6 +107,18 @@ class DuckDuckGoSearch:
 
                 page_results = self._parse_results(response.text)
                 if not page_results:
+                    if _is_challenge(response):
+                        if not final_results:
+                            raise SearchBlockedError(
+                                "DuckDuckGo blocked this search with its anti-bot check. "
+                                "Wait a few minutes, or add BRAVE_API_KEY to .env to "
+                                "search with Brave instead."
+                            )
+                        # Incomplete set: keep it, but leave it out of the cache
+                        # so a later run can fetch every page.
+                        print_warn(f"DuckDuckGo blocked page {page + 1} — returning "
+                                   f"the {len(final_results)} results found so far.")
+                        return final_results
                     # No more pages with content — stop early.
                     break
 
