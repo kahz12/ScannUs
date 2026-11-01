@@ -144,6 +144,10 @@ El asistente (`python main.py -c`) te guía por 8 secciones, solicitando una cla
 
 Todos los valores se escriben en `.env` en la raíz del proyecto. Puedes editarlos a mano en cualquier momento.
 
+Pulsar Enter conserva la clave guardada; para borrar una, edita `.env`.
+
+ScannUs limita `.env` y `outputs/` a tu usuario cada vez que arranca, y los archivos nuevos solo los puedes leer tú. Así, otras cuentas del sistema no pueden abrir tus informes, exportaciones, capturas, caché ni registros. Esto no aplica a los archivos que copies fuera de `outputs/`, ni en sistemas de archivos sin permisos de Unix, donde ScannUs te avisa si no puede limitar la carpeta.
+
 #### Configuración mínima viable
 
 Puedes usar ScannUs con **cero claves de API**:

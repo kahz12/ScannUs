@@ -110,12 +110,14 @@ class TestEngineChoice:
     def test_planner_is_not_offered_google(self):
         assert "google" not in TOOL_CATALOG["search"]["args"]["engine"]
 
-    def test_setup_wizard_does_not_ask_for_google_search(self, monkeypatch):
-        for name in ("GOOGLE_API_KEY_FOR_GEMINI", "BRAVE_API_KEY", "HIBP_API_KEY",
-                     "ANTHROPIC_API_KEY"):
+    def test_setup_wizard_does_not_ask_for_google_search(self, monkeypatch, tmp_path):
+        monkeypatch.chdir(tmp_path)
+        for name in ("GOOGLE_API_KEY_FOR_GEMINI", "BRAVE_API_KEY", "TAVILY_API_KEY",
+                     "EXA_API_KEY", "HIBP_API_KEY", "ANTHROPIC_API_KEY",
+                     "OLLAMA_HOST", "OLLAMA_MODEL"):
             monkeypatch.setenv(name, "kept")
         saved = []
-        monkeypatch.setattr(config, "_prompt", lambda label, hint="": "")
+        monkeypatch.setattr(config, "_prompt", lambda label, hint="": "typed")
         monkeypatch.setattr(config, "set_key", lambda path, key, value: saved.append(key))
 
         config.env_config()

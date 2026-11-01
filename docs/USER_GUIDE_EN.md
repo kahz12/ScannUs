@@ -144,6 +144,10 @@ The wizard (`python main.py -c`) walks you through 8 sections, prompting one key
 
 All values are written to `.env` in the project root. You can edit them by hand at any time.
 
+Pressing Enter keeps the saved key; to remove one, edit `.env`.
+
+ScannUs limits `.env` and `outputs/` to your user every time it starts, and new files are readable only by you. That keeps other accounts on the system out of your reports, exports, screenshots, cache and logs. This does not cover files you copy out of `outputs/`, or file systems without Unix permissions, where ScannUs warns you if it cannot limit the folder.
+
 #### Minimum viable configuration
 
 You can use ScannUs with **zero API keys**:

@@ -37,6 +37,7 @@ pytest tests/test_cache.py::TestExpiry -q
 | `test_logging_setup.py` | `setup_logging` file/console handlers, `--debug` level switching, logger namespacing, idempotent reconfiguration |
 | `test_presidio_loading.py` | Presidio loads on first use only, once, and a failed model download never stops extraction |
 | `test_api_engines.py` | Tavily and Exa: the requests they send, one-response paging, `site:` as a domain filter, usage-limit messages, and which engine takes over when DuckDuckGo blocks |
+| `test_private_files.py` | The setup wizard keeping saved keys on a blank answer, and `.env`, `outputs/` and new files staying limited to the current user |
 | `test_search_engines.py` | Engine selection, the move to Brave when DuckDuckGo blocks, Brave's paging limits, and dork prompts limited to operators both engines share |
 | `test_search_exports.py` | What `main()` writes after a search: exports and downloads in deep mode, plain-search format, nothing after a failed search, Presidio values kept |
 | `test_tech_scanner.py` | Wappalyzer backend loading, browser headers, stack detection, WebTech report parsing, fallback between backends |

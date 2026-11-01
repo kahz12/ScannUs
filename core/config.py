@@ -1,6 +1,6 @@
 import os
 from dotenv import load_dotenv, set_key
-from cli.ui import console, THEME, print_success, print_section
+from cli.ui import console, THEME, print_success, print_section, print_warn
 
 # Base Output Paths Definition
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -16,11 +16,26 @@ DIR_CACHE       = os.path.join(OUTPUT_DIR, "cache")
 DIR_LOGS        = os.path.join(OUTPUT_DIR, "logs")
 
 
+def _make_private(path: str, mode: int) -> bool:
+    """Limits a path to the current user. Returns False when the system refuses."""
+    try:
+        os.chmod(path, mode)
+    except OSError:
+        return False
+    return True
+
+
 def init_directories():
     """
     Verifies and creates the required directory scaffold for application output.
     Silently succeeds if dirs exist; reports any permission problems.
+
+    Reports, exports, the cache and the logs hold investigation data, so these
+    folders and every file this run creates are limited to the current user.
+    Older files keep their own mode, and the folder keeps others away from them.
     """
+    os.umask(0o077)
+    private = True
     for directory in [OUTPUT_DIR, DIR_CASES, DIR_DOWNLOADS,
                       DIR_MEDIA, DIR_REPORTS, DIR_SCREENSHOTS, DIR_GRAPHS,
                       DIR_CACHE, DIR_LOGS]:
@@ -29,13 +44,23 @@ def init_directories():
                 os.makedirs(directory)
             except Exception as e:
                 console.print(f"  [{THEME['ERROR']}]✘[/]  Cannot create {directory}: {e}")
+                continue
+        private = _make_private(directory, 0o700) and private
+    if not private:
+        print_warn(f"Could not limit {OUTPUT_DIR} to your user, so others may read it.")
 
 
 def load_environment():
     """
     Loads runtime config from .env into the OS environment namespace.
     Returns the primary Gemini key as a readiness signal (None if absent).
+
+    A .env copied by hand from the template starts readable by other users,
+    so it is limited to the current user before it is used.
     """
+    env_path = os.path.join(BASE_DIR, ".env")
+    if os.path.exists(env_path):
+        _make_private(env_path, 0o600)
     load_dotenv()
     return os.getenv("GOOGLE_API_KEY_FOR_GEMINI")
 
@@ -47,61 +72,62 @@ def _prompt(label: str, hint: str = "") -> str:
     return console.input(f"  [{THEME['INPUT']}]❯[/] {label}: ").strip()
 
 
+def _save_key(name: str, value: str) -> bool:
+    """
+    Stores a value in `.env` and in the running session.
+
+    A blank answer saves nothing, so pressing Enter keeps the stored value.
+    Returns True when the value was saved.
+    """
+    if not value:
+        return False
+    set_key(".env", name, value)
+    os.environ[name] = value
+    _make_private(".env", 0o600)
+    return True
+
+
 def env_config():
     """
     Interactive TUI wizard to capture and persist API credentials to `.env`.
     """
     print_section("Google AI (Gemini)")
-    api_key_gemini = _prompt("Google AI Studio API KEY",
-                             "From aistudio.google.com — needed for AI features")
-    set_key(".env", "GOOGLE_API_KEY_FOR_GEMINI", api_key_gemini)
-    os.environ["GOOGLE_API_KEY_FOR_GEMINI"] = api_key_gemini
-    if api_key_gemini:
+    if _save_key("GOOGLE_API_KEY_FOR_GEMINI",
+                 _prompt("Google AI Studio API KEY",
+                         "From aistudio.google.com — needed for AI features")):
         print_success("Gemini API Key updated in the current session.")
 
     print_section("Brave Search API")
-    api_key_brave = _prompt("Brave Search API KEY",
-                            "From api.search.brave.com — optional, also used "
-                            "when DuckDuckGo blocks a search")
-    set_key(".env", "BRAVE_API_KEY", api_key_brave)
-    os.environ["BRAVE_API_KEY"] = api_key_brave
-    if api_key_brave:
+    if _save_key("BRAVE_API_KEY",
+                 _prompt("Brave Search API KEY",
+                         "From api.search.brave.com — optional, also used "
+                         "when DuckDuckGo blocks a search")):
         print_success("Brave API Key saved.")
 
     print_section("Tavily Search API")
-    api_key_tavily = _prompt("Tavily API KEY",
-                             "From app.tavily.com — optional, free monthly credits, "
-                             "no card. Leave blank to keep the saved key")
-    if api_key_tavily:
-        set_key(".env", "TAVILY_API_KEY", api_key_tavily)
-        os.environ["TAVILY_API_KEY"] = api_key_tavily
+    if _save_key("TAVILY_API_KEY",
+                 _prompt("Tavily API KEY",
+                         "From app.tavily.com — optional, free monthly credits, no card")):
         print_success("Tavily API Key saved.")
 
     print_section("Exa Search API")
-    api_key_exa = _prompt("Exa API KEY",
-                          "From dashboard.exa.ai — optional, free monthly credit, "
-                          "no card. Leave blank to keep the saved key")
-    if api_key_exa:
-        set_key(".env", "EXA_API_KEY", api_key_exa)
-        os.environ["EXA_API_KEY"] = api_key_exa
+    if _save_key("EXA_API_KEY",
+                 _prompt("Exa API KEY",
+                         "From dashboard.exa.ai — optional, free monthly credit, no card")):
         print_success("Exa API Key saved.")
 
     print_section("Have I Been Pwned (HIBP)")
-    api_key_hibp = _prompt("HIBP API KEY",
-                           "From haveibeenpwned.com/API/Key — paid, optional. "
-                           "Without it, only the free domain/breach catalog "
-                           "and Pwned Passwords endpoints work.")
-    set_key(".env", "HIBP_API_KEY", api_key_hibp)
-    os.environ["HIBP_API_KEY"] = api_key_hibp
-    if api_key_hibp:
+    if _save_key("HIBP_API_KEY",
+                 _prompt("HIBP API KEY",
+                         "From haveibeenpwned.com/API/Key — paid, optional. "
+                         "Without it, only the free domain/breach catalog "
+                         "and Pwned Passwords endpoints work.")):
         print_success("HIBP API Key saved.")
 
     print_section("Anthropic Claude")
-    api_key_anthropic = _prompt("Anthropic API KEY",
-                                "From console.anthropic.com — optional, for Claude")
-    set_key(".env", "ANTHROPIC_API_KEY", api_key_anthropic)
-    os.environ["ANTHROPIC_API_KEY"] = api_key_anthropic
-    if api_key_anthropic:
+    if _save_key("ANTHROPIC_API_KEY",
+                 _prompt("Anthropic API KEY",
+                         "From console.anthropic.com — optional, for Claude")):
         print_success("Anthropic API Key saved.")
 
     print_section("Ollama (local LLM)")
@@ -109,13 +135,9 @@ def env_config():
                           "Default: http://localhost:11434 — leave blank to keep default")
     ollama_model = _prompt("Default Ollama model",
                            "Default: llama3 — must already be pulled with `ollama pull`")
-    if ollama_host:
-        set_key(".env", "OLLAMA_HOST", ollama_host)
-        os.environ["OLLAMA_HOST"] = ollama_host
+    if _save_key("OLLAMA_HOST", ollama_host):
         print_success("Ollama host saved.")
-    if ollama_model:
-        set_key(".env", "OLLAMA_MODEL", ollama_model)
-        os.environ["OLLAMA_MODEL"] = ollama_model
+    if _save_key("OLLAMA_MODEL", ollama_model):
         print_success("Ollama default model saved.")
 
 
@@ -124,8 +146,5 @@ def openai_config():
     Isolated wizard for OpenAI platform credential capture.
     """
     print_section("OpenAI Configuration")
-    api_key = _prompt("OpenAI API KEY", "From platform.openai.com")
-    set_key(".env", "OPENAI_API_KEY", api_key)
-    os.environ["OPENAI_API_KEY"] = api_key
-    if api_key:
+    if _save_key("OPENAI_API_KEY", _prompt("OpenAI API KEY", "From platform.openai.com")):
         print_success("OpenAI API Key saved.")

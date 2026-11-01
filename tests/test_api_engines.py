@@ -423,7 +423,8 @@ class TestMoveFromDuckDuckGo:
 
 
 class TestConfiguration:
-    def run_wizard(self, monkeypatch, answers):
+    def run_wizard(self, monkeypatch, tmp_path, answers):
+        monkeypatch.chdir(tmp_path)
         saved = {}
         monkeypatch.setattr(config, "_prompt",
                             lambda label, hint="": answers.get(label.split()[0], ""))
@@ -435,14 +436,14 @@ class TestConfiguration:
         config.env_config()
         return saved
 
-    def test_wizard_saves_both_keys(self, monkeypatch):
-        saved = self.run_wizard(monkeypatch, {"Tavily": "tvly-new", "Exa": "exa-new"})
+    def test_wizard_saves_both_keys(self, monkeypatch, tmp_path):
+        saved = self.run_wizard(monkeypatch, tmp_path, {"Tavily": "tvly-new", "Exa": "exa-new"})
 
         assert saved["TAVILY_API_KEY"] == "tvly-new"
         assert saved["EXA_API_KEY"] == "exa-new"
 
-    def test_blank_answer_keeps_the_saved_keys(self, monkeypatch):
-        saved = self.run_wizard(monkeypatch, {})
+    def test_blank_answer_keeps_the_saved_keys(self, monkeypatch, tmp_path):
+        saved = self.run_wizard(monkeypatch, tmp_path, {})
 
         assert "TAVILY_API_KEY" not in saved
         assert "EXA_API_KEY" not in saved
