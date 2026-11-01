@@ -29,7 +29,7 @@
 
 | Capability | What you get |
 |---|---|
-| **Multi-engine search** | DuckDuckGo · Brave, with automatic fallback — persistent SQLite cache |
+| **Multi-engine search** | DuckDuckGo · Brave · Tavily · Exa, with automatic fallback — persistent SQLite cache |
 | **Four AI providers** | Gemini · GPT-4o · Claude Sonnet 4.6 · local Ollama — token-streamed |
 | **AI Query Planner** | Step-by-step investigations that build on each result, with a sourced final report, using 24 whitelisted tools |
 | **Evidence** | Every finding keeps its source, tool, date, content hash and confidence, saved with the case |

@@ -57,6 +57,8 @@ import cli.actions
 _ENGINE_CHOICES = [
     ("DuckDuckGo",  "duckduckgo", "privacy-friendly · default"),
     ("Brave",       "brave",      "independent index · API key"),
+    ("Tavily",      "tavily",     "free monthly credits · API key"),
+    ("Exa",         "exa",        "semantic search · free monthly credit · API key"),
 ]
 
 _MEDIA_CHOICES = [

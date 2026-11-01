@@ -120,13 +120,17 @@ python main.py -c
 
 ### 1.3 Asistente de Configuración
 
-El asistente (`python main.py -c`) te guía por 6 secciones, solicitando una clave a la vez. Pulsa Enter para omitir cualquier campo.
+El asistente (`python main.py -c`) te guía por 8 secciones, solicitando una clave a la vez. Pulsa Enter para omitir cualquier campo.
 
 ```
 ┌─ Google AI (Gemini) ─────────────────────────────
 │   GOOGLE_API_KEY_FOR_GEMINI (desde aistudio.google.com)
 ├─ Brave Search API ───────────────────────────────
 │   BRAVE_API_KEY       (desde api.search.brave.com)
+├─ Tavily Search API ──────────────────────────────
+│   TAVILY_API_KEY      (desde app.tavily.com)
+├─ Exa Search API ─────────────────────────────────
+│   EXA_API_KEY         (desde dashboard.exa.ai)
 ├─ Have I Been Pwned (HIBP) ───────────────────────
 │   HIBP_API_KEY        (desde haveibeenpwned.com/API/Key)
 ├─ Anthropic Claude ───────────────────────────────
@@ -155,7 +159,7 @@ Puedes usar ScannUs con **cero claves de API**:
 - ✅ Fingerprinting de tecnologías web
 - ✅ Imagen inversa — URLs de respaldo manuales
 
-Para desbloquear toda la potencia, añade como mínimo una clave de Gemini (capa gratuita) y una clave de Brave Search.
+Para desbloquear toda la potencia, añade como mínimo una clave de Gemini (capa gratuita) y una clave de un motor de búsqueda. Tavily y Exa tienen crédito mensual gratuito y no piden tarjeta.
 
 ---
 
@@ -353,6 +357,8 @@ Los operadores de dork se pasan al motor tal cual. Estos funcionan en los dos mo
 
 `inurl:` solo está documentado en DuckDuckGo, y `AND` / `OR` / `NOT` solo en Brave. Los dos motores avisan de que sus operadores no son del todo fiables, y DuckDuckGo muestra resultados relacionados cuando un dork no encuentra nada, así que comprueba que los resultados coincidan de verdad.
 
+Tavily y Exa no documentan estos operadores. ScannUs convierte `site:` y `-site:` en sus filtros de dominio y, en Tavily, activa la coincidencia exacta si la consulta lleva comillas. El resto, como `filetype:` o `intitle:`, llega como texto normal, y ScannUs te avisa cuando ocurre.
+
 ### 3.2 Búsqueda Guiada
 
 Para OSINT sobre personas, construye una consulta `AND` compuesta de forma interactiva o por flags:
@@ -385,15 +391,19 @@ Flags guiadas disponibles:
 |---|---|---|---|
 | **DuckDuckGo** | Ninguna | Gratis | Scraping HTML — puede romperse con cambios de maquetación, y un control anti-bot puede bloquear las búsquedas durante un tiempo |
 | **Brave Search** | API key y tarjeta | Índice independiente, API oficial, admite también los operadores `lang:` y `loc:` | De pago tras el crédito mensual gratuito, 10 páginas por consulta |
+| **Tavily** | API key, sin tarjeta | API oficial, 1.000 créditos gratis al mes, una búsqueda gasta 1 | Sin paginación, hasta 20 resultados por consulta. No documenta `filetype:` ni `intitle:` |
+| **Exa** | API key, sin tarjeta | API oficial, búsqueda semántica, crédito gratis cada mes | Sin paginación, hasta 25 resultados por consulta. No documenta `filetype:` ni `intitle:` |
 
 Elige en tiempo de ejecución:
 
 ```bash
 python main.py -q "consulta" --engine duckduckgo    # por defecto
 python main.py -q "consulta" --engine brave
+python main.py -q "consulta" --engine tavily
+python main.py -q "consulta" --engine exa
 ```
 
-Si DuckDuckGo bloquea una búsqueda y `BRAVE_API_KEY` está configurada, ScannUs pasa esa búsqueda a Brave y te avisa. Esto consume crédito de Brave. Sin clave, verás un error que explica el bloqueo.
+Si DuckDuckGo bloquea una búsqueda, ScannUs la pasa al primer motor con clave configurada, en este orden: Brave, Tavily y Exa, y te avisa. Esto consume crédito de ese motor. Sin ninguna clave, verás un error que explica el bloqueo.
 
 ### 3.4 Paginación
 
@@ -403,6 +413,8 @@ python main.py -q "consulta" --start-page 5         # empezar desde la página 5
 ```
 
 Para filtrar por idioma en Brave, añade el operador a la consulta, por ejemplo `lang:es`.
+
+Tavily y Exa no tienen paginación, así que ScannUs trata cada 10 resultados como una página y hace una sola petición. `--pages 2` pide 20 resultados, y `--start-page 2` también los pide y muestra los últimos 10.
 
 ---
 
@@ -1630,6 +1642,8 @@ Estimaciones aproximadas para uso moderado (50 investigaciones/mes):
 | Ollama | $0 (local) |
 | HIBP (de pago) | $3,50/mes a tanto alzado |
 | Brave Search | $5 de crédito gratis al mes (unas 1.000 consultas), luego $5 por 1.000 |
+| Tavily | 1.000 créditos gratis al mes; cada búsqueda de ScannUs gasta 1 |
+| Exa | $10 de crédito gratis al mes; $0,007 por búsqueda de hasta 10 resultados y $0,001 por cada resultado adicional |
 | Shodan | $59/mes por el plan básico |
 
 Puedes ejecutar ScannUs con **cero servicios de pago** quedándote con DuckDuckGo + endpoints gratuitos de HIBP + Ollama para IA.

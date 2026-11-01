@@ -94,7 +94,7 @@ TOOL_CATALOG: dict[str, dict] = {
         "desc": "Run a SERP search and return the list of titles/URLs/snippets.",
         "args": {
             "query":  "str (required) — search string, dork operators welcome",
-            "engine": "str — duckduckgo | brave (default: duckduckgo)",
+            "engine": "str — duckduckgo | brave | tavily | exa (default: duckduckgo)",
             "pages":  "int — SERP pages to retrieve (default: 1)",
         },
     },

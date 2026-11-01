@@ -8,6 +8,8 @@ from cli.ui import console, THEME, print_success, print_error, print_warn, print
 from core.config import DIR_REPORTS
 from search.engines import SEARCH_ENGINES
 from search.engines.duckduckgosearch import DuckDuckGoSearch, SearchBlockedError
+from search.engines.exasearch import ExaSearch
+from search.engines.tavilysearch import TavilySearch
 from search.engines.bravesearch import BraveSearch
 from core import state
 from core.findings import get_hub
@@ -22,13 +24,31 @@ _log = get_logger(__name__)
 # Internal helpers
 # ---------------------------------------------------------------------------
 
+# Engines that need a key, in the order a blocked DuckDuckGo search tries them.
+_API_KEY_VARS = {
+    "brave":  "BRAVE_API_KEY",
+    "tavily": "TAVILY_API_KEY",
+    "exa":    "EXA_API_KEY",
+}
+
+
+def _search_with_api_engine(engine: str, pages: int, start_page: int, query: str):
+    """Runs one of the engines that need a key, naming the key when it is missing."""
+    key_var = _API_KEY_VARS[engine]
+    api_key = os.getenv(key_var)
+    if not api_key:
+        raise EnvironmentError(f"{key_var} not found in .env")
+    client = {"brave": BraveSearch, "tavily": TavilySearch, "exa": ExaSearch}[engine](api_key)
+    return client.search(query, pages=pages, start_page=start_page)
+
+
 def get_search_engine(engine: str, pages: int, start_page: int, query: str):
     """
     Instantiates the correct search engine and runs the query.
     Returns a list of result dicts or raises on bad configuration.
 
-    When DuckDuckGo blocks a search and a Brave key is configured, the search
-    moves to Brave so one anti-bot check does not stop an investigation.
+    When DuckDuckGo blocks a search, it moves to the first engine with a
+    configured key, so one anti-bot check does not stop an investigation.
     """
     engine = engine.lower()
     _log.info("search: engine=%s query=%r pages=%s start=%s", engine, query, pages, start_page)
@@ -36,21 +56,18 @@ def get_search_engine(engine: str, pages: int, start_page: int, query: str):
     if engine not in SEARCH_ENGINES:
         raise ValueError(f"Unknown search engine '{engine}'. Use: {', '.join(SEARCH_ENGINES)}.")
 
-    brave_key = os.getenv("BRAVE_API_KEY")
-
     if engine == 'duckduckgo':
         try:
             results = DuckDuckGoSearch().search(query, pages=pages, start_page=start_page)
         except SearchBlockedError:
-            if not brave_key:
+            engine = next((name for name, key_var in _API_KEY_VARS.items()
+                           if os.getenv(key_var)), None)
+            if not engine:
                 raise
-            print_warn("DuckDuckGo blocked this search — using Brave instead.")
-            engine = 'brave'
+            print_warn(f"DuckDuckGo blocked this search — using {engine.capitalize()} instead.")
 
-    if engine == 'brave':
-        if not brave_key:
-            raise EnvironmentError("BRAVE_API_KEY not found in .env")
-        results = BraveSearch(brave_key).search(query, pages=pages, start_page=start_page)
+    if engine != 'duckduckgo':
+        results = _search_with_api_engine(engine, pages, start_page, query)
 
     _log.info("search: engine=%s returned %d result(s)", engine, len(results or []))
     return results
@@ -297,7 +314,7 @@ def do_generate_dork_ia() -> None:
         )
         ans = console.input(f"\n  Run a search with this dork? (y/n) [{THEME['DIM']}]n[/] [{THEME['INPUT']}]❯[/] ").strip().lower()
         if ans in ("y", "s"):
-            engine = console.input(f"  Engine (duckduckgo/brave) [{THEME['DIM']}]duckduckgo[/] [{THEME['INPUT']}]❯[/] ").strip().lower() or "duckduckgo"
+            engine = console.input(f"  Engine ({'/'.join(SEARCH_ENGINES)}) [{THEME['DIM']}]duckduckgo[/] [{THEME['INPUT']}]❯[/] ").strip().lower() or "duckduckgo"
             do_search(query=dork, engine=engine, pages=1, start_page=1,
                       interactive=True, ia_agent=ia_agent)
     else:

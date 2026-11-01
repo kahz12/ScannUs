@@ -120,13 +120,17 @@ python main.py -c
 
 ### 1.3 Configuration Wizard
 
-The wizard (`python main.py -c`) walks you through 6 sections, prompting one key at a time. Press Enter to skip any field.
+The wizard (`python main.py -c`) walks you through 8 sections, prompting one key at a time. Press Enter to skip any field.
 
 ```
 ┌─ Google AI (Gemini) ─────────────────────────────
 │   GOOGLE_API_KEY_FOR_GEMINI (from aistudio.google.com)
 ├─ Brave Search API ───────────────────────────────
 │   BRAVE_API_KEY       (from api.search.brave.com)
+├─ Tavily Search API ──────────────────────────────
+│   TAVILY_API_KEY      (from app.tavily.com)
+├─ Exa Search API ─────────────────────────────────
+│   EXA_API_KEY         (from dashboard.exa.ai)
 ├─ Have I Been Pwned (HIBP) ───────────────────────
 │   HIBP_API_KEY        (from haveibeenpwned.com/API/Key)
 ├─ Anthropic Claude ───────────────────────────────
@@ -155,7 +159,7 @@ You can use ScannUs with **zero API keys**:
 - ✅ Web technology fingerprinting
 - ✅ Reverse image — manual fallback URLs
 
-To unlock the full power, add at minimum a Gemini key (free tier) and a Brave Search key.
+To unlock the full power, add at minimum a Gemini key (free tier) and a key for one search engine. Tavily and Exa have a free monthly credit and ask for no card.
 
 ---
 
@@ -353,6 +357,8 @@ Dork operators are passed to the engine verbatim. These work on both engines:
 
 `inurl:` is documented only by DuckDuckGo, and `AND` / `OR` / `NOT` only by Brave. Both engines warn that their operators are not fully reliable, and DuckDuckGo shows related results when a dork finds nothing, so check that results really match.
 
+Tavily and Exa do not document these operators. ScannUs turns `site:` and `-site:` into their domain filters and, on Tavily, asks for an exact match when the query has quotes. The rest, such as `filetype:` or `intitle:`, arrive as plain text, and ScannUs warns you when that happens.
+
 ### 3.2 Guided Search
 
 For people-OSINT, build a compound `AND` query interactively or via flags:
@@ -385,15 +391,19 @@ Available guided flags:
 |---|---|---|---|
 | **DuckDuckGo** | None | Free | HTML scraping — can break on layout changes, and an anti-bot check can block searches for a while |
 | **Brave Search** | API key and card | Independent index, official API, also takes the `lang:` and `loc:` operators | Paid after the monthly free credit, 10 pages per query |
+| **Tavily** | API key, no card | Official API, 1,000 free credits a month, a search spends 1 | No pagination, up to 20 results per query. Does not document `filetype:` or `intitle:` |
+| **Exa** | API key, no card | Official API, semantic search, free credit every month | No pagination, up to 25 results per query. Does not document `filetype:` or `intitle:` |
 
 Pick at runtime:
 
 ```bash
 python main.py -q "query" --engine duckduckgo    # default
 python main.py -q "query" --engine brave
+python main.py -q "query" --engine tavily
+python main.py -q "query" --engine exa
 ```
 
-If DuckDuckGo blocks a search and `BRAVE_API_KEY` is set, ScannUs moves that search to Brave and tells you. This spends Brave credit. Without a key, you get an error explaining the block.
+If DuckDuckGo blocks a search, ScannUs moves it to the first engine with a configured key, in this order: Brave, Tavily and Exa, and tells you. This spends that engine's credit. Without any key, you get an error explaining the block.
 
 ### 3.4 Pagination
 
@@ -403,6 +413,8 @@ python main.py -q "query" --start-page 5         # start from page 5
 ```
 
 To filter by language on Brave, add the operator to the query, for example `lang:es`.
+
+Tavily and Exa have no pagination, so ScannUs treats every 10 results as a page and makes a single request. `--pages 2` asks for 20 results, and `--start-page 2` asks for them too and shows the last 10.
 
 ---
 
@@ -1625,6 +1637,8 @@ Rough estimates for moderate use (50 investigations/month):
 | Ollama | $0 (local) |
 | HIBP (paid) | $3.50/month flat |
 | Brave Search | $5 free credit per month (about 1,000 queries), then $5 per 1,000 |
+| Tavily | 1,000 free credits a month; each ScannUs search spends 1 |
+| Exa | $10 free credit a month; $0.007 per search of up to 10 results and $0.001 per extra result |
 | Shodan | $59/month for the basic plan |
 
 You can run ScannUs with **zero paid services** by sticking to DuckDuckGo + free HIBP endpoints + Ollama for AI.

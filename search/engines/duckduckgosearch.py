@@ -111,8 +111,8 @@ class DuckDuckGoSearch:
                         if not final_results:
                             raise SearchBlockedError(
                                 "DuckDuckGo blocked this search with its anti-bot check. "
-                                "Wait a few minutes, or add BRAVE_API_KEY to .env to "
-                                "search with Brave instead."
+                                "Wait a few minutes, or add a Brave, Tavily or Exa key "
+                                "to .env to search with that engine instead."
                             )
                         # Incomplete set: keep it, but leave it out of the cache
                         # so a later run can fetch every page.

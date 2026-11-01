@@ -149,8 +149,9 @@ def get_parser() -> argparse.ArgumentParser:
     search = parser.add_argument_group("Search Parameters")
     search.add_argument("--engine",     type=str.lower, default="duckduckgo", metavar="ENGINE",
                         choices=SEARCH_ENGINES,
-                        help="Search engine: duckduckgo | brave  (default: duckduckgo). "
-                             "With BRAVE_API_KEY set, a blocked DuckDuckGo search moves to Brave.")
+                        help="Search engine: duckduckgo | brave | tavily | exa  (default: duckduckgo). "
+                             "A blocked DuckDuckGo search moves to the first of Brave, "
+                             "Tavily or Exa with a key in .env.")
     search.add_argument("-n", "--name",     metavar="NAME",
                         help="Target's full legal name.")
     search.add_argument("-u", "--username", metavar="HANDLE",

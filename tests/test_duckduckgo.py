@@ -35,9 +35,10 @@ class FakeResponse:
 
 
 @pytest.fixture(autouse=True)
-def _no_brave_key(monkeypatch):
-    """A developer's real key must not move these searches to Brave."""
-    monkeypatch.delenv("BRAVE_API_KEY", raising=False)
+def _no_engine_keys(monkeypatch):
+    """A developer's real key must not move these searches to another engine."""
+    for name in ("BRAVE_API_KEY", "TAVILY_API_KEY", "EXA_API_KEY"):
+        monkeypatch.delenv(name, raising=False)
 
 
 @pytest.fixture

@@ -68,6 +68,24 @@ def env_config():
     if api_key_brave:
         print_success("Brave API Key saved.")
 
+    print_section("Tavily Search API")
+    api_key_tavily = _prompt("Tavily API KEY",
+                             "From app.tavily.com — optional, free monthly credits, "
+                             "no card. Leave blank to keep the saved key")
+    if api_key_tavily:
+        set_key(".env", "TAVILY_API_KEY", api_key_tavily)
+        os.environ["TAVILY_API_KEY"] = api_key_tavily
+        print_success("Tavily API Key saved.")
+
+    print_section("Exa Search API")
+    api_key_exa = _prompt("Exa API KEY",
+                          "From dashboard.exa.ai — optional, free monthly credit, "
+                          "no card. Leave blank to keep the saved key")
+    if api_key_exa:
+        set_key(".env", "EXA_API_KEY", api_key_exa)
+        os.environ["EXA_API_KEY"] = api_key_exa
+        print_success("Exa API Key saved.")
+
     print_section("Have I Been Pwned (HIBP)")
     api_key_hibp = _prompt("HIBP API KEY",
                            "From haveibeenpwned.com/API/Key — paid, optional. "

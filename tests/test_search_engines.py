@@ -20,6 +20,13 @@ QUERY = "target"
 RESULT = {"title": "T", "description": "D", "link": "https://site.test/a"}
 
 
+@pytest.fixture(autouse=True)
+def _only_brave_can_take_over(monkeypatch):
+    """A developer's real keys must not move these searches to other engines."""
+    monkeypatch.delenv("TAVILY_API_KEY", raising=False)
+    monkeypatch.delenv("EXA_API_KEY", raising=False)
+
+
 @pytest.fixture
 def cache(tmp_path, monkeypatch):
     """Send the shared search cache to a temporary database."""

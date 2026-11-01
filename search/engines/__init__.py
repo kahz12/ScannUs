@@ -1,3 +1,3 @@
-"""Web search engines. DuckDuckGo needs no key; Brave needs a paid API key."""
+"""Web search engines. DuckDuckGo needs no key; Brave, Tavily and Exa need an API key."""
 
-SEARCH_ENGINES = ("duckduckgo", "brave")
+SEARCH_ENGINES = ("duckduckgo", "brave", "tavily", "exa")
