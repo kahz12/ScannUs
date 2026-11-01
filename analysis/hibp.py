@@ -16,7 +16,6 @@ Three classes of endpoint, all routed through the persistent SQLite cache:
   * Free (no key required):
       - ``hibp_breaches_for_domain(domain)`` — breaches affecting a domain
       - ``hibp_breach(name)``                — detailed metadata for one breach
-      - ``hibp_all_breaches()``              — the global breach catalog
 
   * Pwned Passwords k-anonymity (free, separate host):
       - ``hibp_password_pwned(password)``      — k-anon count for a cleartext pw
@@ -317,33 +316,6 @@ def hibp_breach(name: str) -> dict | None:
         ["one", name.lower()],
         lambda: _fetch_breach(name),
     )
-
-
-def _fetch_all_breaches() -> list[dict]:
-    """Raw network fetch for the entire HIBP breach catalog.
-
-    This endpoint returns every breach ever ingested by HIBP. As of 2024 that's
-    700+ breaches. Great for building dashboards; expensive on first call;
-    hence the 7-day cache below. Private uncached version.
-    """
-    status, body = _get(f"{_HIBP_API}/breaches", namespace="hibp_breach")
-    if status == 200 and isinstance(body, list):
-        return body
-    return []
-
-
-def hibp_all_breaches() -> list[dict]:
-    """Return the full HIBP breach catalog. Free; cached 7d.
-
-    Cached under the key "catalog" so all callers share the same warm copy.
-    If this returns an empty list, either HIBP is down or every company on
-    the internet has magically started handling data responsibly (unlikely).
-    """
-    return cached_call(
-        "hibp_breach",
-        ["catalog"],
-        _fetch_all_breaches,
-    ) or []
 
 
 # ---------------------------------------------------------------------------

@@ -121,8 +121,8 @@ def _fetch_with_retry(url: str, headers: dict, max_retries: int = 3,
     """
     Performs an HTTP GET with exponential backoff retry on transient failures.
 
-    Retry is triggered for connection failures and 5xx / 429 status codes.
-    Client-side failures (4xx except 429) are not retried, as they are permanent.
+    Retry is triggered for connection failures and 429, 500, 502, 503 and 504
+    status codes. Any other failure status is permanent and raised at once.
 
     Args:
         url:         Target URL.
@@ -135,34 +135,28 @@ def _fetch_with_retry(url: str, headers: dict, max_retries: int = 3,
         The successful Response object.
 
     Raises:
-        requests.exceptions.RequestException: When all attempts are exhausted.
+        requests.exceptions.RequestException: On a permanent failure, or when
+        all attempts are exhausted.
     """
     retryable_status_codes = {429, 500, 502, 503, 504}
-    last_exception = None
 
     for attempt in range(max_retries + 1):
+        response = None
         try:
             response = requests.get(url, headers=headers, stream=True, timeout=timeout)
-
-            # Permanent client failures (400, 401, 403, 404 …) are not retried
-            if response.status_code not in retryable_status_codes:
-                response.raise_for_status()
-                return response
-
-            # Raise to trigger the retry path for retryable codes
             response.raise_for_status()
+            return response
 
-        except requests.exceptions.RequestException as e:
-            last_exception = e
-            if attempt < max_retries:
-                wait = base_delay * (2 ** attempt)   # 1s → 2s → 4s
-                console.print(
-                    f"  [dim]Retry {attempt + 1}/{max_retries} for {url[:60]}… "
-                    f"waiting {wait:.0f}s[/dim]"
-                )
-                time.sleep(wait)
-            else:
-                raise last_exception
+        except requests.exceptions.RequestException:
+            permanent = response is not None and response.status_code not in retryable_status_codes
+            if permanent or attempt == max_retries:
+                raise
+            wait = base_delay * (2 ** attempt)   # 1s → 2s → 4s
+            console.print(
+                f"  [dim]Retry {attempt + 1}/{max_retries} for {url[:60]}… "
+                f"waiting {wait:.0f}s[/dim]"
+            )
+            time.sleep(wait)
 
 
 def _download_single(media_url: str, temp_dir: str, headers: dict,
@@ -225,7 +219,7 @@ def _download_single(media_url: str, temp_dir: str, headers: dict,
 
     except requests.exceptions.RequestException as e:
         progress.advance(overall_task_id)
-        return False, f"Network error (all retries exhausted) for {media_url}: {e}"
+        return False, f"Download failed for {media_url}: {e}"
     except Exception as e:
         progress.advance(overall_task_id)
 
