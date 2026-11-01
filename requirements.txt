@@ -56,7 +56,7 @@ setuptools<82                    # python-Wappalyzer imports pkg_resources, gone
 
 # --- PII detection (optional) ---
 # It also needs a language model: python -m spacy download en_core_web_lg
-presidio-analyzer==2.2.365       # Microsoft Presidio entity detection
+presidio-analyzer==2.2.366       # Microsoft Presidio entity detection
 
 # --- Username enumeration ---
 sherlock-project==0.16.0         # 400+ social sites — pure-Python, works everywhere
