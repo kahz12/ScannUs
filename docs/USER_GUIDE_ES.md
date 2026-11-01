@@ -183,7 +183,7 @@ Cada flag de CLI tiene su entrada equivalente en el menú, y viceversa. La TUI i
 
 #### Códigos de salida
 
-Un comando termina con `0` cuando pudo hacer su trabajo, aunque no encontrara nada, y con `1` cuando no pudo, por ejemplo porque una búsqueda fue bloqueada o falta una clave de API. `--hibp-domain` y `--media-scrape` siempre terminan con `0`, porque aún no distinguen un fallo de un resultado vacío.
+Un comando termina con `0` cuando pudo hacer su trabajo, aunque no encontrara nada, y con `1` cuando no pudo, por ejemplo porque una búsqueda fue bloqueada o falta una clave de API. Con `--media-scrape`, una página sin medios termina con `0`; termina con `1` si no se pudo leer la página o si no se guardó ningún archivo porque fallaron las descargas. Si fallan solo algunas, termina con `0` y el resumen muestra cuántas.
 
 ### 2.2 Casos
 

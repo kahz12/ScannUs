@@ -183,7 +183,7 @@ Every CLI flag has an equivalent menu entry, and vice versa. The TUI internally 
 
 #### Exit codes
 
-A command ends with `0` when it could do its job, even if it found nothing, and with `1` when it could not, for example because a search was blocked or an API key is missing. `--hibp-domain` and `--media-scrape` always end with `0`, because they cannot tell a failure from an empty result yet.
+A command ends with `0` when it could do its job, even if it found nothing, and with `1` when it could not, for example because a search was blocked or an API key is missing. With `--media-scrape`, a page without media ends with `0`; it ends with `1` if the page could not be read or if no file was saved because the downloads failed. If only some downloads fail, it ends with `0` and the summary shows how many.
 
 ### 2.2 Cases
 

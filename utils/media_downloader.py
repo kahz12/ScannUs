@@ -635,7 +635,7 @@ def _extract_video_urls_selenium_interaction(url: str) -> list[str]:
     return list(dict.fromkeys(video_urls))
 
 
-def _scrape_media_urls_static(url: str, headers: dict, media_type: str) -> list[str]:
+def _scrape_media_urls_static(url: str, headers: dict, media_type: str) -> list[str] | None:
     """
     Extracts media URLs from a page using static HTML parsing via BeautifulSoup.
     Handles <img>, <video>, <source>, <audio> tags and inline CSS background-image.
@@ -646,14 +646,15 @@ def _scrape_media_urls_static(url: str, headers: dict, media_type: str) -> list[
         media_type: 'images', 'videos', 'audio', or 'all'.
 
     Returns:
-        Deduplicated list of absolute media URLs.
+        Deduplicated list of absolute media URLs, or None when the page
+        could not be read.
     """
     try:
         response = requests.get(url, headers=headers, timeout=20)
         response.raise_for_status()
     except requests.exceptions.RequestException as e:
         console.print(f"[bold red]Error accessing URL:[/bold red] {e}")
-        return []
+        return None
 
     soup = BeautifulSoup(response.text, 'html.parser')
     media_urls = []
@@ -694,7 +695,7 @@ def _scrape_media_urls_static(url: str, headers: dict, media_type: str) -> list[
     return list(dict.fromkeys(media_urls))  # deduplicate preserving order
 
 
-def _scrape_media_urls_dynamic(url: str, media_type: str) -> list[str]:
+def _scrape_media_urls_dynamic(url: str, media_type: str) -> list[str] | None:
     """
     Extracts media URLs from a JavaScript-rendered page using Selenium.
     Scrolls the page to trigger lazy-loading before extracting the DOM.
@@ -704,7 +705,8 @@ def _scrape_media_urls_dynamic(url: str, media_type: str) -> list[str]:
         media_type: 'images', 'videos', 'audio', or 'all'.
 
     Returns:
-        Deduplicated list of absolute media URLs found in the rendered DOM.
+        Deduplicated list of absolute media URLs found in the rendered DOM,
+        or None when the page could not be rendered.
     """
     try:
         from selenium import webdriver
@@ -712,7 +714,7 @@ def _scrape_media_urls_dynamic(url: str, media_type: str) -> list[str]:
         from selenium.webdriver.firefox.service import Service
     except ImportError:
         console.print("[bold red]Selenium is not installed. Cannot use dynamic scraping.[/bold red]")
-        return []
+        return None
 
     options = Options()
     options.add_argument("--headless")
@@ -742,7 +744,7 @@ def _scrape_media_urls_dynamic(url: str, media_type: str) -> list[str]:
 
     except Exception as e:
         console.print(f"[bold red]Selenium error:[/bold red] {e}")
-        return []
+        return None
     finally:
         if driver:
             driver.quit()
@@ -789,7 +791,7 @@ def download_media(
     max_workers:  int  = 8,
     min_size:     int  = MIN_FILE_SIZE_BYTES,
     use_async:    bool = False,
-) -> None:
+) -> bool:
     """
     Orchestrates media scraping and parallel downloading from a target URL.
 
@@ -813,6 +815,12 @@ def download_media(
         use_async:    If True and ``aiohttp`` is installed, uses an asyncio
                       downloader instead of ``ThreadPoolExecutor`` for the
                       image/audio pipeline.
+
+    Returns:
+        True when the page was processed, even if it held no media or every
+        asset was below ``min_size``. False when nothing was downloaded
+        because the page could not be read or the downloads failed. A run
+        that saved at least one file is True despite other failures.
     """
     output_zip_path = os.path.join(DIR_MEDIA, os.path.basename(output_path))
 
@@ -828,6 +836,7 @@ def download_media(
         success_count = 0
         skip_count    = 0
         error_count   = 0
+        page_unreadable = False
 
         # ── VIDEO DOWNLOAD — Three-tier strategy ───────────────────────────
         if media_type in ("videos", "all"):
@@ -886,7 +895,9 @@ def download_media(
                         "falling back to static HTML scraping."
                     )
                     static_video_urls = _scrape_media_urls_static(url, headers, "videos")
-                    if static_video_urls:
+                    if static_video_urls is None:
+                        page_unreadable = True
+                    elif static_video_urls:
                         print_info(f"Static scraping found {len(static_video_urls)} URL(s).")
                         with Progress(
                             TextColumn("[progress.description]{task.description}"),
@@ -918,6 +929,10 @@ def download_media(
                 media_urls = _scrape_media_urls_dynamic(url, img_audio_type)
             else:
                 media_urls = _scrape_media_urls_static(url, headers, img_audio_type)
+
+            if media_urls is None:
+                page_unreadable = True
+                media_urls = []
 
             # Filter out video URLs — they're handled above
             media_urls = [
@@ -993,7 +1008,7 @@ def download_media(
 
         if success_count == 0:
             print_warn("No files were downloaded. ZIP archive will not be created.")
-            return
+            return not (page_unreadable or error_count)
 
         # Content-based deduplication across all downloaded assets
         removed = _dedupe_by_content_hash(temp_dir)
@@ -1015,3 +1030,4 @@ def download_media(
                     zipf.write(full_path, arcname=arcname)
 
         print_success(f"{success_count} file(s) archived → {output_zip_path}")
+        return True

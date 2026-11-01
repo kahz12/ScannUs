@@ -255,31 +255,40 @@ def hibp_pastes_for_account(email: str) -> list[dict] | None:
 # is all the companies that failed to hash their passwords properly.
 # ---------------------------------------------------------------------------
 
-def _fetch_breaches_for_domain(domain: str) -> list[dict]:
+def _fetch_breaches_for_domain(domain: str) -> list[dict] | None:
     """Raw network fetch: all breaches associated with a domain.
 
     HIBP filters its catalog by domain, so e.g. "linkedin.com" returns only
     the LinkedIn breach(es), not every breach in existence.
     Private uncached version.
+
+    Returns ``None`` when the request fails. The cache skips ``None``, so a
+    failed lookup is never stored as a domain without breaches.
     """
     url = f"{_HIBP_API}/breaches?domain={quote(domain, safe='')}"
     status, body = _get(url, namespace="hibp_breach")
     if status == 200 and isinstance(body, list):
         return body
-    return []  # On failure, return empty rather than crashing
+    if status == 404:
+        return []  # HIBP's way of saying "no records"
+    return None
 
 
-def hibp_breaches_for_domain(domain: str) -> list[dict]:
+def hibp_breaches_for_domain(domain: str) -> list[dict] | None:
     """Return breaches affecting a domain. No API key needed; cached 7d.
 
     7-day TTL is reasonable because breach metadata barely changes after
     initial ingestion — HIBP doesn't retroactively "un-breach" a company.
+
+    Returns:
+        * ``list`` (possibly empty) on success
+        * ``None`` if the request failed
     """
     return cached_call(
         "hibp_breach",
         ["domain", domain.lower()],  # lowercase so "Adobe.com" == "adobe.com"
         lambda: _fetch_breaches_for_domain(domain),
-    ) or []
+    )
 
 
 def _fetch_breach(name: str) -> dict | None:
@@ -554,7 +563,7 @@ def render_pastes_for_account(email: str, pastes: list[dict] | None) -> None:
     console.print(tbl)
 
 
-def render_breaches_for_domain(domain: str, breaches: list[dict]) -> None:
+def render_breaches_for_domain(domain: str, breaches: list[dict] | None) -> None:
     """Render breaches affecting a domain (free endpoint).
 
     Lighter table than the account renderer — no paste column because the
@@ -562,7 +571,11 @@ def render_breaches_for_domain(domain: str, breaches: list[dict]) -> None:
     count, and whether HIBP has verified the breach as authentic.
     "Unverified" breaches are still real data but may be incomplete or
     may contain fabricated entries mixed in with real ones.
+    ``None`` means the lookup failed, which says nothing about the domain.
     """
+    if breaches is None:
+        print_error(f"{domain}: HIBP lookup failed (network or API problem).")
+        return
     if not breaches:
         # Domain is clean! Either they have great security or haven't been
         # discovered yet. Optimistically assume the former.
@@ -664,11 +677,12 @@ def check_account(email: str, *, include_pastes: bool = True) -> dict:
     }
 
 
-def check_domain(domain: str) -> list[dict]:
+def check_domain(domain: str) -> list[dict] | None:
     """Run the free domain breach lookup and render.
 
     Thin wrapper around ``hibp_breaches_for_domain`` + ``render_breaches_for_domain``.
-    Returns the raw list so callers can inspect or export the data.
+    Returns the raw list so callers can inspect or export the data, or ``None``
+    when the lookup failed, so an empty list always means a clean domain.
     No API key needed — great for a quick domain hygiene check.
     """
     breaches = hibp_breaches_for_domain(domain)

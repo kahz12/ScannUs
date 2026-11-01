@@ -742,6 +742,8 @@ def _dispatch_hibp_domain(args: dict, ia_agent) -> dict:
         return {"status": "error", "summary": "hibp_domain: missing 'domain'"}
     breaches = hibp_breaches_for_domain(domain)
     render_breaches_for_domain(domain, breaches)
+    if breaches is None:
+        return {"status": "error", "summary": f"hibp_domain: lookup failed for {domain}"}
     return {
         "status":  "ok",
         "summary": f"{domain}: {len(breaches)} breach(es) recorded",

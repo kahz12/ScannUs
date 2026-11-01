@@ -98,8 +98,7 @@ def main():
         # --hibp-domain DOMAIN: free endpoint, no API key needed.
         # Good for a quick "has this company been breached?" check.
         from analysis.hibp import check_domain
-        check_domain(args.hibp_domain)
-        sys.exit(0)
+        sys.exit(0 if check_domain(args.hibp_domain) is not None else 1)
 
     if getattr(args, "hibp_breach", None):
         # --hibp-breach NAME: dump full metadata for a single named breach.
@@ -187,8 +186,7 @@ def main():
     # Route: Media scraping from a target URL
     if args.media_scrape:
         zip_file_name = "downloaded_media.zip"
-        download_media(args.media_scrape, zip_file_name)
-        sys.exit(0)
+        sys.exit(0 if download_media(args.media_scrape, zip_file_name) else 1)
 
     # Lazily initialize AI agent only if explicitly requested for NLP tasks
     ia_agent = None
