@@ -13,7 +13,7 @@
 [![Python](https://img.shields.io/badge/Python-3.11%2B-blue?style=flat-square&logo=python)](https://python.org)
 [![License](https://img.shields.io/badge/License-MIT-green?style=flat-square)](LICENSE)
 [![Status](https://img.shields.io/badge/Status-Active-brightgreen?style=flat-square)]()
-[![Platforms](https://img.shields.io/badge/Platforms-Linux%20%7C%20Windows%20%7C%20Termux-orange?style=flat-square)]()
+[![Platforms](https://img.shields.io/badge/Platforms-Linux%20%7C%20macOS%20%7C%20Windows%20%7C%20Termux-orange?style=flat-square)]()
 
 📖 **User Guide:** [English](docs/USER_GUIDE_EN.md) · [Español](docs/USER_GUIDE_ES.md)
 
@@ -32,12 +32,14 @@
 | **Multi-engine search** | DuckDuckGo · Brave · Tavily · Exa, with automatic fallback — persistent SQLite cache |
 | **Four AI providers** | Gemini · GPT-4o · Claude Sonnet 4.6 · local Ollama — token-streamed |
 | **AI Query Planner** | Step-by-step investigations that build on each result, with a sourced final report, using 24 whitelisted tools |
+| **Privacy toward the AI** | Card numbers, bank accounts, national IDs and leaked secrets in the formats ScannUs recognises reach the AI provider only as counts or `[withheld: …]`; page text is sent as data, and pages that try to instruct the AI are named in the report |
 | **Evidence** | Every finding keeps its source, tool, date, content hash and confidence, saved with the case |
 | **Breach intelligence** | HIBP — accounts, domains, breaches, k-anon passwords |
 | **Domain recon** | WHOIS · DNS · TLS · security headers · crt.sh subdomains · Shodan |
 | **PII & secret extraction** | 25+ identifiers: cloud keys · JWTs · BTC/ETH · IBAN · SSN/CPF/SIN · Colombian CC/TI/NIT |
-| **Username enumeration** | Sherlock / Maigret — 400+ social sites |
-| **Email enumeration** | Holehe — ~120 services (where an email is *registered*) |
+| **Username enumeration** | Sherlock / Maigret — 400+ social sites; sites that also "find" a made-up handle of the same shape are left out as false positives |
+| **Email enumeration** | Holehe — ~120 services (where an email is *registered*); services it could not check are reported as unchecked, not as absent |
+| **Phone intelligence** | Offline libphonenumber lookup — validity, country, carrier, line type — plus ready-to-run search dorks |
 | **Wayback Machine** | Snapshot fetch · PII extraction · unified-diff between dates |
 | **Reverse image search** | TinEye · Bing Visual · Yandex · manual fallbacks |
 | **Export** | Excel · CSV · JSON · HTML — clickable, styled |
@@ -57,6 +59,8 @@ python main.py             # launch interactive TUI
 ```
 
 **Requirements:** Python 3.11+, Firefox (for Selenium features). Optional: Ollama daemon for local LLM.
+
+Keep the virtual environment active when you run ScannUs: Sherlock, Maigret and Holehe are command-line tools found on its `PATH`.
 
 > ScannUs works with **zero API keys** (DuckDuckGo + free HIBP endpoints + crt.sh + Wayback + Sherlock). Add Gemini for free AI features.
 
@@ -79,9 +83,10 @@ python main.py --recon example.com
 python main.py --hibp-account target@example.com
 python main.py --hibp-password         # interactive, hidden input
 
-# Username / email enumeration · reverse image
+# Username / email / phone enumeration · reverse image
 python main.py --username-enum jdoe88
 python main.py --email-enum target@example.com    # where the email is registered (Holehe)
+python main.py --phone-osint +14155552671         # offline number intelligence + dorks
 python main.py -rev https://example.com/photo.jpg
 
 # Cache management · export
@@ -112,7 +117,7 @@ ScannUs/
 ├── main.py                  # Entry point
 ├── cli/                     # Parser · TUI menus · UI theme · action handlers
 ├── core/                    # Config · AI agent (4 providers + planner) · cache · cases
-├── search/                  # Engines · PII extraction · reverse image · username enum
+├── search/                  # Engines · PII extraction · reverse image · username / email / phone
 ├── analysis/                # Web analyzer · tech scanner · domain OSINT · HIBP · Wayback
 ├── utils/                   # Media downloader · file downloader · export
 └── docs/
@@ -129,7 +134,8 @@ ScannUs/
 | Full feature walkthrough | [docs/USER_GUIDE_EN.md](docs/USER_GUIDE_EN.md) · [docs/USER_GUIDE_ES.md](docs/USER_GUIDE_ES.md) |
 | Configuration wizard | User Guide §1.3 |
 | AI Query Planner & tool catalog | User Guide §4 |
-| Username & email enumeration | User Guide §7 |
+| Username, email & phone enumeration | User Guide §7 |
+| What reaches the AI provider | User Guide §4 |
 | HIBP & breach intelligence | User Guide §9 |
 | Investigation recipes | User Guide §16 |
 | Troubleshooting · FAQ · Glossary | User Guide §17–§19 |
