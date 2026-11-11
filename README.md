@@ -46,6 +46,45 @@
 
 ---
 
+## Screenshots
+
+Captured from real runs against public targets (`example.com`, `adobe.com` and a sample phone number).
+
+<p align="center">
+  <img src="docs/images/main-menu.png" alt="ScannUs startup screen and main menu" width="820">
+</p>
+
+**AI Query Planner** — the model picks one tool at a time, says why, and builds on each result:
+
+<p align="center">
+  <img src="docs/images/ai-planner-steps.png" alt="AI Query Planner choosing and running the TLS and security-header tools" width="820">
+</p>
+
+<details>
+<summary><b>Final report</b> — confirmed facts with their source step, leads to check, and what could not be determined</summary>
+<p align="center">
+  <img src="docs/images/ai-planner-report.png" alt="AI Query Planner final report for example.com" width="820">
+</p>
+</details>
+
+<details>
+<summary><b>Domain recon</b> — WHOIS · DNS · email auth · TLS · security headers · crt.sh subdomains, probed in parallel</summary>
+<p align="center">
+  <img src="docs/images/domain-recon.png" alt="Domain recon of example.com" width="820">
+</p>
+</details>
+
+**Breach intelligence (HIBP)** and **phone intelligence**:
+
+<p align="center">
+  <img src="docs/images/hibp-domain.png" alt="Breaches affecting adobe.com" width="820">
+</p>
+<p align="center">
+  <img src="docs/images/phone-osint.png" alt="Offline phone intelligence and OSINT footprint" width="820">
+</p>
+
+---
+
 ## Quick Start
 
 ```bash
