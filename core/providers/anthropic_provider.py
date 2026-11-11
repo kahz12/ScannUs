@@ -13,7 +13,7 @@ class AnthropicGenerator:
     """
     Anthropic Claude wrapper via the ``anthropic`` Python SDK.
 
-    Defaults to the latest Sonnet (claude-sonnet-4-6) for a good
+    Defaults to Claude Sonnet (``claude-sonnet-4-6``) for a good
     quality/cost balance. Override with the ``ANTHROPIC_MODEL`` env var or
     by passing ``model_name`` directly.
     """

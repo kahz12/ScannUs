@@ -500,7 +500,7 @@ El informe se muestra en pantalla y se guarda en `outputs/reports/investigation_
 
 El modelo lee los resultados de cada paso, incluido el texto de los sitios web, así que esas páginas llegan a tu proveedor de IA. Tenlo en cuenta según su política de datos.
 
-- **Valores retenidos:** los números de tarjeta, documentos de identidad y secretos filtrados llegan al modelo solo como conteos. Sus valores se quedan en tu caso local.
+- **Valores retenidos:** los números de tarjeta, cuentas bancarias, documentos de identidad y secretos filtrados llegan al modelo solo como conteos o como `[withheld: <categoría>]`, también dentro de los resultados del buscador y del texto de las páginas. Sus valores se quedan en tu caso local. Solo se retienen los formatos de la [referencia de extracción](#11-referencia-de-extracción-de-pii-y-secretos); nombres, emails, teléfonos y el resto del texto, como datos de salud, sí llegan al modelo.
 - **Contraseñas:** el planificador ofrece `hibp_password` con un hash SHA-1, y cualquier contraseña en claro se enmascara en todo lo que se muestra o guarda.
 - **El contenido web no es de confianza:** una página podría incluir texto escrito para desviar al modelo. ScannUs marca ese texto como datos para el modelo, pero ningún filtro es perfecto, y por eso cada paso pide confirmación por defecto.
 
@@ -769,6 +769,8 @@ Los resultados se renderizan en una tabla:
 ╰─────────────┴───────────────────────────────────╯
 ```
 
+**Falsos positivos:** algunos sitios responden "encontrado" para cualquier usuario con cierta forma (por ejemplo, cualquiera que lleve un punto). Por eso cada búsqueda consulta también un usuario inventado con la misma forma (misma longitud, mismos separadores, dígitos y letras en los mismos sitios), y se quitan los sitios que también lo "encuentren". ScannUs dice cuáles quitó. Los usuarios de menos de 5 letras y dígitos se buscan sin control, porque un usuario inventado tan corto suele existir de verdad.
+
 ### 7.1 Enumeración de Emails (Holehe)
 
 El equivalente de Sherlock/Maigret para correos electrónicos. Dado un email,
@@ -793,16 +795,19 @@ TUI: menú principal → **Enumeración de Emails**.
 | `-e/--email` (PII profundo) | *¿Qué dice la web sobre este email — páginas, menciones, PII?* |
 
 Los resultados se cachean 12h bajo el namespace `email_enum`, así que reejecutar
-la misma búsqueda es instantáneo.
+la misma búsqueda es instantáneo. Una ejecución en la que ningún servicio
+respondió no se guarda en caché.
 
 **Limitaciones:**
 
 - Los detectores por sitio se degradan a medida que los servicios cambian sus
   flujos de recuperación — espera falsos negativos ocasionales. Fija una
   versión conocida de `holehe` en `requirements.txt`.
-- Algunos sitios aplican rate-limit silenciosamente; los resultados de una
-  sola ejecución pueden subreportar. Vuelve a intentarlo tras unos minutos
-  si una cuenta conocida no aparece.
+- Holehe informa igual un rate limit que una petición fallida. ScannUs cuenta
+  esos servicios como **no comprobados** y los muestra aparte en el total,
+  porque el email podría estar registrado ahí. Si no responde ningún servicio,
+  el comando falla (código de salida 1) en vez de informar cero registros.
+  Vuelve a intentarlo tras unos minutos si una cuenta conocida no aparece.
 - **No** lo uses para enumeración masiva: los rate limits + captchas te bloquearán.
 
 **Instalación:** `pip install holehe`. Si falta, `--email-enum` imprime una
@@ -1103,6 +1108,8 @@ El motor de extracción de ScannUs detecta y valida **25+ categorías de identif
 | **CUIT/CUIL argentinos** | Prefijo de tipo + dígito verificador módulo 11. Once dígitos seguidos necesitan además la palabra CUIT o CUIL cerca |
 | **DNI argentino** | Necesita una etiqueta `DNI` |
 | **RFC mexicano** | Estructural |
+| **CC, TI y CE colombianas** | Necesitan una etiqueta delante (`C.C.`, `CC`, `cédula`, `T.I.`, `TI`, `tarjeta de identidad`, `C.E.`, `cédula de extranjería`) y de 6 a 11 dígitos, con o sin puntos |
+| **NIT colombiano** | Necesita la etiqueta `NIT`. Si trae dígito de verificación, debe cumplir el módulo 11 de la DIAN |
 
 ### Financiero
 

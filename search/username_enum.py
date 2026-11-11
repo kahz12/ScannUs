@@ -8,17 +8,25 @@ Integrates Sherlock and/or Maigret as subprocess backends:
 Either backend is auto-selected based on availability. Both produce a unified
 result schema so downstream consumers don't need to know which engine ran.
 
+Some sites answer "found" for any handle of a given shape; with Sherlock, ten
+sites claim a made-up handle that contains a dot. Each lookup therefore also
+runs on a made-up handle of the same shape (see :func:`_control_handle`), and
+a site that claims that handle as well is left out of the results, since its
+answer says nothing about the real one.
+
 Public API:
   enumerate_username(username, backend="auto", timeout=20) -> list[dict]
-  username_enum(username, backend="auto", timeout=20, save_json=True) -> None
+  username_enum(username, backend="auto", timeout=20, save_json=True) -> list[dict] | None
 """
 
 import os
 import csv
 import json
+import random
 import shutil
 import subprocess
 import tempfile
+from concurrent.futures import ThreadPoolExecutor
 
 from cli.ui import (
     console, THEME,
@@ -219,6 +227,77 @@ def _save_results_json(username: str, backend: str,
 
 
 # ---------------------------------------------------------------------------
+# Control handle — sites that claim any handle of a given shape
+# ---------------------------------------------------------------------------
+
+# A made-up handle shorter than this is likely to be a real account on the
+# busier sites, and would then remove true hits, so short handles run alone.
+_MIN_CONTROL_CHARS = 5
+
+
+def _control_handle(username: str) -> str | None:
+    """
+    Builds a made-up handle with the shape of *username*: the same length,
+    separators such as ``.``, ``_`` and ``-`` in the same places, a digit
+    wherever *username* has a digit and a letter of the same case elsewhere.
+
+    It is derived from *username*, so the same handle always gets the same
+    control. Returns None when *username* has fewer than
+    ``_MIN_CONTROL_CHARS`` letters and digits.
+    """
+    if sum(ch.isalnum() for ch in username) < _MIN_CONTROL_CHARS:
+        return None
+    rng = random.Random(f"scannus-control:{username}")
+    while True:
+        control = "".join(
+            rng.choice("0123456789") if ch.isdigit()
+            else rng.choice("ABCDEFGHIJKLMNOPQRSTUVWXYZ") if ch.isupper()
+            else rng.choice("abcdefghijklmnopqrstuvwxyz") if ch.isalpha()
+            else ch
+            for ch in username
+        )
+        if control.lower() != username.lower():
+            return control
+
+
+def _lookup(backend: str, handle: str, timeout: int) -> list[dict]:
+    """Runs one backend on one handle."""
+    if backend == "sherlock":
+        return _run_sherlock(handle, timeout)
+    return _run_maigret(handle, timeout)
+
+
+def _enumerate(username: str, backend: str,
+               timeout: int) -> tuple[list[dict], list[str], str | None]:
+    """
+    Looks up *username* and its control handle in parallel.
+
+    Returns:
+        The rows for the sites that did not claim the control handle, the
+        names of the sites left out, and the control handle (None when the
+        handle is too short to have one).
+    """
+    control = _control_handle(username)
+    print_info(
+        f"Running {backend} on '{username}'"
+        + (f" and on the made-up handle '{control}'" if control else "")
+        + f" (per-site timeout {timeout}s)…"
+    )
+    if control is None:
+        return _lookup(backend, username, timeout), [], None
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        real = pool.submit(_lookup, backend, username, timeout)
+        made_up = pool.submit(_lookup, backend, control, timeout)
+        rows, control_rows = real.result(), made_up.result()
+
+    claim_anything = {r["site"] for r in control_rows}
+    kept = [r for r in rows if r["site"] not in claim_anything]
+    left_out = sorted({r["site"] for r in rows} & claim_anything, key=str.lower)
+    return kept, left_out, control
+
+
+# ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
 
@@ -226,6 +305,9 @@ def enumerate_username(username: str, backend: str = "auto",
                        timeout: int = 20) -> list[dict]:
     """
     Enumerates ``username`` across social sites using the selected backend.
+
+    Sites that also claim a made-up handle of the same shape are left out
+    (see the module docstring).
 
     Args:
         username: Handle to look up.
@@ -243,12 +325,7 @@ def enumerate_username(username: str, backend: str = "auto",
     if chosen is None:
         return []
 
-    print_info(
-        f"Running {chosen} on '{username}' (per-site timeout {timeout}s)…"
-    )
-    if chosen == "sherlock":
-        return _run_sherlock(username.strip(), timeout)
-    return _run_maigret(username.strip(), timeout)
+    return _enumerate(username.strip(), chosen, timeout)[0]
 
 
 def username_enum(username: str, backend: str = "auto",
@@ -285,7 +362,12 @@ def username_enum(username: str, backend: str = "auto",
             print_error(f"Backend '{backend}' is not installed.")
         return None
 
-    results = enumerate_username(username, backend=chosen, timeout=timeout)
+    results, left_out, control = _enumerate(username.strip(), chosen, timeout)
+    if left_out:
+        print_info(
+            f"Left out {len(left_out)} site(s) that also claimed the made-up "
+            f"handle '{control}': {', '.join(left_out)}"
+        )
 
     if not results:
         print_warn(f"No accounts found for '{username}' via {chosen}.")

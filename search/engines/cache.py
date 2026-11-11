@@ -1,12 +1,11 @@
 """
 search/engines/cache.py — Search-result cache (persistent SQLite backend).
 
-This module preserves the historical ``search_cache`` API so the search
-engines don't need to be touched. Under the hood
-everything is now routed through :class:`core.cache.SQLiteCache`, which
-adds:
+The search engines use ``search_cache`` (get / set / make_key) to skip a
+query they have already answered. It stores everything in the ``search``
+namespace of :class:`core.cache.SQLiteCache`, which gives:
 
-  - Persistence across sessions (no more cold-start every CLI invocation)
+  - Persistence across sessions, so a repeated query costs no request
   - TTL eviction (default 24h for the ``search`` namespace)
   - Shared storage with WHOIS / DNS / HTTP / Wayback caches under one DB
 """
@@ -18,7 +17,7 @@ _NAMESPACE = "search"
 
 
 class _SearchCacheShim:
-    """Backwards-compatible facade matching the old in-memory ``search_cache``."""
+    """The small cache interface the search engines call, backed by core.cache."""
 
     @staticmethod
     def make_key(engine: str, query: str, **kwargs) -> str:

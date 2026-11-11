@@ -35,7 +35,7 @@
 | **Evidence** | Every finding keeps its source, tool, date, content hash and confidence, saved with the case |
 | **Breach intelligence** | HIBP — accounts, domains, breaches, k-anon passwords |
 | **Domain recon** | WHOIS · DNS · TLS · security headers · crt.sh subdomains · Shodan |
-| **PII & secret extraction** | 25+ identifiers: cloud keys · JWTs · BTC/ETH · IBAN · SSN/CPF/SIN |
+| **PII & secret extraction** | 25+ identifiers: cloud keys · JWTs · BTC/ETH · IBAN · SSN/CPF/SIN · Colombian CC/TI/NIT |
 | **Username enumeration** | Sherlock / Maigret — 400+ social sites |
 | **Email enumeration** | Holehe — ~120 services (where an email is *registered*) |
 | **Wayback Machine** | Snapshot fetch · PII extraction · unified-diff between dates |

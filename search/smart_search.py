@@ -46,7 +46,7 @@ def _has_context(text: str, start: int, end: int, keywords: "re.Pattern[str]",
     return bool(keywords.search(text[max(0, start - window):end + window]))
 
 
-# Normalise obfuscated email text BEFORE running the main regex.
+# Obfuscated email text is normalised first, so the main regex sees plain addresses.
 # Handles: [at], (at), " at ", [dot], (dot), " dot ", HTML entities like &#64;
 def _decode_email_obfuscation(text: str) -> str:
     """
@@ -442,12 +442,83 @@ def _extract_rfc(text: str) -> set[str]:
 
 
 # ---------------------------------------------------------------------------
+# Colombian identifiers: CC, TI, CE and NIT
+# ---------------------------------------------------------------------------
+
+# A bare run of digits is too ambiguous, so the number counts only after a
+# document label: "C.C. 79.123.456", "TI 1012345678", "cédula de extranjería
+# 654321". The short labels must be upper case, because "ti" and "ce" are
+# common words in Spanish and French text.
+_COL_NUMBER = r"(?P<number>\d{1,3}(?:[., ]\d{3}){1,3}|\d{6,11})(?!\d)"
+_COL_NUMBER_PREFIX = r"\s*(?:(?i:n(?:o|ro|[°º]|[úu]mero))\.?\s*)?[:#-]?\s*"
+_COL_ID_RE = re.compile(
+    r"(?P<label>(?i:c[ée]dula\s+de\s+extranjer[íi]a|tarjeta\s+de\s+identidad"
+    r"|c[ée]dula(?:\s+de\s+ciudadan[íi]a)?|\bc\.\s?c\.|\bt\.\s?i\.|\bc\.\s?e\.)"
+    r"|\b(?:CC|TI|CE)\b)"
+    + _COL_NUMBER_PREFIX + _COL_NUMBER
+)
+_NIT_RE = re.compile(
+    r"\b(?i:nit)\b" + _COL_NUMBER_PREFIX
+    + r"(?P<number>\d{1,3}(?:[.,]\d{3}){1,3}|\d{6,10})(?:\s*-\s*(?P<dv>\d))?(?!\d)"
+)
+_NIT_WEIGHTS = (3, 7, 13, 17, 19, 23, 29, 37, 41, 43, 47, 53, 59, 67, 71)
+
+
+def _col_id_kind(label: str) -> str:
+    """Names the document a label introduces: CC, TI or CE."""
+    compact = re.sub(r"[\s.]", "", label).lower()
+    if "extranjer" in compact or compact == "ce":
+        return "CE"
+    if "tarjeta" in compact or compact == "ti":
+        return "TI"
+    return "CC"
+
+
+def _extract_col_id(text: str) -> set[str]:
+    """
+    Extracts Colombian personal documents as ``"<kind> <digits>"``: cédula de
+    ciudadanía (CC), tarjeta de identidad (TI) and cédula de extranjería (CE).
+    """
+    found: set[str] = set()
+    for m in _COL_ID_RE.finditer(text):
+        digits = re.sub(r"\D", "", m.group("number"))
+        if 6 <= len(digits) <= 11:
+            found.add(f"{_col_id_kind(m.group('label'))} {digits}")
+    return found
+
+
+def _nit_check_digit(digits: str) -> int:
+    """The DIAN mod-11 verification digit of a NIT."""
+    total = sum(int(d) * w for d, w in zip(reversed(digits), _NIT_WEIGHTS))
+    rem = total % 11
+    return rem if rem < 2 else 11 - rem
+
+
+def _extract_nit(text: str) -> set[str]:
+    """
+    Extracts Colombian NITs after a ``NIT`` label. A verification digit, when
+    written, must match the DIAN mod-11 check.
+    """
+    found: set[str] = set()
+    for m in _NIT_RE.finditer(text):
+        digits = re.sub(r"\D", "", m.group("number"))
+        if not 6 <= len(digits) <= 10:
+            continue
+        dv = m.group("dv")
+        if dv is None:
+            found.add(digits)
+        elif int(dv) == _nit_check_digit(digits):
+            found.add(f"{digits}-{dv}")
+    return found
+
+
+# ---------------------------------------------------------------------------
 # Leaked secrets — high-confidence token signatures
 # ---------------------------------------------------------------------------
 #
 # Each pattern matches a token format whose prefix and length make false
-# positives unlikely. We intentionally do NOT chase generic 32/40-char hex
-# blobs — those flag every commit hash and content-addressed asset in the
+# positives unlikely. Generic 32/40-char hex blobs are left out on purpose,
+# because they match every commit hash and content-addressed asset in the
 # wild. The dict is keyed by output category; values are compiled regexes.
 
 import base64 as _b64
@@ -797,6 +868,7 @@ _NOT_USERNAMES = frozenset({
 # vendor prefix behind it, and Presidio entities are statistical guesses.
 _MEDIUM_CONFIDENCE = frozenset({
     "phones", "usernames", "ipv4", "ipv6", "mac_addresses", "ssn", "rfc", "sql_errors",
+    "col_id", "nit",
 })
 
 
@@ -909,6 +981,14 @@ def extract_information(text: str) -> dict:
     if sins:
         extracted['sin'] = sorted(sins)
 
+    # --- CC / TI / CE and NIT (Colombia) ---
+    col_ids = _extract_col_id(text)
+    if col_ids:
+        extracted['col_id'] = sorted(col_ids)
+    nits = _extract_nit(text)
+    if nits:
+        extracted['nit'] = sorted(nits)
+
     # --- Crypto wallets ---
     btcs = _extract_btc(text)
     if btcs:
@@ -994,6 +1074,72 @@ def build_evidence(data: dict, text: str, source: str, tool: str) -> list[dict]:
         }
         for category, value in iter_extracted(data)
     ]
+
+
+# ---------------------------------------------------------------------------
+# Withholding sensitive values from AI providers
+# ---------------------------------------------------------------------------
+
+# Cards, bank accounts and national IDs, found by the same validators as
+# extract_information. Their values come back normalised, so they are matched
+# in the text however they are grouped, e.g. with or without dots.
+_WITHHELD_EXTRACTORS = {
+    "credit_cards": _extract_credit_cards,
+    "ibans":        _extract_ibans,
+    "cuit":         _extract_cuit,
+    "dni":          _extract_dni,
+    "rfc":          _extract_rfc,
+    "ssn":          _extract_ssn,
+    "cpf":          _extract_cpf,
+    "sin":          _extract_sin,
+    "col_id":       _extract_col_id,
+    "nit":          _extract_nit,
+}
+_PEM_BLOCK_RE = re.compile(
+    r"-----BEGIN [A-Z ]*PRIVATE KEY-----.*?(?:-----END [A-Z ]*PRIVATE KEY-----|$)",
+    re.DOTALL,
+)
+
+
+def _written_forms(value: str) -> "re.Pattern[str]":
+    """Matches *value* in text whatever spaces, dots, commas or dashes split it."""
+    body = r"[\s.,\-/]{0,2}".join(re.escape(c) for c in value if c.isalnum())
+    return re.compile(rf"(?<![0-9A-Za-z]){body}(?![0-9A-Za-z])", re.IGNORECASE)
+
+
+def redact_sensitive(text: str) -> str:
+    """
+    Replaces card numbers, bank accounts, national IDs and leaked secrets in
+    *text* with ``[withheld: <category>]``, so the text can go to an AI provider.
+
+    Only the pattern validators run here, not Presidio, so the call stays fast.
+    A Colombian document keeps its label: "TI 1012345678" becomes
+    "TI [withheld: col_id]".
+    """
+    if not text:
+        return text
+    text = _PEM_BLOCK_RE.sub("[withheld: private_keys]", text)
+    for category, values in _extract_secrets(text).items():
+        for value in sorted(values, key=len, reverse=True):
+            text = text.replace(value, f"[withheld: {category}]")
+    for category, extract in _WITHHELD_EXTRACTORS.items():
+        for value in sorted(extract(text), key=len, reverse=True):
+            target = value.split()[-1] if category == "col_id" else value
+            text = _written_forms(target).sub(f"[withheld: {category}]", text)
+    return text
+
+
+def redact_for_model(value):
+    """Applies :func:`redact_sensitive` to every string in nested lists and dicts."""
+    if isinstance(value, str):
+        return redact_sensitive(value)
+    if isinstance(value, list):
+        return [redact_for_model(item) for item in value]
+    if isinstance(value, tuple):
+        return tuple(redact_for_model(item) for item in value)
+    if isinstance(value, dict):
+        return {key: redact_for_model(item) for key, item in value.items()}
+    return value
 
 
 # --- Main Search Implementation ---

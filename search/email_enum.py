@@ -18,9 +18,13 @@ JSON report to ``DIR_REPORTS``, and cached in the persistent SQLite cache
 under the ``email_enum`` namespace (12h TTL) so repeat investigations on
 the same address are instant.
 
+Every service ends up ``claimed``, ``available`` or ``unchecked``. Holehe
+reports a rate limit and a failed request the same way, so ``unchecked``
+means the answer is unknown, not that the email is absent there.
+
 Public API:
-  enumerate_email(email, only_used=True, timeout=10) -> list[dict]
-  email_enum(email, only_used=True, timeout=10, save_json=True) -> list[dict] | None
+  enumerate_email(email) -> list[dict]
+  email_enum(email, only_used=True, save_json=True) -> list[dict] | None
 """
 
 import os
@@ -35,7 +39,7 @@ from cli.ui import (
     print_info, print_warn, print_error, print_success, make_table,
 )
 from core.config import DIR_REPORTS
-from core.cache import cached_call
+from core.cache import get_cache
 from core.throttle import throttled
 
 
@@ -47,10 +51,16 @@ _HOLEHE_BIN = shutil.which("holehe")
 HOLEHE_AVAILABLE = _HOLEHE_BIN is not None
 
 
-# Holehe CSV columns (from holehe/core.py argparse + module output keys):
-#   name · domain · rateLimit · <failure flag> · exists · emailrecovery · phoneNumber · others
-# The "exists" field is the string "True" / "False".
+# Holehe CSV columns (from holehe/core.py module output keys):
+#   name · domain · method · frequent_rate_limit · rateLimit · exists ·
+#   emailrecovery · phoneNumber · others
+# The "exists" and "rateLimit" fields are the strings "True" / "False".
 _FOUND_VALUES = {"true", "1", "yes"}
+
+# Holehe keeps its --timeout value as text and hands it to httpx, which then
+# rejects every request, so the flag is never passed and Holehe uses its own
+# 10-second limit per site. This bounds the whole run.
+_HOLEHE_RUN_TIMEOUT = 1200
 
 
 # ---------------------------------------------------------------------------
@@ -58,29 +68,26 @@ _FOUND_VALUES = {"true", "1", "yes"}
 # ---------------------------------------------------------------------------
 
 @throttled(namespace="holehe")
-def _run_holehe(email: str, only_used: bool, timeout: int) -> list[dict]:
-    """Run holehe and return a unified list of result dicts.
+def _run_holehe(email: str) -> list[dict]:
+    """Run holehe and return one result dict per service it probed.
 
     Holehe's ``-C/--csv`` flag dumps the CSV into the process cwd with no
     way to override the path, so we run inside a temp directory and scan
     it for the produced file.
 
     Rate-limited via the shared ``holehe`` token bucket. Note this sits
-    *inside* ``cached_call`` (see ``enumerate_email``), so a cache hit skips
+    *inside* the cache lookup (see ``enumerate_email``), so a cache hit skips
     the bucket entirely — only real subprocess launches are throttled.
     """
     with tempfile.TemporaryDirectory() as tmp:
-        cmd = [_HOLEHE_BIN, email, "--csv", "--no-color", "--no-clear",
-               "--timeout", str(timeout)]
-        if only_used:
-            cmd.append("--only-used")
+        cmd = [_HOLEHE_BIN, email, "--csv", "--no-color", "--no-clear"]
 
         try:
             subprocess.run(
                 cmd,
                 capture_output=True, text=True,
                 cwd=tmp,
-                timeout=max(timeout * 40, 1200),
+                timeout=_HOLEHE_RUN_TIMEOUT,
                 check=False,
             )
         except subprocess.TimeoutExpired:
@@ -104,10 +111,10 @@ def _run_holehe(email: str, only_used: bool, timeout: int) -> list[dict]:
         with open(csv_path, newline="", encoding="utf-8", errors="ignore") as f:
             reader = csv.DictReader(f)
             for row in reader:
-                exists_raw = (row.get("exists") or "").strip().lower()
-                claimed = exists_raw in _FOUND_VALUES
-                if only_used and not claimed:
-                    continue
+                claimed = (row.get("exists") or "").strip().lower() in _FOUND_VALUES
+                unchecked = not claimed and (
+                    (row.get("rateLimit") or "").strip().lower() in _FOUND_VALUES
+                )
 
                 # Normalise to the same shape as username_enum so downstream
                 # callers can treat "service presence" results uniformly.
@@ -115,13 +122,11 @@ def _run_holehe(email: str, only_used: bool, timeout: int) -> list[dict]:
                     "service":        row.get("name") or "?",
                     "domain":         row.get("domain") or "",
                     "email":          email,
-                    "status":         "claimed" if claimed else "available",
+                    "status":         ("claimed" if claimed
+                                       else "unchecked" if unchecked else "available"),
                     "email_recovery": (row.get("emailrecovery") or "").strip(),
                     "phone_number":   (row.get("phoneNumber") or "").strip(),
-                    "rate_limited":   (row.get("rateLimit") or "").strip().lower()
-                                      in _FOUND_VALUES,
-                    "error":          (row.get("error") or "").strip().lower()
-                                      in _FOUND_VALUES,
+                    "rate_limited":   unchecked,
                     "others":         (row.get("others") or "").strip(),
                 })
         return results
@@ -158,17 +163,19 @@ def _save_results_json(email: str, results: list[dict]) -> str | None:
 # Public API
 # ---------------------------------------------------------------------------
 
-def enumerate_email(email: str, only_used: bool = True,
-                    timeout: int = 10) -> list[dict]:
+def enumerate_email(email: str) -> list[dict]:
     """Enumerate ``email`` across services using Holehe.
 
+    A run is cached only when at least one service answered, so a run that a
+    network failure or a rate limit spoiled is tried again next time.
+
     Args:
-        email:     Address to look up.
-        only_used: If True, only return services where the email is claimed.
-        timeout:   Per-site request timeout (seconds, passed to holehe).
+        email: Address to look up.
 
     Returns:
-        List of result dicts (possibly empty). Empty if Holehe is missing.
+        One result dict per service, each with a ``status`` of ``claimed``,
+        ``available`` or ``unchecked``. Empty if Holehe is missing or wrote
+        no results.
     """
     if not email or not email.strip():
         return []
@@ -176,27 +183,32 @@ def enumerate_email(email: str, only_used: bool = True,
         return []
 
     email = email.strip()
+    cache = get_cache()
+    key = cache.make_key(email, "all-services")
+    hit = cache.get("email_enum", key)
+    if hit is not None:
+        return hit
 
-    def _produce() -> list[dict]:
-        print_info(
-            f"Running holehe on '{email}' (per-site timeout {timeout}s)…"
-        )
-        return _run_holehe(email, only_used=only_used, timeout=timeout)
-
-    # Cache by (email, only_used). The 12h TTL is configured via the
-    # ``email_enum`` entry in core.cache.DEFAULT_TTL; passing ttl=None lets
-    # cached_call resolve it from the namespace defaults.
-    return cached_call(
-        "email_enum", [email, "used" if only_used else "all"], _produce,
-    ) or []
+    print_info(f"Running holehe on '{email}'…")
+    results = _run_holehe(email)
+    if any(r["status"] != "unchecked" for r in results):
+        cache.set("email_enum", key, results)
+    return results
 
 
-def email_enum(email: str, only_used: bool = True, timeout: int = 10,
+def email_enum(email: str, only_used: bool = True,
                save_json: bool = True) -> list[dict] | None:
     """Run Holehe and render a Rich table + optionally persist a JSON report.
 
-    Returns the result list (possibly empty), or ``None`` if Holehe is not
-    installed (a friendly install hint is printed in that case).
+    Args:
+        email:     Address to look up.
+        only_used: Show and save only the services where the email is claimed.
+        save_json: Write the shown rows to ``DIR_REPORTS``.
+
+    Returns:
+        Every service row, whatever ``only_used`` says, so callers can count
+        the unchecked ones. ``None`` if Holehe is not installed or could not
+        check a single service.
     """
     if not email or not email.strip():
         print_error("Email cannot be empty.")
@@ -209,40 +221,52 @@ def email_enum(email: str, only_used: bool = True, timeout: int = 10,
         )
         return None
 
-    results = enumerate_email(email, only_used=only_used, timeout=timeout)
+    results = enumerate_email(email)
+    unchecked = sum(1 for r in results if r["status"] == "unchecked")
 
-    if not results:
-        print_warn(
-            f"No service registrations found for '{email}'."
-            if only_used else
+    if unchecked == len(results):
+        print_error(
+            f"Holehe could not check any of the {len(results)} services for '{email}' "
+            "(rate limits or failed requests). Try again later."
+            if results else
             f"Holehe returned no results for '{email}'."
         )
-        return results
+        return None
 
     results_sorted = sorted(results, key=lambda r: r["service"].lower())
-
-    tbl = make_table(
-        f"Email Enumeration  [{THEME['DIM']}]{email} · via holehe[/]",
-        ("Service", THEME["PRIMARY"]),
-        ("Domain",  THEME["LINK"]),
-        ("Status",  "green"),
-        ("Recovery hint", THEME["DIM"]),
-        show_lines=False,
-    )
-    for r in results_sorted:
-        recovery = r["email_recovery"] or r["phone_number"] or ""
-        tbl.add_row(r["service"], r["domain"], r["status"], recovery)
-
+    shown = ([r for r in results_sorted if r["status"] == "claimed"]
+             if only_used else results_sorted)
     claimed = sum(1 for r in results_sorted if r["status"] == "claimed")
+
     console.print()
-    console.print(tbl)
+    if shown:
+        tbl = make_table(
+            f"Email Enumeration  [{THEME['DIM']}]{email} · via holehe[/]",
+            ("Service", THEME["PRIMARY"]),
+            ("Domain",  THEME["LINK"]),
+            ("Status",  "green"),
+            ("Recovery hint", THEME["DIM"]),
+            show_lines=False,
+        )
+        for r in shown:
+            recovery = r["email_recovery"] or r["phone_number"] or ""
+            tbl.add_row(r["service"], r["domain"], r["status"], recovery)
+        console.print(tbl)
+    else:
+        print_warn(f"No service registrations found for '{email}'.")
+
     console.print(
-        f"  [{THEME['DIM']}]Total: {claimed} claimed · "
-        f"{len(results_sorted)} entries · backend: holehe[/]"
+        f"  [{THEME['DIM']}]Total: {claimed} claimed · {unchecked} unchecked · "
+        f"{len(results_sorted)} services · backend: holehe[/]"
     )
+    if unchecked:
+        print_warn(
+            f"{unchecked} service(s) could not be checked (rate limit or failed "
+            "request), so the email may still be registered there."
+        )
 
     if save_json:
-        path = _save_results_json(email.strip(), results_sorted)
+        path = _save_results_json(email.strip(), shown)
         if path:
             print_success(f"Results saved → {path}")
 

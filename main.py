@@ -235,7 +235,8 @@ def main():
         console.print("[bold red]Error: You must provide a query via -q or use guided search arguments (-n, -u, -b, -e, -t).[/bold red]")
         sys.exit(1)
 
-    # Latent imports to avoid circular dependency cycles
+    # cli.actions is already loaded through cli.menus; these two names are
+    # imported here only because this search route is their sole user.
     from cli.actions import do_search, do_deep_search
 
     # Dispatch to appropriate search engine or deep analysis pipeline

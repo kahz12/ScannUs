@@ -8,7 +8,10 @@ the loop in :meth:`core.ai_agent.IAAgent.investigate` may choose from
 
 Each dispatcher returns ``{status, summary, data}``. ``data`` is what the model
 reads before choosing the next step, so it has to carry the useful result of
-the tool. Sensitive values stay out of it: see :func:`_evidence_digest`.
+the tool. Sensitive values stay out of it in two layers: extracted evidence
+goes through :func:`_evidence_digest`, and
+:meth:`core.ai_agent.IAAgent._run_tool` then replaces any card number, national
+ID or secret still present in the text with ``[withheld: <category>]``.
 
 This module is intentionally decoupled from the LLM providers and from
 :class:`~core.ai_agent.IAAgent`: every dispatcher receives the agent instance
@@ -51,9 +54,10 @@ class PlanStep:
 # What the model is allowed to see
 # ---------------------------------------------------------------------------
 
-# Values that can be shown to the model in full, because they are what the next
-# step pivots on. Cards, national IDs and leaked secrets stay in the local case
-# and reach the model provider only as counts.
+# Evidence categories shown to the model in full, because they are what the
+# next step pivots on. Every other category (cards, bank accounts, national IDs,
+# leaked secrets, wallets…) stays in the local case and reaches the model
+# provider only as a count in ``withheld_counts``.
 _SHAREABLE_CATEGORIES = frozenset(EVIDENCE_KINDS) | {"presidio_person", "presidio_location"}
 _DIGEST_LIMIT = 40
 
@@ -101,7 +105,8 @@ TOOL_CATALOG: dict[str, dict] = {
     "deep_search": {
         "desc": "Search, then crawl each URL and extract PII + leaked secrets "
                 "(emails, phones, IBANs, credit cards, DNIs, CUITs, RFCs, SSNs, "
-                "CPF, SIN, AWS/GitHub/Slack/Stripe/Google API keys, JWTs, "
+                "CPF, SIN, Colombian CC/TI/CE and NIT, "
+                "AWS/GitHub/Slack/Stripe/Google API keys, JWTs, "
                 "private keys, BTC/ETH wallets, public IPs).",
         "args": {
             "query":  "str (required)",
@@ -111,7 +116,8 @@ TOOL_CATALOG: dict[str, dict] = {
     "extract_pii": {
         "desc": "Fetch a single URL and extract identifiers + leaked secrets "
                 "(emails, phones, IBANs, credit cards, DNIs, CUITs, RFCs, SSNs, "
-                "CPF, SIN, AWS/GitHub/Slack/Stripe/Google API keys, JWTs, "
+                "CPF, SIN, Colombian CC/TI/CE and NIT, "
+                "AWS/GitHub/Slack/Stripe/Google API keys, JWTs, "
                 "private keys, BTC/ETH wallets, public IPs).",
         "args": {"url": "str (required)"},
     },
@@ -224,9 +230,9 @@ TOOL_CATALOG: dict[str, dict] = {
         },
     },
     # --- HIBP tools ----------------------------------------------------------
-    # Have I Been Pwned (hibp_*) tools give the planner breach-intelligence
-    # superpowers. Two are paid (need HIBP_API_KEY), two are free. All results
-    # are cached so the planner can call them repeatedly without hammering Troy.
+    # Have I Been Pwned lookups. Only hibp_account needs HIBP_API_KEY; the
+    # domain, breach and password lookups are free. Results are cached (see
+    # analysis.hibp), so a repeated call does not spend another request.
     "hibp_account": {
         "desc": "Have I Been Pwned: list every breach (and optionally pastes) "
                 "containing a target email address. Requires HIBP_API_KEY.",
@@ -236,16 +242,16 @@ TOOL_CATALOG: dict[str, dict] = {
         },
     },
     "hibp_domain": {
-        # Free endpoint — no API key needed. Great for a quick first recon step
-        # before deciding whether to invest in the paid per-account lookup.
+        # Free endpoint — no API key needed, so it suits an early step, before
+        # the paid per-account lookup.
         "desc": "Have I Been Pwned: list breaches affecting a domain. "
                 "Free endpoint, no API key required.",
         "args": {"domain": "str (required)"},
     },
     "hibp_breach": {
-        # Useful as a follow-up after hibp_account surfaces a breach name —
-        # drill into the full metadata (data classes, verification status, etc.)
-        # to understand *what* was stolen and calibrate risk.
+        # A follow-up to hibp_account: once a breach name is known, its full
+        # metadata (data classes, verification status, size) shows what was
+        # exposed.
         "desc": "Have I Been Pwned: detailed metadata for a single named "
                 "breach (size, data classes, verified flag, description).",
         "args": {"name": "str (required) — e.g. 'Adobe', 'LinkedIn'"},
@@ -413,14 +419,21 @@ def _dispatch_email_enum(args: dict, ia_agent) -> dict:
     except Exception as e:
         return {"status": "error", "summary": f"email_enum failed: {e}"}
     if results is None:
-        return {"status": "error", "summary": "email_enum: holehe unavailable"}
+        return {"status": "error",
+                "summary": f"email_enum: holehe could not check any service for {email}"}
     get_hub().ingest_email_enum(results, source="planner")
     records = from_email_enum(email, results)
-    claimed = sum(1 for r in records if r["status"] == "claimed")
+    claimed = [r for r in records if r["status"] == "claimed"]
+    unchecked = sum(1 for r in records if r["status"] in ("rate_limited", "error"))
+    summary = f"email_enum: {len(claimed)} service registration(s) found for {email}"
+    if unchecked:
+        summary += (f" · {unchecked} of {len(records)} service(s) could not be checked,"
+                    " so the email may be registered there too")
     return {
         "status":  "ok",
-        "summary": f"email_enum: {claimed} service registration(s) found for {email}",
-        "data":    {"claimed": claimed, "total": len(records), "records": records},
+        "summary": summary,
+        "data":    {"claimed": len(claimed), "unchecked": unchecked, "total": len(records),
+                    "records": claimed if only_used else records},
     }
 
 
@@ -686,9 +699,9 @@ def _dispatch_hibp_account(args: dict, ia_agent) -> dict:
 
     Validates args, calls the data + render functions, and packages
     the result into the standard {status, summary, data} shape that
-    the ReAct executor expects. The ``include_pastes`` arg accepts
-    truthy strings ("true", "yes", "1") as well as booleans because
-    LLMs sometimes serialise booleans as strings. We handle both.
+    :meth:`core.ai_agent.IAAgent.investigate` reads. The ``include_pastes``
+    arg accepts truthy strings ("true", "yes", "1") as well as booleans,
+    because models sometimes write a boolean as a string.
     """
     from analysis.hibp import (hibp_breached_account, hibp_pastes_for_account,
                                render_breached_account, render_pastes_for_account)
@@ -765,11 +778,12 @@ def _dispatch_hibp_breach(args: dict, ia_agent) -> dict:
         return {"status": "error", "summary": "hibp_breach: missing 'name'"}
     info = hibp_breach(name)
     if not info:
-        # 404 from HIBP — name doesn't match any known breach identifier
+        # hibp_breach returns None both for an unknown name and for a failed
+        # request; the two cannot be told apart here.
         return {"status": "error", "summary": f"hibp_breach: no record for '{name}'"}
     return {
         "status":  "ok",
-        # Summary is concise for the ReAct log; full metadata lives in "data".
+        # One line for the step list on screen; the full metadata is in "data".
         "summary": (f"{info.get('Name')} ({info.get('BreachDate')}): "
                     f"{info.get('PwnCount', 0):,} accounts, "
                     f"data classes: {', '.join(info.get('DataClasses') or [])[:80]}"),

@@ -1,7 +1,7 @@
 """
 analysis/domain_osint.py — Domain and network OSINT primitives.
 
-Covers the foundational reconnaissance surface that wasn't in the project before:
+One probe per question about a domain or host:
 
   - whois_lookup(domain)             registrar / dates / contacts / nameservers
   - dns_records(domain)              A, AAAA, MX, TXT, NS, SOA, CNAME, CAA
@@ -14,9 +14,9 @@ Covers the foundational reconnaissance surface that wasn't in the project before
 The orchestrator ``domain_recon(target)`` fans out every free, no-key probe
 concurrently via ``asyncio.gather`` and renders the results in a stable order
 after all probes have completed (deferred rendering — keeps output ordered
-even though probes finish in arbitrary order). Sync entry points are
-preserved so individual callers (CLI menu, AI Query Planner dispatchers) are
-unaffected.
+even though probes finish in arbitrary order). Each probe also has a sync
+entry point, used by callers that need only one of them: the CLI menu and
+the AI Query Planner dispatchers.
 """
 
 from __future__ import annotations
@@ -641,8 +641,8 @@ async def _http_headers_fetch_async(url: str) -> dict:
 def _render_http_headers_body(raw: dict) -> dict:
     """
     Render the security-headers table only — no print_info header.
-    Returns the normalised summary dict (present/missing/score…) the same
-    way the sync wrapper used to.
+    Returns the normalised summary dict (present/missing/score…), which both
+    :func:`http_security_headers` and the recon orchestrator return as is.
     """
     if not raw or "_error" in (raw or {}):
         if raw and "_error" in raw:
@@ -951,7 +951,10 @@ async def _domain_recon_async(target: str, include_shodan: bool | None) -> dict:
 
     report: dict = {"target": domain}
 
-    # 1. WHOIS
+    # Results are rendered in the order of the docstring. A probe that raised
+    # leaves an empty entry in the report, so callers can read every key.
+
+    # WHOIS
     print_info(f"WHOIS · {domain}")
     if isinstance(whois_r, BaseException):
         print_error(f"WHOIS failed: {whois_r}")
@@ -962,7 +965,7 @@ async def _domain_recon_async(target: str, include_shodan: bool | None) -> dict:
         report["whois"] = info
     console.print()
 
-    # 2. DNS
+    # DNS
     print_info(f"DNS · {domain}")
     if isinstance(dns_r, BaseException):
         print_error(f"DNS failed: {dns_r}")
@@ -973,7 +976,7 @@ async def _domain_recon_async(target: str, include_shodan: bool | None) -> dict:
         report["dns"] = found
     console.print()
 
-    # 3. Email security
+    # Email security (SPF / DMARC / DKIM)
     print_info(f"Email security · {domain}")
     if isinstance(mail_r, BaseException):
         print_error(f"Email security failed: {mail_r}")
@@ -987,7 +990,7 @@ async def _domain_recon_async(target: str, include_shodan: bool | None) -> dict:
         report["email_security"] = info
     console.print()
 
-    # 4. TLS
+    # TLS certificate
     print_info(f"TLS · {domain}:443")
     if isinstance(tls_r, BaseException):
         print_error(f"TLS failed: {tls_r}")
@@ -998,7 +1001,7 @@ async def _domain_recon_async(target: str, include_shodan: bool | None) -> dict:
         report["tls"] = {} if "_error" in info else info
     console.print()
 
-    # 5. HTTP headers
+    # HTTP security headers
     print_info(f"HTTP headers · {final_url}")
     if isinstance(hdr_r, BaseException):
         print_error(f"HTTP headers failed: {hdr_r}")
@@ -1008,7 +1011,7 @@ async def _domain_recon_async(target: str, include_shodan: bool | None) -> dict:
         report["headers"] = _render_http_headers_body(raw)
     console.print()
 
-    # 6. Subdomains (crt.sh)
+    # Subdomains (crt.sh)
     print_info(f"Subdomains · crt.sh lookup for *.{domain}")
     if isinstance(sub_r, BaseException):
         print_error(f"crt.sh failed: {sub_r}")
@@ -1018,7 +1021,8 @@ async def _domain_recon_async(target: str, include_shodan: bool | None) -> dict:
         report["subdomains"] = _render_subdomains_body(domain, raw)
     console.print()
 
-    # 7. Shodan (optional) — piggy-backs on the A record from step 2.
+    # Shodan (optional). It needs an IP, so it runs after the gather, using the
+    # first A record from the DNS probe or, failing that, the system resolver.
     do_shodan = include_shodan if include_shodan is not None else bool(os.getenv("SHODAN_API_KEY"))
     if do_shodan:
         ip = _first_a(report["dns"]) or await asyncio.to_thread(_resolve_first_ip, domain)

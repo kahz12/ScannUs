@@ -53,10 +53,10 @@ DEFAULT_TTL: dict[str, int] = {
     "crtsh":         7  * 24 * 60 * 60,   # 7d — CT logs are append-only; a domain's
                                           #      CT footprint changes on the order of
                                           #      cert issuance (weeks–months), not
-                                          #      hours, so 7d matches `wayback`.
-    "hibp_account":  12 * 60 * 60,        # 12h — HIBP updates breach data daily; 12h
-                                          #       is a polite balance between freshness
-                                          #       and not hammering Troy's servers.
+                                          #      hours, so a week rarely misses a cert.
+    "hibp_account":  12 * 60 * 60,        # 12h — HIBP loads new breaches about daily;
+                                          #       12h keeps results fresh while sparing
+                                          #       the rate-limited paid endpoint.
     "hibp_breach":   7  * 24 * 60 * 60,   # 7d  — Breach metadata (dates, data classes)
                                           #       almost never changes after ingestion.
     "hibp_password": 30 * 24 * 60 * 60,   # 30d — k-anon range responses are append-only;

@@ -1,22 +1,22 @@
 """
 core/throttle.py — Per-namespace token-bucket rate limiting + retry/backoff.
 
-Centralises two things that every network-touching tool in this project used
-to reinvent (or skip): outbound rate limiting and transient-failure retries.
+Holds the two concerns every network-touching tool in this project shares:
+outbound rate limiting and transient-failure retries.
 
 Why a single shared module?
-  * HIBP, Shodan, crt.sh, and every subprocess wrapper each had — or did
-    not have — its own ad-hoc retry loop. Inconsistent + easy to forget.
+  * HIBP, Shodan, crt.sh and the subprocess wrappers all need the same
+    retry rules; keeping them here means one tested implementation.
   * Token buckets are stateful: the budget for "polite HIBP traffic" must
     be shared across every caller in the process, not re-created per call.
   * The same primitives need to work in sync and async code paths.
 
 Primitives provided here:
 
-  * :class:`TokenBucket`         — classic leaky-bucket implementation,
+  * :class:`TokenBucket`         — token-bucket rate limiter,
                                     thread-safe, sync + async wait methods.
   * :func:`get_bucket`           — process-wide singleton per namespace.
-  * :func:`DEFAULT_RATES`        — sensible defaults per upstream.
+  * :data:`DEFAULT_RATES`        — default rate per upstream namespace.
   * :func:`backoff_delay`        — exponential backoff with full jitter.
   * transient-failure sentinel   — opt-in marker for "retry me".
   * :func:`throttled` /          — decorators that combine rate-limit +
@@ -110,7 +110,7 @@ class TokenBucket:
     def acquire(self, tokens: float = 1.0) -> float:
         """
         Reserve ``tokens`` from the bucket. Returns the wait time (seconds)
-        the caller should sleep before proceeding. Does NOT sleep itself.
+        the caller should sleep before proceeding. It never sleeps itself.
 
         The bucket is always decremented (potentially into a negative
         balance) so that simultaneous callers can't both "spend" the same

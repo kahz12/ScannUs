@@ -244,11 +244,11 @@ class FindingsHub:
         return n
 
     def ingest_email_enum(self, results: list, source: str = "email-enum") -> int:
-        """Ingest service domains from a Holehe result list (each row has
-        ``service``/``domain``)."""
+        """Ingest the domains of the services where a Holehe result list shows
+        the email registered (rows with ``status`` ``claimed``)."""
         n = 0
         for r in results or []:
-            if not isinstance(r, dict):
+            if not isinstance(r, dict) or r.get("status") != "claimed":
                 continue
             dom = (r.get("domain") or "").strip()
             if dom:

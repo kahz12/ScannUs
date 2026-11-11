@@ -1,10 +1,11 @@
 """
 search/reverse_image.py — Multi-engine reverse image search entry point.
 
-Replaces the old Yandex-only flow with a tiered fallback chain (TinEye API,
-Bing Visual Search API, Yandex via Selenium, manual lookup URLs). Each
-engine is independent and silently skipped when its prerequisite is missing,
-so the user always receives at least the manual-lookup URL tier.
+Runs a tiered fallback chain (TinEye API, Bing Visual Search API, Yandex via
+Selenium, manual lookup URLs) through
+:func:`search.reverse_image_engines.reverse_image_aggregate`. Each engine is
+independent and silently skipped when its prerequisite is missing, so the
+user always receives at least the manual-lookup URL tier.
 """
 
 from cli.ui import console, THEME, print_info, print_error, print_warn

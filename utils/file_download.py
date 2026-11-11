@@ -245,6 +245,6 @@ class FileDownload:
         return None
 
     def download_file_direct(self, url: str, extract_metadata: bool = False) -> str | None:
-        """Thin alias for :meth:`download_file`, kept for call sites that
-        historically distinguished a "direct" download path."""
+        """Same as :meth:`download_file`. The menus call it for a link that
+        points straight at a file, as opposed to a page scraped for media."""
         return self.download_file(url, extract_metadata)

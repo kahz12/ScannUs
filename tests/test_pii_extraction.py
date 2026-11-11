@@ -9,6 +9,8 @@ address) so the tests document *correct* behaviour rather than merely the
 current implementation.
 """
 
+import pytest
+
 from search import smart_search as s
 
 
@@ -150,6 +152,54 @@ class TestNationalIdentifiers:
         assert s._extract_rfc("rfc MELM850101HDF here") == {"MELM850101HDF"}
         # month 15 is impossible -> rejected
         assert s._extract_rfc("rfc MELM851501HDF here") == set()
+
+
+class TestColombianIdentifiers:
+    @pytest.mark.parametrize("text, expected", [
+        ("identificado con TI 1012345678 quien", "TI 1012345678"),
+        ("T.I. 99052312345", "TI 99052312345"),
+        ("Tarjeta de identidad: 1001234567", "TI 1001234567"),
+        ("C.C. No. 79.123.456 de Bogotá", "CC 79123456"),
+        ("c.c. 52,345,678", "CC 52345678"),
+        ("cédula de ciudadanía número 1.012.345.678", "CC 1012345678"),
+        ("cedula 80123456", "CC 80123456"),
+        ("cédula de extranjería 654321", "CE 654321"),
+        ("CE N° 1234567", "CE 1234567"),
+    ])
+    def test_labelled_documents(self, text, expected):
+        assert s._extract_col_id(text) == {expected}
+
+    @pytest.mark.parametrize("text", [
+        "para ti 123456789",      # "ti" is a common Spanish word
+        "TI-84 Plus",
+        "CC BY 4.0",
+        "llama al 3001234567",    # a number without a document label
+        "TI 12345",               # too short for any document
+    ])
+    def test_unlabelled_or_short_numbers_are_ignored(self, text):
+        assert s._extract_col_id(text) == set()
+
+    @pytest.mark.parametrize("nit, check_digit", [
+        ("890903938", 8),   # Bancolombia
+        ("899999068", 1),   # Ecopetrol
+        ("800197268", 4),   # DIAN
+    ])
+    def test_nit_check_digit_of_known_companies(self, nit, check_digit):
+        assert s._nit_check_digit(nit) == check_digit
+
+    def test_nit_with_and_without_check_digit(self):
+        assert s._extract_nit("NIT 890.903.938-8") == {"890903938-8"}
+        assert s._extract_nit("NIT No. 900123456") == {"900123456"}
+
+    def test_nit_with_a_wrong_check_digit_is_rejected(self):
+        assert s._extract_nit("NIT 800197268-5") == set()
+
+    def test_extract_information_reports_both_categories(self):
+        out = s.extract_information("Cliente C.C. 79.123.456, empresa NIT 890903938-8")
+
+        assert out["col_id"] == ["CC 79123456"]
+        assert out["nit"] == ["890903938-8"]
+        assert s.category_confidence("col_id") == "medium"
 
 
 # ---------------------------------------------------------------------------

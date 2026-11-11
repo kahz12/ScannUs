@@ -7,7 +7,7 @@ its prerequisite (API key, browser, network) is missing:
 
   1. TinEye API (HMAC-signed)         — requires TINEYE_PUBLIC_KEY + TINEYE_PRIVATE_KEY
   2. Bing Visual Search (Azure CS)    — requires BING_VISUAL_SEARCH_KEY
-  3. Yandex (Selenium, existing)      — requires Firefox + geckodriver
+  3. Yandex (Selenium scraper)        — requires Firefox + geckodriver
   4. Manual lookup URLs               — always returns; no deps, no auth
 
 The orchestrator (``reverse_image_aggregate``) runs every enabled engine
@@ -31,7 +31,7 @@ _UA = "Mozilla/5.0 (compatible; ScannUs/1.0; +OSINT-reverse-image)"
 
 
 # ============================================================================
-# Engine 1 — TinEye API (HMAC-signed REST endpoint)
+# TinEye API (HMAC-signed REST endpoint), first in the fallback order
 # ============================================================================
 
 def tineye_search(image_url: str, public_key: str | None = None,
@@ -94,7 +94,7 @@ def tineye_search(image_url: str, public_key: str | None = None,
 
 
 # ============================================================================
-# Engine 2 — Bing Visual Search (Azure Cognitive Services)
+# Bing Visual Search (Azure Cognitive Services)
 # ============================================================================
 
 def bing_visual_search(image_url: str, api_key: str | None = None,
@@ -144,7 +144,7 @@ def bing_visual_search(image_url: str, api_key: str | None = None,
 
 
 # ============================================================================
-# Engine 3 — Yandex (existing Selenium-based scraper)
+# Yandex (Selenium scraper in search.smart_search.SmartSearch)
 # ============================================================================
 
 def yandex_search(image_url: str) -> list[dict]:
@@ -166,7 +166,7 @@ def yandex_search(image_url: str) -> list[dict]:
 
 
 # ============================================================================
-# Engine 4 — Manual lookup URLs (always available, zero deps)
+# Manual lookup URLs (always available, zero deps), last in the fallback order
 # ============================================================================
 
 def manual_lookup_urls(image_url: str) -> list[dict]:

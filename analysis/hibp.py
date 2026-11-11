@@ -1,11 +1,9 @@
 """
 analysis/hibp.py — Have I Been Pwned breach & paste lookups.
 
-Welcome to the "Oh No, My Password Was 'password123'" module! 🔒
-This integrates with Troy Hunt's legendary Have I Been Pwned service
-to answer the eternal question: "Has my email / password been leaked
-by some irresponsible company storing passwords in plain text?"
-(Spoiler: probably yes.)
+Answers two questions through the Have I Been Pwned (HIBP) service: in which
+known breaches or pastes an email or domain appears, and how often a password
+shows up in breach corpora.
 
 Three classes of endpoint, all routed through the persistent SQLite cache:
 
@@ -22,11 +20,12 @@ Three classes of endpoint, all routed through the persistent SQLite cache:
       - ``hibp_password_pwned_hash(sha1_hex)`` — k-anon count for an SHA-1 hash
 
 Design notes:
-  - The plaintext password NEVER leaves the process. We SHA-1 it locally and
-    send only the first 5 hex chars to ``api.pwnedpasswords.com/range/{prefix}``.
-    The response is a list of ``SUFFIX:COUNT`` pairs; we match the rest of the
-    hash in-memory and return the count (0 = safe / not in any known breach).
-    Troy Hunt is clever — you learn your fate without revealing your secret.
+  - The plaintext password never leaves the process. It is hashed with SHA-1
+    locally and only the first 5 hex chars go to
+    ``api.pwnedpasswords.com/range/{prefix}``. The response is a list of
+    ``SUFFIX:COUNT`` pairs; the rest of the hash is matched in memory and the
+    count returned (0 = not seen in any known breach, which is not proof that
+    the password is strong).
   - Caching uses three namespaces (``hibp_account``, ``hibp_breach``,
     ``hibp_password``) with TTLs tuned in :mod:`core.cache`.
   - Renderers (``render_*``) are decoupled from the network layer so they can
@@ -60,12 +59,12 @@ from core.throttle import retry_http_sync
 _HIBP_API     = "https://haveibeenpwned.com/api/v3"
 _PWNED_PW_API = "https://api.pwnedpasswords.com/range"
 
-# Be polite — HIBP asks for a descriptive UA on every request.
-# "ScannUs-OSINT-Framework" is informative enough that Troy won't block us.
+# HIBP rejects requests without a User-Agent and asks that it name the client,
+# so every request identifies ScannUs.
 _USER_AGENT = "ScannUs-OSINT-Framework"
 
-# How long to wait before giving up on HIBP. 15 seconds is generous;
-# if the internet is slower than this you have bigger problems than leaked passwords.
+# Per-request timeout in seconds. HIBP normally answers in well under a second;
+# this only bounds a stalled connection.
 _DEFAULT_TIMEOUT = 15.0
 
 
@@ -78,7 +77,7 @@ def _api_key() -> str | None:
 
     The key lives in the ``HIBP_API_KEY`` env var (populated from .env by
     ``core.config.env_config``). Paid endpoints gate on this; free ones don't.
-    Strips whitespace so a copy-paste typo doesn't ruin your day.
+    Surrounding whitespace is stripped, since keys are usually pasted in.
     """
     key = (os.getenv("HIBP_API_KEY") or "").strip()
     return key or None
@@ -87,10 +86,9 @@ def _api_key() -> str | None:
 def _headers(api_key: str | None = None) -> dict:
     """Build the HTTP headers dict for every HIBP request.
 
-    Always includes User-Agent (required by HIBP) and JSON Accept header.
-    The secret sauce ``hibp-api-key`` header is added only when we have a key —
-    free endpoints work without it, so no need to send an empty header
-    and confuse Troy's servers.
+    Always includes User-Agent (required by HIBP) and a JSON Accept header.
+    The ``hibp-api-key`` header is added only when a key is configured; the
+    free endpoints ignore it, and an empty value would be sent for nothing.
     """
     h = {"User-Agent": _USER_AGENT, "Accept": "application/json"}
     if api_key:
@@ -104,9 +102,10 @@ def _get(url: str, *, api_key: str | None = None,
     """
     Perform a GET against HIBP and normalise the response.
 
-    This is the single choke-point for all outbound HTTP in this module —
-    everything else calls ``_get`` rather than talking to ``requests`` directly.
-    That makes mocking in tests painless (replace ``requests.get``, done).
+    This is the single choke-point for the HIBP API in this module — the other
+    functions call ``_get`` rather than ``requests`` directly, so a test only
+    needs to replace ``requests.get``. The Pwned Passwords range endpoint has
+    its own fetcher, :func:`_fetch_pwned_range`, because it returns plain text.
 
     Returns ``(status_code, body)`` where body is parsed JSON for 2xx, the
     raw text for non-2xx (so we can surface a useful message), or ``status=0``
@@ -120,8 +119,9 @@ def _get(url: str, *, api_key: str | None = None,
     ``Retry-After`` is honoured when present so we back off as much as HIBP
     wants us to.
 
-    Why not raise on failures? Because OSINT tools should degrade gracefully —
-    a network hiccup shouldn't abort a 30-step investigation plan.
+    Failures are returned rather than raised so that one unreachable endpoint
+    does not abort a menu session or a planner investigation; every caller
+    checks the status instead.
     """
     def _once() -> tuple[int, Any, str | None]:
         try:
@@ -151,9 +151,9 @@ def _get(url: str, *, api_key: str | None = None,
 # ---------------------------------------------------------------------------
 # Breached account / pastes — PAID
 # ---------------------------------------------------------------------------
-# These two endpoints require a paid HIBP API key (~$3.50/month as of 2024).
-# Yes, you have to pay to find out which companies lost your data. The irony
-# is not lost on us. But at least it keeps scrapers from harvesting the DB.
+# These two endpoints require a paid HIBP API key (``HIBP_API_KEY``). HIBP
+# keeps per-email lookups behind a key so the corpus cannot be harvested in
+# bulk; without one, both functions report the missing key and return None.
 # ---------------------------------------------------------------------------
 
 def _fetch_breached_account(email: str, truncate: bool) -> list[dict] | None:
@@ -164,19 +164,20 @@ def _fetch_breached_account(email: str, truncate: bool) -> list[dict] | None:
     including data classes, descriptions, etc.
 
     This is the private uncached version; the public ``hibp_breached_account``
-    wraps it with SQLite caching so we don't hammer HIBP on every run.
+    wraps it with SQLite caching so a repeated lookup does not spend another
+    rate-limited request.
     """
     key = _api_key()
     if not key:
         return None
     suffix = "?truncateResponse=true" if truncate else "?truncateResponse=false"
     url = f"{_HIBP_API}/breachedaccount/{quote(email, safe='')}{suffix}"
-    # Note: quote() URL-encodes '@' -> '%40', which is correct and expected.
+    # quote() turns '@' into '%40'; HIBP expects the address URL-encoded.
     status, body = _get(url, api_key=key)
     if status == 200 and isinstance(body, list):
         return body
     if status == 404:
-        return []  # Happy path: no breaches found. Treat yourself to a coffee.
+        return []  # HIBP answers 404 when the email is in no breach
     return None
 
 
@@ -211,8 +212,8 @@ def _fetch_pastes_for_account(email: str) -> list[dict] | None:
     """Raw network fetch for the /pasteaccount endpoint.
 
     Pastes are snippets posted to Pastebin, GitHub Gists, and similar sites
-    containing dumps of credentials. Finding your email here means someone
-    copy-pasted a breach dump somewhere public. Charming.
+    containing dumps of credentials. A hit means the address appeared in a
+    dump that was published openly.
 
     Private uncached version — see ``hibp_pastes_for_account`` for the
     cached public API.
@@ -225,7 +226,7 @@ def _fetch_pastes_for_account(email: str) -> list[dict] | None:
     if status == 200 and isinstance(body, list):
         return body
     if status == 404:
-        return []  # No pastes. Your email is off Pastebin's radar. For now.
+        return []  # HIBP answers 404 when the email is in no paste
     return None
 
 
@@ -249,9 +250,10 @@ def hibp_pastes_for_account(email: str) -> list[dict] | None:
 # ---------------------------------------------------------------------------
 # Breach catalog — FREE
 # ---------------------------------------------------------------------------
-# These endpoints require no API key and return publicly available breach
-# metadata. Think of it as HIBP's "greatest hits" album, except the music
-# is all the companies that failed to hash their passwords properly.
+# These endpoints require no API key and return the public breach catalog:
+# one entry per breach, with its date, size, data classes and verification
+# status. They are cheaper to call, so they use the more lenient
+# ``hibp_breach`` rate-limit bucket.
 # ---------------------------------------------------------------------------
 
 def _fetch_breaches_for_domain(domain: str) -> list[dict] | None:
@@ -307,9 +309,10 @@ def _fetch_breach(name: str) -> dict | None:
 def hibp_breach(name: str) -> dict | None:
     """Return detailed metadata for a named breach. Free; cached 7d.
 
-    Useful when you want the full story on a specific breach: its description,
-    exactly which data classes were stolen, whether it's been verified, and
-    crucially, how many accounts were caught in the blast radius.
+    Gives the full record of one breach: its description, the data classes
+    that were exposed, whether HIBP has verified it, and how many accounts it
+    holds (``PwnCount``). Returns None when the name is unknown or the
+    request fails.
     """
     return cached_call(
         "hibp_breach",
@@ -321,27 +324,29 @@ def hibp_breach(name: str) -> dict | None:
 # ---------------------------------------------------------------------------
 # Pwned Passwords — FREE (k-anonymity)
 # ---------------------------------------------------------------------------
-# This is the clever bit. Troy Hunt's k-anonymity model means:
-#   1. We SHA-1 the password locally.
-#   2. We send only the first 5 hex characters (the "prefix") to the API.
-#   3. The API returns ~800 suffix:count pairs that share that prefix.
-#   4. We search for our suffix IN MEMORY.
+# The lookup follows HIBP's k-anonymity model:
+#   - the password is hashed with SHA-1 locally;
+#   - only the first 5 hex characters of the hash (the prefix) are sent;
+#   - the API returns every suffix:count pair that shares that prefix
+#     (about 800, padded to a uniform size);
+#   - the remaining 35 characters are matched in memory.
 #
-# Result: the server never sees the password OR its full hash. It only sees
-# 1/1,048,576 of the hash space — completely useless for reversing. Genius.
+# The server therefore sees neither the password nor its full hash: a prefix
+# is shared by roughly a million-th of the hash space, so it cannot be
+# reversed to a single password.
 # ---------------------------------------------------------------------------
 
 def _fetch_pwned_range(prefix: str) -> str | None:
     """Fetch the SHA-1 range from the Pwned Passwords API.
 
-    Returns the raw response body, which is a bunch of lines like:
+    Returns the raw response body, one ``SUFFIX:COUNT`` pair per line:
         1E4C9B93F3F0682250B6CF8331B7EE68FD8:9999999
         AABBCC...:3
         ...
 
-    The ``Add-Padding: true`` header asks HIBP to pad the response to a
-    uniform size (~800 entries) so traffic analysis can't reveal whether
-    a specific prefix exists in the corpus. Extra privacy! 🎉
+    The ``Add-Padding: true`` header asks HIBP to pad the response with
+    zero-count entries to a uniform size, so the response length does not
+    reveal how many real hashes share the prefix.
 
     Rate-limited and retried via the shared ``hibp_password`` bucket
     (default ~10 rps — the k-anon endpoint is a permissive CDN).
@@ -373,10 +378,11 @@ def hibp_password_pwned_hash(sha1_hex: str) -> int | None:
     Useful when the SHA-1 is already known, since nothing is re-hashed.
     The public ``hibp_password_pwned`` function calls this after hashing.
 
-    How the cache works here: the entire range response (~800 entries) is
-    cached under the 5-char prefix. Future lookups for ANY password sharing
-    that prefix (e.g. "password", "password1", "pa55word") all hit the same
-    cached blob — great cache efficiency for common prefix spaces.
+    The whole range response is cached under its 5-character prefix, so a
+    later lookup of any hash that starts with the same prefix is answered
+    from the cache without a request. Different passwords almost never share
+    a prefix, so the cache mostly helps when the same password is checked
+    again.
 
     Args:
         sha1_hex: The SHA-1 of the password as a 40-char hex string
@@ -387,29 +393,29 @@ def hibp_password_pwned_hash(sha1_hex: str) -> int | None:
         ``0`` means the password is not in any known breach (still no guarantee
         of safety, but a good signal). ``None`` on transport failure.
     """
-    # Normalise to uppercase — HIBP suffixes are uppercase and we compare them.
+    # HIBP returns upper-case suffixes, so the hash is compared in upper case.
     s = sha1_hex.strip().upper()
-    # Validate before sending anything: must be exactly 40 valid hex chars.
+    # Nothing is sent unless the input is exactly 40 hex characters.
     if len(s) != 40 or not all(c in "0123456789ABCDEF" for c in s):
-        return None  # Not a valid SHA-1 — caller passed garbage, return None
-    prefix, suffix = s[:5], s[5:]  # Split: send prefix, match suffix locally
+        return None
+    prefix, suffix = s[:5], s[5:]  # the prefix is sent; the suffix stays local
     body = cached_call(
         "hibp_password",
         ["range", prefix],
         lambda: _fetch_pwned_range(prefix),
     )
     if body is None:
-        return None  # Network failure; we can't tell if it's compromised
+        return None  # the request failed, so the answer is unknown
     for line in body.splitlines():
-        # Each line: "<35-char suffix>:<count>"
-        # The count can be large (billions for "123456"); format it elsewhere.
+        # Each line is "<35-char suffix>:<count>". Counts reach the millions
+        # for common passwords; the renderers add the thousands separators.
         parts = line.strip().split(":")
         if len(parts) >= 2 and parts[0].upper() == suffix:
             try:
                 return int(parts[1])
             except ValueError:
-                return 0  # Malformed line from the API; treat as count=0
-    # Password not found in the range — it hasn't been seen in any known breach.
+                return 0  # an unreadable count is reported as not seen
+    # The suffix is not in the range, so no known breach contains the password.
     return 0
 
 
@@ -430,8 +436,7 @@ def hibp_password_pwned(password: str) -> int | None:
         Number of breach occurrences (0 if clean), or ``None`` on failure.
     """
     if not password:
-        # Empty string would technically work, but let's not encourage checking
-        # whether the empty string is a popular password (it is, sadly).
+        # An empty password means nothing was entered, so no lookup is made.
         return None
     sha1_hex = hashlib.sha1(password.encode("utf-8")).hexdigest()
     return hibp_password_pwned_hash(sha1_hex)
@@ -440,17 +445,16 @@ def hibp_password_pwned(password: str) -> int | None:
 # ---------------------------------------------------------------------------
 # Renderers — Rich tables for human-facing CLI/menu paths
 # ---------------------------------------------------------------------------
-# These are deliberately separated from the network/cache layer above.
-# Why? So the AI dispatcher can call the data functions, check the result,
-# and decide whether to render — without the data function side-effectfully
-# blasting a table to stdout mid-plan. Separation of concerns FTW.
+# These are kept apart from the network/cache layer above, so a caller such as
+# the planner dispatcher can fetch the data, inspect it, and decide whether to
+# print a table at all, instead of getting output as a side effect of the fetch.
 # ---------------------------------------------------------------------------
 
 def _fmt_int(n: Any) -> str:
     """Format a number with thousands separators (e.g. 152445165 → '152,445,165').
 
-    Falls back to str(n) if the value isn't numeric — defensive against
-    HIBP API changes that might someday return a string where we expect an int.
+    Falls back to str(n) if the value isn't numeric, so an unexpected type in
+    an HIBP response still renders instead of raising.
     """
     try:
         return f"{int(n):,}"
@@ -462,20 +466,17 @@ def render_breached_account(email: str, breaches: list[dict] | None) -> None:
     """Render the breaches a specific account appears in.
 
     Builds a Rich table with one row per breach: name, domain, date, account
-    count, and which categories of data were stolen. If the list is empty,
-    prints a reassuring success message. If it's None, assumes the caller
-    already printed the reason and stays silent.
+    count, and which categories of data were stolen. An empty list prints a
+    success line. ``None`` prints nothing, because the fetch function has
+    already printed the reason (missing key or failed request).
     """
     if breaches is None:
-        return  # caller already explained why (missing key, network failure, etc.)
+        return
     if not breaches:
-        # Great news! The email hasn't been caught in any known breach.
-        # (Or they signed up for everything under an alias. Smart.)
         print_success(f"{email}: no breaches found in HIBP.")
         return
 
-    # Build the table with one row per breach entry.
-    # The title shows the hit count so it's visible at a glance.
+    # One row per breach; the title carries the hit count.
     tbl = make_table(
         f"Breaches for {email}  [{THEME['DIM']}]({len(breaches)} hit"
         f"{'s' if len(breaches) != 1 else ''})[/]",
@@ -504,24 +505,24 @@ def render_pastes_for_account(email: str, pastes: list[dict] | None) -> None:
     """Render the pastes a specific account appears in.
 
     Pastes are typically Pastebin / GitHub Gist / similar dumps.
-    The table shows where the paste came from, its ID (so you can look
-    it up manually), when it was posted, how many emails are in it,
-    and the title (usually something ominous like "combolist_2021").
+    The table shows where the paste came from, its ID (so it can be looked
+    up by hand), when it was posted, how many emails it holds, and its title.
+    ``None`` prints nothing, because the fetch function has already printed
+    the reason.
     """
     if pastes is None:
-        return  # Likely API key issue — silently bail, caller handled it
+        return
     if not pastes:
-        # No pastes! Your email hasn't been copy-pasted into any dark corners of the web.
         print_info(f"{email}: no pastes found in HIBP.")
         return
 
     tbl = make_table(
         f"Pastes for {email}  [{THEME['DIM']}]({len(pastes)})[/]",
         ("Source",  THEME["PRIMARY"]),  # e.g. "Pastebin", "GitHub"
-        ("ID",      "white"),           # the paste's unique ID on that platform
+        ("ID",      "white"),           # the paste's ID on that platform
         ("Date",    "white"),           # when it was posted (or ingested by HIBP)
-        ("Emails",  THEME["ACCENT"]),   # total emails in that paste dump
-        ("Title",   "white"),           # usually unintentionally funny or ominous
+        ("Emails",  THEME["ACCENT"]),   # number of emails in the paste
+        ("Title",   "white"),           # the title given by whoever posted it
         show_lines=False,
     )
     for p in pastes:
@@ -530,7 +531,7 @@ def render_pastes_for_account(email: str, pastes: list[dict] | None) -> None:
             str(p.get("Id") or "?"),
             str(p.get("Date") or "?"),
             _fmt_int(p.get("EmailCount", 0)),
-            str(p.get("Title") or "")[:50],  # 50 chars is plenty for a title
+            str(p.get("Title") or "")[:50],  # keeps the table within a terminal width
         )
     console.print(tbl)
 
@@ -549,8 +550,8 @@ def render_breaches_for_domain(domain: str, breaches: list[dict] | None) -> None
         print_error(f"{domain}: HIBP lookup failed (network or API problem).")
         return
     if not breaches:
-        # Domain is clean! Either they have great security or haven't been
-        # discovered yet. Optimistically assume the former.
+        # Only breaches HIBP has catalogued count; an empty list does not mean
+        # the domain was never breached.
         print_info(f"{domain}: no breaches recorded by HIBP.")
         return
 
@@ -559,7 +560,7 @@ def render_breaches_for_domain(domain: str, breaches: list[dict] | None) -> None
         ("Name",     THEME["PRIMARY"]),
         ("Date",     "white"),
         ("Accounts", THEME["ACCENT"]),
-        ("Verified", "white"),  # HIBP's stamp of authenticity
+        ("Verified", "white"),  # whether HIBP has confirmed the breach is genuine
         show_lines=False,
     )
     for b in breaches:
@@ -575,11 +576,11 @@ def render_breaches_for_domain(domain: str, breaches: list[dict] | None) -> None
 def render_password_pwned(count: int | None) -> None:
     """Render the result of a Pwned Passwords lookup.
 
-    Three possible outcomes:
-      - None:    Transport failure (can't connect to pwnedpasswords.com).
-      - 0:       Password not found — green light, but pick a better one anyway.
-      - 1-9:     Rare occurrence — still compromised, change it.
-      - 10+:     Very common password — abandon all hope. Change it everywhere.
+    Four outcomes:
+      - None:  the lookup failed (no connection, or an invalid hash).
+      - 0:     the password is in no known breach corpus.
+      - 1-9:   seen a few times — exposed, but not a commonly used password.
+      - 10+:   a common password that attackers try first.
 
     The colour coding uses Rich styles from THEME for consistency with the
     rest of ScannUs output: green (success) / yellow (warn) / red (failure).
@@ -588,18 +589,15 @@ def render_password_pwned(count: int | None) -> None:
         print_error("Pwned Passwords lookup failed (network or invalid hash).")
         return
     if count == 0:
-        # Not in the corpus. You're probably using a passphrase or a password
-        # manager. Either way, good job — have a gold star. ⭐
         print_success("Password not found in any known HIBP breach corpus.")
         return
     if count < 10:
-        # Technically compromised but rare: probably a single use on a forum
-        # that was later breached.
+        # A low count usually means one account on a breached site used it.
         print_warn(f"Password seen in HIBP corpus: {_fmt_int(count)} time(s) — change it.")
     else:
-        # Seen 10+ times means this is a genuinely popular bad password.
-        # "password", "123456", "qwerty", "abc123" all live here in the millions.
-        # Red alert. Change it. Use a password manager. Enable MFA. The works.
+        # Ten or more sightings put it among the passwords that appear in
+        # credential-stuffing lists ("password", "123456", "qwerty" are seen
+        # millions of times).
         print_error(
             f"Password seen in HIBP corpus: {_fmt_int(count)} time(s) — "
             f"do NOT use it anywhere."
@@ -609,28 +607,27 @@ def render_password_pwned(count: int | None) -> None:
 # ---------------------------------------------------------------------------
 # Convenience wrappers used by CLI + menus + AI dispatchers
 # ---------------------------------------------------------------------------
-# These three functions are the "batteries included" API:
-# fetch + render in one call, returning a dict for callers that want
-# the data programmatically (e.g. the AI planner, JSON export).
+# Each wrapper fetches and renders in one call and returns the data, for the
+# command-line flags, the menus and the planner. Breach metadata by name has
+# no wrapper: main.py and the menus render it as a key:value list themselves.
 # ---------------------------------------------------------------------------
 
 def check_account(email: str, *, include_pastes: bool = True) -> dict:
     """
     Run the full account check (breaches + optional pastes) and render.
 
-    This is the one-stop shop for "has this email been pwned?"
-    It fetches both breaches and pastes (if requested), renders each table
-    to the terminal, and returns a clean dict for programmatic consumers.
-
-    The ``include_pastes`` flag lets callers skip the paste lookup (e.g.
-    if the user only cares about breaches, or wants to save an API call).
+    Fetches the breaches and, if requested, the pastes for one email, renders
+    each table, and returns the data. ``include_pastes=False`` skips the paste
+    lookup and its rate-limited request.
 
     Returns a serialisable dict suitable for JSON export / case storage:
-      {"email", "checked", "breaches": [...], "pastes": [...] | None,
+      {"email", "checked", "breaches": [...], "pastes": [...],
        "breach_count", "paste_count", "checked_at"}
 
-    ``checked`` is False when the lookup could not run, for example without
-    an API key, so an empty breach list is not mistaken for a clean account.
+    ``pastes`` is an empty list when pastes were skipped or could not be
+    fetched. ``checked`` is False when the breach lookup could not run, for
+    example without an API key, so an empty breach list is not mistaken for a
+    clean account. ``checked_at`` is a Unix timestamp.
     """
     breaches = hibp_breached_account(email)
     render_breached_account(email, breaches)
@@ -645,7 +642,7 @@ def check_account(email: str, *, include_pastes: bool = True) -> dict:
         "pastes":       pastes or [],
         "breach_count": len(breaches or []),
         "paste_count":  len(pastes or []),
-        "checked_at":   time.time(),  # unix timestamp for "when was this checked"
+        "checked_at":   time.time(),
     }
 
 
@@ -654,8 +651,8 @@ def check_domain(domain: str) -> list[dict] | None:
 
     Thin wrapper around ``hibp_breaches_for_domain`` + ``render_breaches_for_domain``.
     Returns the raw list so callers can inspect or export the data, or ``None``
-    when the lookup failed, so an empty list always means a clean domain.
-    No API key needed — great for a quick domain hygiene check.
+    when the lookup failed, so an empty list always means HIBP has no breach
+    for the domain. Needs no API key.
     """
     breaches = hibp_breaches_for_domain(domain)
     render_breaches_for_domain(domain, breaches)
@@ -665,10 +662,8 @@ def check_domain(domain: str) -> list[dict] | None:
 def check_password(password: str) -> int | None:
     """Run the k-anonymity password lookup and render.
 
-    Thin wrapper that hashes, queries, and renders in one call.
-    Returns the raw count so callers can make programmatic decisions
-    (e.g. the AI dispatcher uses this to summarise findings).
-
+    Thin wrapper that hashes, queries, and renders in one call, and returns the
+    count from :func:`hibp_password_pwned` (``None`` when the lookup failed).
     The plaintext password is not stored or logged anywhere in this call chain.
     """
     count = hibp_password_pwned(password)

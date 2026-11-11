@@ -1,15 +1,16 @@
 """
 core/unified.py — Cross-tool result schema for "identifier presence" lookups.
 
-Three tools in this project answer variants of the same question — "where
-does this identifier (username / email) appear?" — but each returns its
-own shape:
+Several tools answer variants of the same question — "where does this
+identifier (username / email / phone) appear?" — but each returns its own
+shape:
 
   * ``search.username_enum``    → per-site rows from Sherlock/Maigret
                                     ({site, url, http_status, ...})
   * ``search.email_enum``       → per-service rows from Holehe
-                                    ({service, domain, exists, ...})
-  * ``analysis.hibp.hibp_breached_account`` → per-breach metadata
+                                    ({service, domain, status, ...})
+  * ``search.phone_osint``      → one offline metadata report per number
+  * ``analysis.hibp``           → per-breach and per-paste metadata
                                     ({Name, Domain, BreachDate, ...})
 
 Without a common shape, the AI Query Planner can't trivially correlate
@@ -20,11 +21,11 @@ gives every per-target finding the same five fields:
   ``identifier``      — the queried string (e.g. ``"alice@example.com"``)
   ``identifier_type`` — ``email`` | ``username`` | ``domain`` | ``phone`` | ``ip``
   ``service``         — where the finding came from (LinkedIn, Spotify, …)
-  ``status``          — ``claimed`` | ``available`` | ``leaked`` | ``rate_limited``, or a failed check
+  ``status``          — one of :data:`Status`
   ``evidence``        — tool-specific extra context (dict, may be empty)
 
-The three ``from_*`` converters here are the canonical entry points, which
-keeps the conversion logic centralised and testable.
+Each source has one ``from_*`` converter here, so the conversion logic stays
+in one place and is tested once.
 """
 
 from __future__ import annotations
@@ -32,8 +33,8 @@ from __future__ import annotations
 from dataclasses import dataclass, asdict, field
 from typing import Any, Literal
 
-# These are *just* documentation — Python doesn't enforce Literal types at
-# runtime. The dispatchers and the AI prompt both reference these names.
+# Documentation only: Python does not enforce Literal types at runtime. The
+# planner dispatchers count records by these status names.
 IdentifierType = Literal["email", "username", "domain", "phone", "ip"]
 Status = Literal["claimed", "available", "leaked", "rate_limited", "error",
                  "valid", "invalid"]
@@ -88,9 +89,11 @@ def from_email_enum(email: str,
     Convert Holehe rows to unified records.
 
     Status priority: a failed check > ``rate_limited`` > ``claimed`` > ``available``.
-    That order reflects which condition is most actionable for downstream
-    analysis (a failed check is worth knowing about; a claimed account is
-    actionable; an "available" hint is just the absence of a signal).
+    A service Holehe could not check (its row is ``unchecked`` with
+    ``rate_limited`` set) becomes ``rate_limited``, so it is never read as an
+    absent account. A row carrying a truthy failure flag wins over everything;
+    :mod:`search.email_enum` never sets that flag, but a caller building rows
+    by hand can.
     """
     out: list[dict] = []
     for r in results or []:

@@ -28,7 +28,11 @@ pytest tests/test_cache.py::TestExpiry -q
 
 | File | Covers |
 |---|---|
-| `test_pii_extraction.py` | emails (incl. obfuscation), phones, IBAN, cards, CUIT/DNI/RFC/SSN/CPF/SIN, IPv4/IPv6/MAC, and the `extract_information` orchestrator |
+| `test_pii_extraction.py` | emails (incl. obfuscation), phones, IBAN, cards, CUIT/DNI/RFC/SSN/CPF/SIN, Colombian CC/TI/CE and NIT, IPv4/IPv6/MAC, and the `extract_information` orchestrator |
+| `test_redaction.py` | Cards, bank accounts, national IDs and secrets replaced with `[withheld: …]` however they are written, while emails, phones, names and URLs stay readable |
+| `test_page_prompts.py` | Website text in the summary, analysis and entity-graph prompts: declared as data, unable to close its block, sensitive values withheld, merged chunks declared as data |
+| `test_username_enum.py` | The made-up control handle (same shape, reproducible, none for short handles) and the sites that claim it left out of the menu, the saved report, the planner and the hub |
+| `test_email_enum.py` | Holehe run without its broken `--timeout` flag, unchecked services counted rather than read as absent, a run with no answers treated as a failure and not cached, the planner summary |
 | `test_secret_extraction.py` | AWS/GitHub/GitLab/Slack/Stripe/Google/Telegram tokens, PEM keys, JWT header validation, BTC/ETH address checksums |
 | `test_cache.py` | `SQLiteCache` round-trip, namespace isolation, TTL expiry, purge, clear, stats, disable switch, key building |
 | `test_results_parse.py` | JSON/CSV/HTML/Excel exports, extracted values from deep searches, and escaping of untrusted fields |

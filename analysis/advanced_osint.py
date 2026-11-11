@@ -444,8 +444,8 @@ def wayback_extract_pii(url: str, timestamp: str | None = None) -> dict | None:
     """
     Fetch a Wayback snapshot of *url* and run the full PII/secret extractor on it.
 
-    Killer OSINT use case: surfaces identifiers, leaked credentials, and other
-    sensitive strings that may have been scrubbed from the live site.
+    An archived copy can still hold identifiers, leaked credentials and other
+    sensitive strings that were later removed from the live site.
 
     Returns:
         ``{"timestamp", "date", "archive_url", "by_category", "counts", "evidence"}``

@@ -2,6 +2,7 @@ import os
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from rich.markdown import Markdown
+from rich.markup import escape
 from rich.panel import Panel
 from rich.text import Text
 from cli.ui import console, THEME, print_success, print_error, print_warn, print_info, make_table
@@ -92,7 +93,8 @@ def _print_search_header(engine: str, query: str, mode: str = "Standard") -> Non
 
 
 def _print_results_table(resultados: list) -> None:
-    """Renders search results as a professionally styled Rich table."""
+    """Renders search results as a Rich table: number, title, link and the
+    description cut to 100 characters."""
     tbl = make_table(
         f"Results  [{THEME['ACCENT']}]{len(resultados)} found[/]",
         ("#", THEME["DIM"]),
@@ -280,7 +282,7 @@ def do_query_planner(goal: str | None = None) -> dict | None:
     console.print()
     panel(Markdown(investigation["report"]), title="Investigation Report", border="green")
     print_info(f"{ok} ok · {err} failed · {skip} skipped — "
-               f"stopped because {investigation['stopped_because']}.")
+               f"stopped because {escape(investigation['stopped_because'])}.")
     print_success(f"Report saved → {_save_report(investigation['report'])}")
     return investigation
 

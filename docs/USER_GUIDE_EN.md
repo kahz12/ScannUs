@@ -500,7 +500,7 @@ The report is shown on screen and saved to `outputs/reports/investigation_<date>
 
 The model reads the results of each step, including text from websites, so those pages reach your AI provider. Keep this in mind for your provider's data policy.
 
-- **Withheld values:** card numbers, national IDs and leaked secrets reach the model only as counts. Their values stay in your local case.
+- **Withheld values:** card numbers, bank accounts, national IDs and leaked secrets reach the model only as counts or as `[withheld: <category>]`, including inside search results and page text. Their values stay in your local case. Only the formats in the [extraction reference](#11-pii--secret-extraction-reference) are withheld; names, emails, phones and the rest of the text, such as health details, do reach the model.
 - **Passwords:** the planner offers `hibp_password` with a SHA-1 hash, and any cleartext password is masked in everything shown or stored.
 - **Web content is untrusted:** a page could include text written to steer the model. ScannUs marks that text as data for the model, but no filter is perfect, which is why each step asks for confirmation by default.
 
@@ -769,6 +769,8 @@ Results are rendered in a table:
 ╰─────────────┴───────────────────────────────────╯
 ```
 
+**False positives:** some sites answer "found" for any handle of a given shape (for example, any handle with a dot). Each lookup therefore also checks a made-up handle of the same shape (same length, same separators, digits and letters in the same places), and the sites that "find" it too are left out. ScannUs lists the ones it left out. Handles with fewer than 5 letters and digits run without a control, because a made-up handle that short is often a real account.
+
 ### 7.1 Email Enumeration (Holehe)
 
 The email counterpart to Sherlock/Maigret. Given an email, **Holehe** probes
@@ -792,14 +794,17 @@ TUI: Main menu → **Email Enumeration**.
 | `-e/--email` (deep PII) | *What does the web say about this email — pages, mentions, PII?* |
 
 Results cache for 12h under the `email_enum` namespace, so re-running on the
-same address is instant.
+same address is instant. A run in which no service answered is not cached.
 
 **Limitations:**
 
 - Per-site detectors rot as services change their reset UX — expect occasional
   false negatives. Pin a known-good `holehe` version in `requirements.txt`.
-- Some sites silently rate-limit Holehe; results from a single run may
-  under-report. Re-run after a few minutes if a known account isn't surfaced.
+- Holehe reports a rate limit and a failed request the same way. ScannUs counts
+  those services as **unchecked** and shows them apart in the total, since the
+  email may still be registered there. When no service answers at all, the
+  command fails (exit code 1) instead of reporting zero registrations. Re-run
+  after a few minutes if a known account isn't surfaced.
 - **Do not** use this for bulk enumeration: rate limits + captchas will block you.
 
 **Install:** `pip install holehe`. If absent, `--email-enum` prints a friendly
@@ -1098,6 +1103,8 @@ ScannUs's extraction engine detects and validates **25+ identifier categories**.
 | **Argentine CUIT/CUIL** | Type prefix + mod-11 check digit. Eleven plain digits also need the word CUIT or CUIL nearby |
 | **Argentine DNI** | Needs a `DNI` label |
 | **Mexican RFC** | Structural |
+| **Colombian CC, TI and CE** | Need a label in front (`C.C.`, `CC`, `cédula`, `T.I.`, `TI`, `tarjeta de identidad`, `C.E.`, `cédula de extranjería`) and 6 to 11 digits, with or without dots |
+| **Colombian NIT** | Needs a `NIT` label. A written verification digit must pass the DIAN mod-11 check |
 
 ### Financial
 

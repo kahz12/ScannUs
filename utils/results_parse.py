@@ -227,7 +227,7 @@ class ResultsParser:
 
     def export_excel(self, output_path: str) -> None:
         """
-        Generates a polished Excel .xlsx file with a "Results" sheet, plus an
+        Writes a styled Excel .xlsx file with a "Results" sheet, plus an
         "Extracted" sheet for a deep search's extracted values.
         """
         path = self._output_path(output_path)

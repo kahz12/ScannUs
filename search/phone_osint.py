@@ -6,9 +6,8 @@ Google's libphonenumber metadata — validity, country/region, geographic
 description, carrier, time zones and line type — and then generates an OSINT
 **footprint**: ready-to-run search dorks (across the number's different written
 forms) plus a couple of direct number-lookup links. It is the phone-side
-counterpart to Sherlock/Maigret (usernames) and Holehe (emails), and it closes
-the last gap in the Findings Hub, where ``phone`` was the only artifact kind
-with no dedicated tool.
+counterpart to Sherlock/Maigret (usernames) and Holehe (emails), and the tool
+the Findings Hub offers for ``phone`` findings.
 
 Where this fits in the ScannUs OSINT chain::
 

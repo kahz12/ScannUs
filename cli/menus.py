@@ -264,7 +264,7 @@ def process_selected_url(url: str, ia_agent=None) -> None:
                     for key, values in flatten_extracted(data).items():
                         tbl.add_row(key.replace("_", " ").capitalize(), "\n".join(values))
                     console.print(tbl)
-                    # Pivot fuel: push extracted emails/usernames/IPs/phones into
+                    # Push extracted emails/usernames/IPs/phones into
                     # the findings hub so the user can chain straight into Holehe,
                     # HIBP, or a fresh search without re-typing anything.
                     added = _record_evidence(data, page_text, url, "url-pii")
@@ -596,7 +596,7 @@ def interactive_analysis_menu(results: list, ia_agent=None) -> None:
 #     recon → [subdomains] → search → [URLs] → download
 #     username-enum → [profile URLs] → analyse → download
 #
-# Each pivot calls the underlying tool directly (NOT the _run_* menu wrappers),
+# Each pivot calls the underlying tool directly, not the _run_* menu wrappers,
 # ingests whatever that tool discovers back into the same pool, and returns to
 # this loop — so the chain can continue without ever nesting menus or bouncing
 # through the main menu.
@@ -1037,8 +1037,8 @@ def _run_hibp_menu() -> None:
 
         elif action == "breach":
             # Drill into a single breach by its HIBP name (usually the company name).
-            # Builds a key:value table then optionally renders the full description
-            # in a panel — breach descriptions can be quite long (and colourful).
+            # Builds a key:value table, then optionally renders the description
+            # in a panel, since HIBP descriptions run to several paragraphs.
             from analysis.hibp import hibp_breach
             name = ask("Breach name (e.g. Adobe, LinkedIn)")
             if not name:
@@ -1259,16 +1259,11 @@ def _run_email_enum() -> None:
         "Show only services where the email is registered?",
         default=True,
     )
-    timeout_str = ask("Per-site timeout in seconds", default="10")
-    try:
-        timeout = max(3, int(timeout_str))
-    except ValueError:
-        timeout = 10
 
     # Seed the queried email, then pool the service domains where it is
     # registered so they become recon/search targets.
     get_hub().add_email(email, source="email-enum-input")
-    results = email_enum(email, only_used=only_used, timeout=timeout)
+    results = email_enum(email, only_used=only_used)
     get_hub().ingest_email_enum(results, source="email-enum")
     _offer_hub()
 

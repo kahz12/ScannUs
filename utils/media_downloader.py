@@ -180,15 +180,16 @@ def _download_single(media_url: str, temp_dir: str, headers: dict,
         Tuple of (success: bool, message: str).
     """
     try:
-        # --- Medium Priority: Retry with exponential backoff ---
+        # Transient failures (connection, 429, 5xx) are retried with
+        # exponential backoff inside _fetch_with_retry.
         response = _fetch_with_retry(media_url, headers, max_retries=max_retries)
 
         content_type = response.headers.get('content-type', '')
         content_length = int(response.headers.get('content-length', 0))
 
-        # --- High Priority #3: Minimum file size filter ---
-        # Reject assets declared smaller than the threshold upfront.
-        # For undeclared sizes we download and check on disk afterwards.
+        # Minimum size filter, against tracking pixels, spacers and favicons.
+        # A declared Content-Length below the threshold is rejected before the
+        # body is read; an undeclared size is checked on disk after download.
         if content_length and content_length < min_size:
             progress.advance(overall_task_id)
             return False, f"Skipped (too small: {content_length}B < {min_size}B): {media_url}"
@@ -453,7 +454,9 @@ def _download_videos_ytdlp(url: str, output_dir: str) -> list[str]:
     - YouTube, Vimeo, Dailymotion, Twitch, TikTok, Instagram, Twitter/X
     - HLS (.m3u8) and DASH (.mpd) adaptive streams
     - Embedded players and lazy-loaded video elements
-    - Password-protected or age-gated content (where credentials provided)
+
+    No login or cookies are passed, so private, password-protected and
+    age-gated videos are not downloaded.
 
     Args:
         url:        Target page URL.
@@ -482,12 +485,12 @@ def _download_videos_ytdlp(url: str, output_dir: str) -> list[str]:
         "fragment_retries": 5,
         "socket_timeout":   30,
 
-        # --- Subtlety ---
-        "quiet":            True,      # suppress yt-dlp's own progress output
+        # --- Quiet output (ScannUs prints its own progress) ---
+        "quiet":            True,
         "no_warnings":      True,
         "ignoreerrors":     True,       # skip failed fragments/playlists
 
-        # --- Post-processing hooks ---
+        # --- Progress hooks: record each file as it finishes ---
         "progress_hooks":   [
             lambda d: downloaded_files.append(d["filename"])
             if d["status"] == "finished" else None
@@ -560,12 +563,12 @@ def _extract_video_urls_selenium_interaction(url: str) -> list[str]:
         driver.set_page_load_timeout(45)
         driver.get(url)
 
-        # 1. Scroll to trigger lazy-loading
+        # Scroll to trigger lazy-loading
         for _ in range(4):
             driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
             time.sleep(1.5)
 
-        # 2. Click play buttons — common CSS selectors for video players
+        # Click play buttons — common CSS selectors for video players
         PLAY_SELECTORS = [
             "[class*='play']",
             "[aria-label*='Play']",
@@ -595,11 +598,11 @@ def _extract_video_urls_selenium_interaction(url: str) -> list[str]:
 
         if clicked:
             print_info(f"  Clicked {clicked} play element(s). Waiting for player init…")
-            time.sleep(2)   # standard player init wait
+            time.sleep(2)   # time most players need to set <video src> after a click
         else:
             print_info("  No play buttons found — reading DOM directly.")
 
-        # 3. Collect <video src> from the live DOM
+        # Collect <video src> from the live DOM
         page_source = driver.page_source
         videos = driver.find_elements(By.TAG_NAME, "video")
         for v in videos:
@@ -613,7 +616,7 @@ def _extract_video_urls_selenium_interaction(url: str) -> list[str]:
                 if s_src and not s_src.startswith("blob:"):
                     video_urls.append(urljoin(url, s_src))
 
-        # 4. Scan page source for HLS/DASH manifest URLs
+        # Scan page source for HLS/DASH manifest URLs
         hls_dash = re.findall(
             r'https?://[^\s\'"<>]+\.(?:m3u8|mpd)(?:[^\s\'"<>]*)?',
             page_source
@@ -797,7 +800,8 @@ def download_media(
                    2 s, then reads the populated <video src>.
       3. Static HTML scraping — last resort for simple direct-linked videos.
 
-    Images and audio use the existing static / Selenium-scroll paths.
+    Images and audio are found by static HTML parsing, or by the Selenium
+    scroll when ``use_selenium`` is set, and then downloaded in parallel.
 
     Args:
         url:          Target webpage URL.
@@ -914,7 +918,7 @@ def download_media(
                     else:
                         print_warn("No videos found on the page through any method.")
 
-        # ── IMAGE / AUDIO DOWNLOAD — Original pipeline ─────────────────────
+        # ── IMAGE / AUDIO DOWNLOAD — discovery, then parallel download ─────
         if media_type in ("images", "audio", "all"):
             img_audio_type = media_type if media_type != "all" else "all"
 
