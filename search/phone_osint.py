@@ -64,30 +64,42 @@ _LINE_TYPE_LABELS = {
 # Parsing
 # ---------------------------------------------------------------------------
 
+_PERSONAL_LINE_TYPES = frozenset({
+    PhoneNumberType.MOBILE,
+    PhoneNumberType.FIXED_LINE,
+    PhoneNumberType.FIXED_LINE_OR_MOBILE,
+})
+
+
 def _parse(phone: str, region: str | None):
     """Parse *phone* into a libphonenumber object.
 
     Tries the caller-supplied *region* first (and ``None`` for ``+``-prefixed
     international numbers), then falls back across the common regions used by
     the PII extractor so a domestically formatted number still resolves.
-    Returns the parsed number or ``None`` if nothing claims it.
+    Prefers a valid personal line (mobile or landline) over special-rate matches
+    (e.g. a 10-digit Colombian mobile ``300…`` vs a Mexican shared-cost range),
+    and valid numbers over merely possible ones.
     """
     candidates = [region] if region else [None, *_PHONE_REGIONS]
+    valid_candidates = []
+    parsed_candidates = []
     for reg in candidates:
         try:
             num = phonenumbers.parse(phone, reg)
         except phonenumbers.NumberParseException:
             continue
+        if phonenumbers.is_valid_number(num):
+            if region or phonenumbers.number_type(num) in _PERSONAL_LINE_TYPES:
+                return num
+            valid_candidates.append(num)
+        parsed_candidates.append(num)
+    if valid_candidates:
+        return valid_candidates[0]
+    for num in parsed_candidates:
         if phonenumbers.is_possible_number(num):
             return num
-    # Last resort: return whatever the first attempt parsed (even if not
-    # "possible"), so callers can still report a country code.
-    for reg in candidates:
-        try:
-            return phonenumbers.parse(phone, reg)
-        except phonenumbers.NumberParseException:
-            continue
-    return None
+    return parsed_candidates[0] if parsed_candidates else None
 
 
 # ---------------------------------------------------------------------------

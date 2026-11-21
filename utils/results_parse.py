@@ -76,9 +76,32 @@ def _evidence_row(item: dict) -> list:
             item.get("tool", ""), item.get("found_at", ""), item.get("content_sha256", "")]
 
 
+_CSV_FORMULA_PREFIXES = ("=", "+", "-", "@", "\t", "\r")
+
+
+def _csv_safe(value):
+    """Neutralises spreadsheet formula injection for untrusted CSV cell values."""
+    if isinstance(value, str) and value and value[0] in _CSV_FORMULA_PREFIXES:
+        return "'" + value
+    return value
+
+
+def _resolve_output_path(output_path: str) -> str:
+    """
+    Uses an explicit path when the caller included a directory component, or
+    defaults bare filenames into ``DIR_REPORTS``.
+    """
+    if os.path.dirname(output_path):
+        parent = os.path.dirname(os.path.abspath(output_path))
+        os.makedirs(parent, exist_ok=True)
+        return output_path
+    os.makedirs(DIR_REPORTS, exist_ok=True)
+    return os.path.join(DIR_REPORTS, os.path.basename(output_path))
+
+
 def export_report_json(report: dict, output_path: str) -> None:
-    """Writes a tool report to a JSON file inside DIR_REPORTS."""
-    path = os.path.join(DIR_REPORTS, os.path.basename(output_path))
+    """Writes a tool report to a JSON file (DIR_REPORTS for bare filenames)."""
+    path = _resolve_output_path(output_path)
     try:
         with open(path, "w", encoding="utf-8") as f:
             json.dump(report, f, ensure_ascii=False, indent=4, default=str)
@@ -108,8 +131,8 @@ class ResultsParser:
     # ------------------------------------------------------------------
 
     def _output_path(self, filename: str) -> str:
-        """Returns the absolute path inside DIR_REPORTS."""
-        return os.path.join(DIR_REPORTS, os.path.basename(filename))
+        """Returns the target path (inside DIR_REPORTS for bare filenames)."""
+        return _resolve_output_path(filename)
 
     def _extracted_html(self) -> str:
         """Renders the extracted-data section, or nothing for a plain search."""
@@ -201,9 +224,9 @@ class ResultsParser:
                 for i, r in enumerate(self.results, 1):
                     writer.writerow([
                         i,
-                        r.get("title", ""),
-                        r.get("description", ""),
-                        r.get("link", ""),
+                        _csv_safe(r.get("title", "")),
+                        _csv_safe(r.get("description", "")),
+                        _csv_safe(r.get("link", "")),
                     ])
             print_success(f"CSV saved → {path}")
 
@@ -214,7 +237,7 @@ class ResultsParser:
                     writer = csv.writer(f)
                     writer.writerow(_EVIDENCE_HEADERS)
                     for item in self.extracted:
-                        writer.writerow(_evidence_row(item))
+                        writer.writerow([_csv_safe(v) for v in _evidence_row(item)])
                 print_success(f"Extracted data CSV saved → {extracted_path}")
         except IOError as e:
             print_error(f"I/O error exporting CSV: {e}")

@@ -6,7 +6,7 @@ from cli.ui import console, print_startup_banner
 from cli.parser import get_parser, show_custom_help
 from cli.menus import show_main_menu, select_ia_agent
 from search.reverse_image import do_reverse_image_search
-from core.case_manager import load_case, save_case_as
+from core.case_manager import load_case, save_case_as, list_cases, delete_case_by_name
 from utils.file_download import FileDownload
 from utils.media_downloader import download_media
 from utils.results_parse import ResultsParser, export_report_json
@@ -54,6 +54,38 @@ def main():
 
     args = parser.parse_args()
 
+    # Drop into interactive TUI when -i / --interactive is passed on its own
+    # (no query or standalone subcommand flags).
+    _has_action_or_query = any([
+        args.configure,
+        getattr(args, "cache_stats", False),
+        getattr(args, "cache_clear", None),
+        getattr(args, "hibp_account", None),
+        getattr(args, "hibp_domain", None),
+        getattr(args, "hibp_breach", None),
+        getattr(args, "hibp_password", False),
+        args.reverse,
+        getattr(args, "recon", None),
+        getattr(args, "username_enum", None),
+        getattr(args, "email_enum", None),
+        getattr(args, "phone_osint", None),
+        getattr(args, "plan", None),
+        args.media_scrape,
+        args.load_case,
+        getattr(args, "list_cases", False),
+        getattr(args, "delete_case", None),
+        args.google_dorks,
+        args.query,
+        args.name,
+        args.username,
+        args.email,
+        args.phone,
+        args.search,
+    ])
+    if args.interactive and not _has_action_or_query:
+        show_main_menu()
+        sys.exit(0)
+
     # --- Configuration ---
     # .env is optional: each feature that needs a key says so when it runs.
     if args.configure:
@@ -80,6 +112,13 @@ def main():
         label = "everything" if ns is None else f"namespace '{ns}'"
         console.print(f"  Cleared {label}: {n} row(s) removed.")
         sys.exit(0)
+
+    # Route: Saved case listing / deletion
+    if getattr(args, "list_cases", False):
+        list_cases()
+        sys.exit(0)
+    if getattr(args, "delete_case", None):
+        sys.exit(0 if delete_case_by_name(args.delete_case) else 1)
 
     # Route: HIBP breach & leak checks
     # Each of the four --hibp-* flags maps to a specific analysis.hibp function.

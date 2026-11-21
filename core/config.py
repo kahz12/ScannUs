@@ -50,18 +50,27 @@ def init_directories():
         print_warn(f"Could not limit {OUTPUT_DIR} to your user, so others may read it.")
 
 
+def has_env_file() -> bool:
+    """Returns True if a .env file exists in the working directory or project root."""
+    return os.path.exists(".env") or os.path.exists(os.path.join(BASE_DIR, ".env"))
+
+
 def load_environment():
     """
     Loads runtime config from .env into the OS environment namespace.
     Returns the primary Gemini key as a readiness signal (None if absent).
 
+    Checks the current working directory first, then ``BASE_DIR`` so installed
+    CLI entry points find credentials even when invoked from another folder.
     A .env copied by hand from the template starts readable by other users,
     so it is limited to the current user before it is used.
     """
-    env_path = os.path.join(BASE_DIR, ".env")
-    if os.path.exists(env_path):
-        _make_private(env_path, 0o600)
-    load_dotenv()
+    cwd_env = os.path.abspath(".env")
+    base_env = os.path.join(BASE_DIR, ".env")
+    for env_path in dict.fromkeys((cwd_env, base_env)):
+        if os.path.exists(env_path):
+            _make_private(env_path, 0o600)
+            load_dotenv(env_path)
     return os.getenv("GOOGLE_API_KEY_FOR_GEMINI")
 
 
@@ -123,6 +132,12 @@ def env_config():
                          "Without it, only the free domain/breach catalog "
                          "and Pwned Passwords endpoints work.")):
         print_success("HIBP API Key saved.")
+
+    print_section("Shodan")
+    if _save_key("SHODAN_API_KEY",
+                 _prompt("Shodan API KEY",
+                         "From account.shodan.io — optional, enriches domain recon with host ports/vulns")):
+        print_success("Shodan API Key saved.")
 
     print_section("Anthropic Claude")
     if _save_key("ANTHROPIC_API_KEY",

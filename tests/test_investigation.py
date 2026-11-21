@@ -22,7 +22,10 @@ FINISH = json.dumps({"finish": True, "rationale": "the goal is answered"})
 
 
 class ScriptedModel:
-    """Replies with the given texts in order and remembers every prompt."""
+    """
+    Replies with the given texts in order and remembers every prompt.
+    A tuple reply is streamed as separate chunks.
+    """
 
     def __init__(self, *replies):
         self.replies = list(replies)
@@ -33,6 +36,9 @@ class ScriptedModel:
         reply = self.replies.pop(0)
         if isinstance(reply, Exception):
             raise reply
+        if isinstance(reply, tuple):
+            yield from reply
+            return
         yield reply
 
 
@@ -221,6 +227,25 @@ class TestModelProblems:
 
         assert result["stopped_because"] == "the model gave no usable reply"
         assert failure not in result["report"]
+
+    def test_stream_cut_after_partial_text_is_not_taken_for_a_reply(self, tools):
+        result, _ = investigate(
+            ('{"tool": "sea', "[OpenAI stream error: connection reset]"),
+            call("search", query="acme"), FINISH, "# Report",
+        )
+
+        assert result["steps"] == []
+        assert result["stopped_because"] == "the model gave no usable reply"
+
+    def test_report_cut_mid_stream_falls_back_to_the_step_list(self, tools):
+        result, _ = investigate(
+            call("search", query="acme"), FINISH,
+            ("# Report\nacme-corp.io is run by", "[Gemini stream error: connection reset]"),
+        )
+
+        assert "`search` (ok): 2 hits" in result["report"]
+        assert "is run by" not in result["report"]
+        assert "stream error" not in result["report"]
 
     def test_provider_exception_is_handled(self, tools):
         result, _ = investigate(*[RuntimeError("timeout")] * ai_agent._MODEL_ATTEMPTS)

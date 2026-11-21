@@ -144,6 +144,10 @@ def get_parser() -> argparse.ArgumentParser:
     cases.add_argument("--save-case", type=str, metavar="NAME",
                        help="Save the search or plan, with its findings and their origin, "
                             "as a new case.")
+    cases.add_argument("--list-cases", action="store_true",
+                       help="List all saved cases and exit.")
+    cases.add_argument("--delete-case", type=str, metavar="NAME",
+                       help="Delete a saved case (and its results/evidence) by name.")
 
     # ── Search parameters ─────────────────────────────────────────────────
     search = parser.add_argument_group("Search Parameters")

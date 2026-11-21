@@ -53,6 +53,10 @@ pytest tests/test_cache.py::TestExpiry -q
 | `test_file_download.py` | PDF metadata extraction, including corrupt files |
 | `test_gemini_provider.py` | Gemini model resolution (default, `GEMINI_MODEL`, explicit argument), the model sent to the API, and the provider menu label |
 | `test_duckduckgo.py` | Anti-bot captcha detection, empty results left out of the search cache, partial results when a later page is blocked, errors reaching the CLI and the planner |
+| `test_feedback_fixes.py` | Regressions for `-i` TUI launch, `--list-cases`/`--delete-case`, hub clearing on load, chunking boundaries, case-insensitive tag escaping, JSON brace parsing, provider system roles/OpenAI fixes, CSV formula neutralization, media downloader collision/subdir/TLS fixes, and lazy startup imports |
+| `test_domain_osint.py` | Target normalisation, WHOIS/DNS/crt.sh caching & retries, TLS cert parsing, HTTP security headers, Shodan handling, and `domain_recon` async fan-out |
+| `test_hibp_and_phone.py` | HIBP k-anonymity SHA-1 prefix isolation, account/paste/breach caching, offline `phone_osint` intelligence/footprint, and `core.unified` record converters |
+| `test_throttle_and_wayback.py` | `TokenBucket`, sync/async retry & `Retry-After` handling, TinEye/Bing/manual reverse-image engines, and Wayback CDX/snapshot/diff |
 
 ## Notes
 

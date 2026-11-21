@@ -40,6 +40,8 @@ class BraveSearch:
         """
         final_results = []
         count = 20
+        pages = max(1, int(pages))
+        start_page = max(1, int(start_page))
 
         # --- In-session cache check ---
         cache_key = search_cache.make_key("brave", query, pages=pages, start=start_page)

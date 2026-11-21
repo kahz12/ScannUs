@@ -30,7 +30,7 @@ readability-lxml==0.8.4.1        # main-content extraction (fallback)
 
 # --- Browser automation ---
 selenium==4.44.0
-playwright                       # full-page screenshot engine
+playwright==1.64.1               # full-page screenshot engine
 
 # --- Search / scraping helpers ---
 phonenumbers==9.0.30             # libphonenumber port for PII phone parsing
@@ -60,7 +60,7 @@ presidio-analyzer==2.2.366       # Microsoft Presidio entity detection
 
 # --- Username enumeration ---
 sherlock-project==0.16.0         # 400+ social sites — pure-Python, works everywhere
-maigret                          # 3000+ sites — not available on Termux, where its
+maigret==0.6.6                   # 3000+ sites — not available on Termux, where its
                                  # dependencies have no aarch64-android wheels and a
                                  # source build needs the full Rust toolchain.
 

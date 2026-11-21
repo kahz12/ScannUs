@@ -712,21 +712,43 @@ def _crtsh_parse(entries, domain: str, include_wildcards: bool) -> list[str]:
 
 def _crtsh_fetch(domain: str, timeout: float = 30.0,
                  include_wildcards: bool = False) -> dict:
-    """Sync crt.sh fetch. Returns ``{"subdomains": [...]}``, or a single-key failure dict."""
+    """
+    Sync crt.sh fetch with rate limiting, retries and persistent SQLite caching
+    (``crtsh`` namespace, 7d TTL). Never caches failed responses.
+    """
+    from core.cache import get_cache
+    from core.throttle import retry_http_sync
+
+    cache = get_cache()
+    key = cache.make_key(domain.lower(), int(include_wildcards))
+    cached = cache.get("crtsh", key)
+    if cached is not None:
+        return {"subdomains": cached}
+
+    def _once() -> tuple[int, Any, str | None]:
+        try:
+            resp = requests.get(
+                "https://crt.sh/",
+                params={"q": f"%.{domain}", "output": "json"},
+                headers=_HEADERS,
+                timeout=timeout,
+            )
+            return resp.status_code, resp, resp.headers.get("Retry-After")
+        except requests.exceptions.RequestException as e:
+            return 0, f"transport: {e}", None
+
+    status, body = retry_http_sync(_once, namespace="crtsh", max_retries=2)
+    if status != 200:
+        if status == 0:
+            return {"_error": body if isinstance(body, str) else "transport", "subdomains": []}
+        return {"_error": f"HTTP {status}", "subdomains": []}
     try:
-        resp = requests.get(
-            "https://crt.sh/",
-            params={"q": f"%.{domain}", "output": "json"},
-            headers=_HEADERS,
-            timeout=timeout,
-        )
-        resp.raise_for_status()
-        entries = resp.json()
-    except requests.exceptions.RequestException as e:
-        return {"_error": str(e), "subdomains": []}
+        entries = body.json() if hasattr(body, "json") else body
     except ValueError:
         return {"_error": "non-JSON (likely rate-limited)", "subdomains": []}
-    return {"subdomains": _crtsh_parse(entries, domain, include_wildcards)}
+    subs = _crtsh_parse(entries, domain, include_wildcards)
+    cache.set("crtsh", key, subs)
+    return {"subdomains": subs}
 
 
 async def _crtsh_fetch_async(domain: str, timeout: float = 30.0,
@@ -734,10 +756,18 @@ async def _crtsh_fetch_async(domain: str, timeout: float = 30.0,
     """
     Async crt.sh fetch via aiohttp; falls back to a thread if missing.
 
-    Rate-limited and retried via the shared ``crtsh`` bucket (default 0.5 rps
-    + 2 retries on 502/503). crt.sh frequently 502s under load, so the
-    retry loop materially improves dossier completeness.
+    Uses the persistent ``crtsh`` SQLite cache (7d TTL) and is rate-limited /
+    retried via the shared ``crtsh`` bucket (default 0.5 rps + 2 retries on
+    502/503). Failed lookups are never cached.
     """
+    from core.cache import get_cache
+
+    cache = get_cache()
+    key = cache.make_key(domain.lower(), int(include_wildcards))
+    cached = cache.get("crtsh", key)
+    if cached is not None:
+        return {"subdomains": cached}
+
     if not _HAS_AIOHTTP:
         return await asyncio.to_thread(_crtsh_fetch, domain, timeout, include_wildcards)
     from core.throttle import retry_http_async
@@ -770,7 +800,9 @@ async def _crtsh_fetch_async(domain: str, timeout: float = 30.0,
         entries = _json.loads(body) if isinstance(body, str) else body
     except (ValueError, TypeError):
         return {"_error": "non-JSON (likely rate-limited)", "subdomains": []}
-    return {"subdomains": _crtsh_parse(entries, domain, include_wildcards)}
+    subs = _crtsh_parse(entries, domain, include_wildcards)
+    cache.set("crtsh", key, subs)
+    return {"subdomains": subs}
 
 
 def _render_subdomains_body(domain: str, raw: dict) -> list[str]:

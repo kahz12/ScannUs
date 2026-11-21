@@ -385,16 +385,42 @@ def _gradient_banner() -> Text:
     return text
 
 
+def _app_version() -> str:
+    """Reads the package version from metadata (aligned with pyproject.toml)."""
+    try:
+        from importlib.metadata import version
+        return version("scannus")
+    except Exception:
+        return "0.1.0"
+
+
+def _configured_ai_summary(google_api_key_found: bool) -> tuple[str, str]:
+    """Summarises which AI providers have keys configured in the environment."""
+    import os
+    providers: list[str] = []
+    if google_api_key_found or os.getenv("GOOGLE_API_KEY_FOR_GEMINI"):
+        providers.append("Gemini")
+    if os.getenv("OPENAI_API_KEY"):
+        providers.append("OpenAI")
+    if os.getenv("ANTHROPIC_API_KEY"):
+        providers.append("Claude")
+    if os.getenv("OLLAMA_HOST") or os.getenv("OLLAMA_MODEL"):
+        providers.append("Ollama")
+    if providers:
+        return ", ".join(providers), "on"
+    return "not set", "off"
+
+
 def print_startup_banner(google_api_key_found: bool) -> None:
     """
-    Renders the startup screen: gradient banner, tagline, init steps,
-    and an environment-status footer.
+    Renders the startup screen: gradient banner, tagline,
+    and an environment-status footer (instant, no artificial sleeps).
     """
     banner = _gradient_banner()
     tagline = Text()
     tagline.append("\n  Advanced OSINT & Search Analysis Framework", style=THEME["DIM"])
     tagline.append("   ")
-    tagline.append("v1.0", style=THEME["ACCENT_2"])
+    tagline.append(f"v{_app_version()}", style=THEME["ACCENT_2"])
 
     body = Group(Align.center(banner), Align.center(tagline))
 
@@ -408,27 +434,11 @@ def print_startup_banner(google_api_key_found: bool) -> None:
     ))
     console.print()
 
-    # Init sequence
-    import time
-    steps = [
-        ("Resolving environment variables",  0.20),
-        ("Verifying output directory tree",  0.18),
-        ("Loading API credentials",          0.18),
-    ]
-    with console.status(
-        f"[{THEME['PRIMARY']}]Initializing ScannUs…[/]",
-        spinner="dots2", spinner_style="cyan",
-    ) as status:
-        for label, delay in steps:
-            status.update(f"[{THEME['DIM']}]{label}…[/]")
-            time.sleep(delay)
-
-    # Capability footer
+    ai_label, ai_kind = _configured_ai_summary(google_api_key_found)
     status_footer([
-        ("env",       "loaded",                          "on"),
-        ("Gemini",    "configured" if google_api_key_found else "not set",
-                      "on" if google_api_key_found else "off"),
-        ("backend",   _detect_username_backend(),         "info"),
+        ("env",       "loaded",                  "on"),
+        ("AI",        ai_label,                  ai_kind),
+        ("backend",   _detect_username_backend(), "info"),
     ])
     console.print()
     console.print(Rule(style=THEME["BORDER"]))
@@ -436,9 +446,11 @@ def print_startup_banner(google_api_key_found: bool) -> None:
 
 
 def _detect_username_backend() -> str:
+    import os
     import shutil
-    if shutil.which("sherlock"):
+    venv_bin = os.path.dirname(sys.executable)
+    if shutil.which("sherlock") or shutil.which("sherlock", path=venv_bin):
         return "Sherlock"
-    if shutil.which("maigret"):
+    if shutil.which("maigret") or shutil.which("maigret", path=venv_bin):
         return "Maigret"
     return "none"

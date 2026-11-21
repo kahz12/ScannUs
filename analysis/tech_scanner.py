@@ -74,8 +74,13 @@ def _detect_wappalyzer(url: str) -> list[tuple[str, str, str]]:
     if _WAPPALYZER_FLAVOUR == "python-Wappalyzer":
         try:
             # WebPage.new_from_url() cannot send custom headers, so fetch the page
-            # here to keep the browser User-Agent.
-            response = requests.get(url, headers=_HEADERS, timeout=12, verify=False)
+            # here to keep the browser User-Agent. Verify TLS by default and only
+            # fall back to unverified when the certificate check itself fails.
+            try:
+                response = requests.get(url, headers=_HEADERS, timeout=12, verify=True)
+            except requests.exceptions.SSLError:
+                print_warn(f"TLS verification failed for {url} — retrying without certificate check.")
+                response = requests.get(url, headers=_HEADERS, timeout=12, verify=False)
             webpage = WebPage.new_from_response(response)
         except Exception as e:
             print_warn(f"Wappalyzer fetch error: {e}")

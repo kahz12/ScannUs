@@ -25,6 +25,7 @@ import json
 import random
 import shutil
 import subprocess
+import sys
 import tempfile
 from concurrent.futures import ThreadPoolExecutor
 
@@ -40,8 +41,9 @@ from core.throttle import throttled
 # Backend detection (resolved at import time)
 # ---------------------------------------------------------------------------
 
-_SHERLOCK_BIN = shutil.which("sherlock")
-_MAIGRET_BIN  = shutil.which("maigret")
+_VENV_BIN = os.path.dirname(sys.executable)
+_SHERLOCK_BIN = shutil.which("sherlock") or shutil.which("sherlock", path=_VENV_BIN)
+_MAIGRET_BIN  = shutil.which("maigret") or shutil.which("maigret", path=_VENV_BIN)
 
 
 def _backend_available(name: str) -> bool:

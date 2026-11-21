@@ -6,7 +6,9 @@ split into overlapping chunks, each chunk is summarised, and the partial
 summaries are merged into a single final answer.
 """
 
+import html as _html
 import os
+import re
 import requests
 from bs4 import BeautifulSoup
 from pyvis.network import Network
@@ -136,16 +138,25 @@ def _split_into_chunks(text: str, chunk_size: int = _CHUNK_SIZE,
 
     Args:
         text:       Source text.
-        chunk_size: Maximum characters per chunk.
-        overlap:    Characters of overlap between consecutive chunks.
+        chunk_size: Maximum characters per chunk (must be > 0).
+        overlap:    Characters of overlap between consecutive chunks
+                    (must satisfy 0 <= overlap < chunk_size).
 
     Returns:
         List of text chunk strings.
     """
+    if chunk_size <= 0:
+        raise ValueError("chunk_size must be > 0")
+    if overlap < 0 or overlap >= chunk_size:
+        raise ValueError("overlap must satisfy 0 <= overlap < chunk_size")
+    if not text:
+        return []
     chunks, start = [], 0
     while start < len(text):
         end = start + chunk_size
         chunks.append(text[start:end])
+        if end >= len(text):
+            break
         start = end - overlap
     return chunks
 
@@ -215,13 +226,17 @@ _PARTIALS_RULE = (
 )
 
 
+_CLOSE_PAGE_TAG_RE = re.compile(r"</page_text", re.IGNORECASE)
+
+
 def _page_block(text: str) -> str:
     """
     Wraps page text in a <page_text> block that the text itself cannot close
     early, with card numbers, national IDs and leaked secrets withheld.
     """
     text = redact_sensitive(text)
-    return "<page_text>\n" + text.replace("</page_text", "<\\/page_text") + "\n</page_text>"
+    safe = _CLOSE_PAGE_TAG_RE.sub(lambda m: "<\\" + m.group(0)[1:], text)
+    return "<page_text>\n" + safe + "\n</page_text>"
 
 
 def _build_summary_prompt(text: str) -> str:
@@ -368,11 +383,11 @@ If no relationships, respond with NO_RELATIONSHIPS.
             e1, t1, relation, e2, t2 = parts
             for entity, etype in ((e1, t1), (e2, t2)):
                 if entity not in nodes_added:
-                    net.add_node(entity, label=entity, title=etype,
+                    net.add_node(entity, label=entity, title=_html.escape(etype),
                                  color=color_map.get(etype, "#FFFFFF"),
                                  size=20, font={"size": 12})
                     nodes_added.add(entity)
-            net.add_edge(e1, e2, title=relation, label=relation, color="#888888")
+            net.add_edge(e1, e2, title=_html.escape(relation), label=relation, color="#888888")
             edges_added += 1
 
         if edges_added == 0:

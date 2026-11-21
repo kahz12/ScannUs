@@ -6,11 +6,11 @@ LLM API is retried a few times (with jitter) before the failure surfaces to the
 caller. Non-transient failures propagate immediately.
 """
 
-import random
 import time
 from typing import Callable
 
 from cli.ui import console, THEME
+from core.throttle import backoff_delay
 
 
 _DEFAULT_MAX_RETRIES = 3
@@ -42,7 +42,8 @@ def _retry_with_backoff(
 ):
     """
     Invokes ``fn(*args, **kwargs)`` with exponential-backoff retry on transient
-    failures. Non-transient failures propagate immediately.
+    failures (reusing :func:`core.throttle.backoff_delay`). Non-transient
+    failures propagate immediately.
     """
     last_exc: Exception | None = None
     for attempt in range(max_retries + 1):
@@ -52,8 +53,7 @@ def _retry_with_backoff(
             last_exc = e
             if attempt >= max_retries or not _is_transient_error(e):
                 raise
-            delay = min(max_delay, base_delay * (2 ** attempt))
-            delay += random.uniform(0, delay * 0.25)  # 0–25% jitter
+            delay = backoff_delay(attempt, base=base_delay, cap=max_delay)
             console.print(
                 f"  [{THEME['DIM']}]↻ {label}: transient error "
                 f"(attempt {attempt + 1}/{max_retries}) — retrying in {delay:.1f}s[/]"

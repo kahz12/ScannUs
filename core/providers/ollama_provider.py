@@ -20,8 +20,9 @@ class OllamaGenerator:
     model works via ``OLLAMA_MODEL`` or the constructor.
     """
 
-    DEFAULT_HOST  = "http://localhost:11434"
-    DEFAULT_MODEL = "llama3"
+    DEFAULT_HOST    = "http://localhost:11434"
+    DEFAULT_MODEL   = "llama3"
+    supports_system = True
 
     def __init__(self, model_name: str | None = None, host: str | None = None,
                  timeout: float = 120.0):
@@ -43,11 +44,12 @@ class OllamaGenerator:
         except Exception:
             return False
 
-    def generate(self, prompt: str) -> str:
+    def generate(self, prompt: str, system: str | None = None) -> str:
         """Streams the response, rendering tokens live; returns full text."""
-        return "".join(self.stream(prompt, render=True))
+        return "".join(self.stream(prompt, render=True, system=system))
 
-    def stream(self, prompt: str, render: bool = False) -> Iterator[str]:
+    def stream(self, prompt: str, render: bool = False,
+               system: str | None = None) -> Iterator[str]:
         """
         Streams from Ollama's ``/api/generate`` endpoint. Each line is a JSON
         object with a ``response`` token; the final object has ``done: true``.
@@ -62,11 +64,15 @@ class OllamaGenerator:
             f"({self.model_name} @ {self.host})…[/]"
         )
 
+        payload: dict = {"model": self.model_name, "prompt": prompt, "stream": True}
+        if system:
+            payload["system"] = system
+
         try:
             response = _retry_with_backoff(
                 self._requests.post,
                 f"{self.host}/api/generate",
-                json={"model": self.model_name, "prompt": prompt, "stream": True},
+                json=payload,
                 timeout=self.timeout,
                 stream=True,
                 label=f"Ollama {self.model_name}",

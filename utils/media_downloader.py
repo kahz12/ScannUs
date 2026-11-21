@@ -159,10 +159,75 @@ def _fetch_with_retry(url: str, headers: dict, max_retries: int = 3,
             time.sleep(wait)
 
 
+def _parse_content_length(headers) -> int:
+    """Safely parses a Content-Length header, returning 0 if missing or invalid."""
+    raw = headers.get("content-length") if headers else None
+    if not raw:
+        return 0
+    try:
+        return max(0, int(str(raw).strip()))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _open_unique_binary(directory: str, file_name: str):
+    """
+    Atomically opens a new binary file in ``directory`` without clobbering
+    existing files (safe under concurrent threads/tasks). Returns ``(file, path)``.
+    """
+    stem, ext = os.path.splitext(file_name)
+    candidate = os.path.join(directory, file_name)
+    suffix = 0
+    while True:
+        try:
+            return open(candidate, "xb"), candidate
+        except FileExistsError:
+            suffix += 1
+            candidate = os.path.join(directory, f"{stem}_{suffix}{ext}")
+
+
+def _extract_media_urls_from_html(html: str, base_url: str, media_type: str) -> list[str]:
+    """Extracts and deduplicates media URLs from HTML markup."""
+    soup = BeautifulSoup(html, "html.parser")
+    media_urls: list[str] = []
+
+    tag_map = {
+        "images": ["img"],
+        "videos": ["video", "source"],
+        "audio":  ["audio", "source"],
+        "all":    ["img", "video", "audio", "source"],
+    }
+    tags_to_find = tag_map.get(media_type, tag_map["all"])
+
+    for tag in soup.find_all(tags_to_find):
+        for attr in ("src", "data-src", "data-lazy-src"):
+            src = tag.get(attr)
+            if src and not src.startswith("data:"):
+                media_urls.append(urljoin(base_url, src))
+
+        # srcset="img-400.jpg 400w, img-800.jpg 800w" — pick the highest resolution
+        srcset = tag.get("srcset")
+        if srcset:
+            candidates = [s.strip().split()[0] for s in srcset.split(",") if s.strip()]
+            if candidates:
+                media_urls.append(urljoin(base_url, candidates[-1]))
+
+    if media_type in ("images", "all"):
+        css_url_pattern = re.compile(r'url\(["\']?([^"\')\s]+)["\']?\)', re.IGNORECASE)
+        for tag in soup.find_all(style=True):
+            for match in css_url_pattern.finditer(tag["style"]):
+                raw = match.group(1)
+                if not raw.startswith("data:"):
+                    media_urls.append(urljoin(base_url, raw))
+
+    return list(dict.fromkeys(media_urls))
+
+
 def _download_single(media_url: str, temp_dir: str, headers: dict,
                      progress: Progress, overall_task_id,
                      min_size: int = MIN_FILE_SIZE_BYTES,
-                     max_retries: int = 3) -> tuple[bool, str]:
+                     max_retries: int = 3,
+                     force_subdir: str | None = None) -> tuple[bool, str]:
     """
     Downloads a single media asset to a temporary directory with size filtering
     and automatic retry with exponential backoff.
@@ -175,6 +240,7 @@ def _download_single(media_url: str, temp_dir: str, headers: dict,
         overall_task_id: ID of the overall progress task to advance.
         min_size:        Minimum acceptable file size in bytes.
         max_retries:     Maximum number of retry attempts on transient failures.
+        force_subdir:    Optional subdirectory override (e.g. ``"videos"``).
 
     Returns:
         Tuple of (success: bool, message: str).
@@ -185,7 +251,7 @@ def _download_single(media_url: str, temp_dir: str, headers: dict,
         response = _fetch_with_retry(media_url, headers, max_retries=max_retries)
 
         content_type = response.headers.get('content-type', '')
-        content_length = int(response.headers.get('content-length', 0))
+        content_length = _parse_content_length(response.headers)
 
         # Minimum size filter, against tracking pixels, spacers and favicons.
         # A declared Content-Length below the threshold is rejected before the
@@ -195,18 +261,24 @@ def _download_single(media_url: str, temp_dir: str, headers: dict,
             return False, f"Skipped (too small: {content_length}B < {min_size}B): {media_url}"
 
         subdir, file_name = _build_filename(media_url, content_type)
+        subdir = force_subdir or subdir
 
         # Ensure subdirectory exists inside temp_dir (e.g., temp/images/, temp/videos/)
         subdir_path = os.path.join(temp_dir, subdir)
         os.makedirs(subdir_path, exist_ok=True)
 
-        file_path = os.path.join(subdir_path, file_name)
-
-        # Write binary payload in 8 KB chunks
-        with open(file_path, 'wb') as f:
-            for chunk in response.iter_content(chunk_size=8192):
-                if chunk:
-                    f.write(chunk)
+        f, file_path = _open_unique_binary(subdir_path, file_name)
+        try:
+            with f:
+                for chunk in response.iter_content(chunk_size=8192):
+                    if chunk:
+                        f.write(chunk)
+        except BaseException:
+            try:
+                os.unlink(file_path)
+            except OSError:
+                pass
+            raise
 
         # Post-download size check for assets with no Content-Length header
         actual_size = os.path.getsize(file_path)
@@ -223,7 +295,6 @@ def _download_single(media_url: str, temp_dir: str, headers: dict,
         return False, f"Download failed for {media_url}: {e}"
     except Exception as e:
         progress.advance(overall_task_id)
-
         return False, f"Unexpected error for {media_url}: {e}"
 
 
@@ -367,55 +438,83 @@ def _print_video_metadata_table(video_dir: str) -> None:
 async def _async_download_single(
     session, media_url: str, temp_dir: str, headers: dict,
     progress: Progress, overall_task_id, min_size: int,
+    max_retries: int = 3, base_delay: float = 1.0,
 ) -> tuple[bool, str]:
-    """aiohttp variant of ``_download_single`` — streams a single asset."""
-    try:
-        async with session.get(media_url, headers=headers, timeout=20) as resp:
-            if resp.status >= 400:
+    """aiohttp variant of ``_download_single`` — streams a single asset with retry."""
+    retryable_status_codes = {429, 500, 502, 503, 504}
+    req_timeout = aiohttp.ClientTimeout(total=20)
+    last_error = ""
+
+    for attempt in range(max_retries + 1):
+        try:
+            async with session.get(media_url, headers=headers, timeout=req_timeout) as resp:
+                if resp.status >= 400:
+                    last_error = f"HTTP {resp.status} for {media_url}"
+                    if resp.status in retryable_status_codes and attempt < max_retries:
+                        await asyncio.sleep(base_delay * (2 ** attempt))
+                        continue
+                    progress.advance(overall_task_id)
+                    return False, last_error
+
+                content_type = resp.headers.get("content-type", "")
+                content_length = _parse_content_length(resp.headers)
+
+                if content_length and content_length < min_size:
+                    progress.advance(overall_task_id)
+                    return False, f"Skipped (too small: {content_length}B): {media_url}"
+
+                subdir, file_name = _build_filename(media_url, content_type)
+                subdir_path = os.path.join(temp_dir, subdir)
+                os.makedirs(subdir_path, exist_ok=True)
+                f, file_path = _open_unique_binary(subdir_path, file_name)
+
+                try:
+                    with f:
+                        async for chunk in resp.content.iter_chunked(8192):
+                            if chunk:
+                                f.write(chunk)
+                except BaseException:
+                    try:
+                        os.unlink(file_path)
+                    except OSError:
+                        pass
+                    raise
+
+            actual_size = os.path.getsize(file_path)
+            if actual_size < min_size:
+                os.remove(file_path)
                 progress.advance(overall_task_id)
-                return False, f"HTTP {resp.status} for {media_url}"
+                return False, f"Skipped (too small after download: {actual_size}B): {media_url}"
 
-            content_type = resp.headers.get("content-type", "")
-            content_length = int(resp.headers.get("content-length") or 0)
-
-            if content_length and content_length < min_size:
-                progress.advance(overall_task_id)
-                return False, f"Skipped (too small: {content_length}B): {media_url}"
-
-            subdir, file_name = _build_filename(media_url, content_type)
-            subdir_path = os.path.join(temp_dir, subdir)
-            os.makedirs(subdir_path, exist_ok=True)
-            file_path = os.path.join(subdir_path, file_name)
-
-            with open(file_path, "wb") as f:
-                async for chunk in resp.content.iter_chunked(8192):
-                    if chunk:
-                        f.write(chunk)
-
-        actual_size = os.path.getsize(file_path)
-        if actual_size < min_size:
-            os.remove(file_path)
             progress.advance(overall_task_id)
-            return False, f"Skipped (too small after download: {actual_size}B): {media_url}"
+            return True, file_path
 
-        progress.advance(overall_task_id)
-        return True, file_path
+        except (aiohttp.ClientError, asyncio.TimeoutError) as e:
+            last_error = f"Async error for {media_url}: {e}"
+            if attempt < max_retries:
+                await asyncio.sleep(base_delay * (2 ** attempt))
+                continue
+            progress.advance(overall_task_id)
+            return False, last_error
+        except Exception as e:
+            progress.advance(overall_task_id)
+            return False, f"Async error for {media_url}: {e}"
 
-    except Exception as e:
-        progress.advance(overall_task_id)
-        return False, f"Async error for {media_url}: {e}"
+    progress.advance(overall_task_id)
+    return False, last_error or f"Async download failed for {media_url}"
 
 
 async def _download_media_async(
     media_urls: list[str], temp_dir: str, headers: dict,
     progress: Progress, overall_task_id, min_size: int,
     max_concurrent: int = 16,
+    verify_ssl: bool = True,
 ) -> tuple[int, int, int]:
     """
     aiohttp-based concurrent downloader. Returns (success, skip, failure) counts.
     """
     timeout = aiohttp.ClientTimeout(total=None, sock_connect=15, sock_read=30)
-    connector = aiohttp.TCPConnector(limit=max_concurrent, ssl=False)
+    connector = aiohttp.TCPConnector(limit=max_concurrent, ssl=verify_ssl)
     sem = asyncio.Semaphore(max_concurrent)
 
     async with aiohttp.ClientSession(connector=connector, timeout=timeout) as session:
@@ -653,43 +752,7 @@ def _scrape_media_urls_static(url: str, headers: dict, media_type: str) -> list[
         console.print(f"[bold red]Error accessing URL:[/bold red] {e}")
         return None
 
-    soup = BeautifulSoup(response.text, 'html.parser')
-    media_urls = []
-
-    # Tag selector map by media type
-    tag_map = {
-        'images': ['img'],
-        'videos': ['video', 'source'],
-        'audio':  ['audio', 'source'],
-        'all':    ['img', 'video', 'audio', 'source'],
-    }
-    tags_to_find = tag_map.get(media_type, tag_map['all'])
-
-    # --- Standard src/href attributes ---
-    for tag in soup.find_all(tags_to_find):
-        for attr in ('src', 'data-src', 'data-lazy-src'):
-            src = tag.get(attr)
-            if src and not src.startswith('data:'):
-                media_urls.append(urljoin(url, src))
-
-        # srcset="img-400.jpg 400w, img-800.jpg 800w" — pick the highest resolution
-        srcset = tag.get('srcset')
-        if srcset:
-            candidates = [s.strip().split()[0] for s in srcset.split(',') if s.strip()]
-            if candidates:
-                # Last entry typically has the highest resolution
-                media_urls.append(urljoin(url, candidates[-1]))
-
-    # --- CSS background-image on any element (inline style) ---
-    if media_type in ('images', 'all'):
-        css_url_pattern = re.compile(r'url\(["\']?([^"\')\s]+)["\']?\)', re.IGNORECASE)
-        for tag in soup.find_all(style=True):
-            for match in css_url_pattern.finditer(tag['style']):
-                raw = match.group(1)
-                if not raw.startswith('data:'):
-                    media_urls.append(urljoin(url, raw))
-
-    return list(dict.fromkeys(media_urls))  # deduplicate preserving order
+    return _extract_media_urls_from_html(response.text, url, media_type)
 
 
 def _scrape_media_urls_dynamic(url: str, media_type: str) -> list[str] | None:
@@ -746,38 +809,46 @@ def _scrape_media_urls_dynamic(url: str, media_type: str) -> list[str] | None:
         if driver:
             driver.quit()
 
-    # Parse the fully rendered DOM
-    soup = BeautifulSoup(html, 'html.parser')
-    media_urls = []
+    return _extract_media_urls_from_html(html, url, media_type)
 
-    tag_map = {
-        'images': ['img'],
-        'videos': ['video', 'source'],
-        'audio':  ['audio', 'source'],
-        'all':    ['img', 'video', 'audio', 'source'],
-    }
-    tags_to_find = tag_map.get(media_type, tag_map['all'])
 
-    for tag in soup.find_all(tags_to_find):
-        for attr in ('src', 'data-src', 'data-lazy-src'):
-            src = tag.get(attr)
-            if src and not src.startswith('data:'):
-                media_urls.append(urljoin(url, src))
-        srcset = tag.get('srcset')
-        if srcset:
-            candidates = [s.strip().split()[0] for s in srcset.split(',') if s.strip()]
-            if candidates:
-                media_urls.append(urljoin(url, candidates[-1]))
-
-    if media_type in ('images', 'all'):
-        css_url_pattern = re.compile(r'url\(["\']?([^"\')\s]+)["\']?\)', re.IGNORECASE)
-        for tag in soup.find_all(style=True):
-            for match in css_url_pattern.finditer(tag['style']):
-                raw = match.group(1)
-                if not raw.startswith('data:'):
-                    media_urls.append(urljoin(url, raw))
-
-    return list(dict.fromkeys(media_urls))
+def _download_batch_sync(
+    urls: list[str], temp_dir: str, headers: dict,
+    min_size: int, max_workers: int, label: str,
+    *, force_subdir: str | None = None, verbose: bool = False,
+) -> tuple[int, int, int]:
+    """Downloads a batch of URLs concurrently via ThreadPoolExecutor."""
+    success = skip = error = 0
+    with Progress(
+        TextColumn("[progress.description]{task.description}"),
+        BarColumn(), TaskProgressColumn(),
+        "•", TransferSpeedColumn(),
+        "•", TimeRemainingColumn(),
+        console=console,
+    ) as progress:
+        task = progress.add_task(label, total=len(urls))
+        workers = max(1, min(max_workers, len(urls)))
+        with ThreadPoolExecutor(max_workers=workers) as ex:
+            futures = {
+                ex.submit(
+                    _download_single, u, temp_dir, headers, progress, task,
+                    min_size, 3, force_subdir,
+                ): u
+                for u in urls
+            }
+            for future in as_completed(futures):
+                ok, msg = future.result()
+                if ok:
+                    success += 1
+                elif "Skipped" in msg:
+                    skip += 1
+                    if verbose:
+                        console.print(f"  [dim]{msg}[/dim]")
+                else:
+                    error += 1
+                    if verbose:
+                        console.print(f"  [yellow]{msg}[/yellow]")
+    return success, skip, error
 
 
 def download_media(
@@ -788,6 +859,7 @@ def download_media(
     max_workers:  int  = 8,
     min_size:     int  = MIN_FILE_SIZE_BYTES,
     use_async:    bool = False,
+    verify_ssl:   bool = True,
 ) -> bool:
     """
     Orchestrates media scraping and parallel downloading from a target URL.
@@ -860,31 +932,13 @@ def download_media(
 
                 if video_urls:
                     print_info(f"Selenium found {len(video_urls)} video URL(s) — downloading…")
-
-                    with Progress(
-                        TextColumn("[progress.description]{task.description}"),
-                        BarColumn(), TaskProgressColumn(),
-                        "•", TransferSpeedColumn(),
-                        "•", TimeRemainingColumn(),
-                        console=console,
-                    ) as progress:
-                        task = progress.add_task(
-                            "[cyan]Downloading videos…", total=len(video_urls)
-                        )
-                        with ThreadPoolExecutor(max_workers=min(max_workers, len(video_urls))) as ex:
-                            futures = {
-                                ex.submit(_download_single, vu, video_subdir,
-                                          headers, progress, task, min_size): vu
-                                for vu in video_urls
-                            }
-                            for future in as_completed(futures):
-                                ok, msg = future.result()
-                                if ok:
-                                    success_count += 1
-                                elif "Skipped" in msg:
-                                    skip_count += 1
-                                else:
-                                    error_count += 1
+                    s, k, e = _download_batch_sync(
+                        video_urls, temp_dir, headers, min_size, max_workers,
+                        "[cyan]Downloading videos…", force_subdir="videos",
+                    )
+                    success_count += s
+                    skip_count    += k
+                    error_count   += e
 
                 else:
                     # Tier 3: Static scraping
@@ -897,24 +951,13 @@ def download_media(
                         page_unreadable = True
                     elif static_video_urls:
                         print_info(f"Static scraping found {len(static_video_urls)} URL(s).")
-                        with Progress(
-                            TextColumn("[progress.description]{task.description}"),
-                            BarColumn(), TaskProgressColumn(), console=console,
-                        ) as progress:
-                            task = progress.add_task(
-                                "[cyan]Downloading…", total=len(static_video_urls)
-                            )
-                            with ThreadPoolExecutor(max_workers=max_workers) as ex:
-                                futures = {
-                                    ex.submit(_download_single, vu, video_subdir,
-                                              headers, progress, task, min_size): vu
-                                    for vu in static_video_urls
-                                }
-                                for future in as_completed(futures):
-                                    ok, msg = future.result()
-                                    if ok:      success_count += 1
-                                    elif "Skipped" in msg: skip_count += 1
-                                    else:       error_count += 1
+                        s, k, e = _download_batch_sync(
+                            static_video_urls, temp_dir, headers, min_size, max_workers,
+                            "[cyan]Downloading…", force_subdir="videos",
+                        )
+                        success_count += s
+                        skip_count    += k
+                        error_count   += e
                     else:
                         print_warn("No videos found on the page through any method.")
 
@@ -953,49 +996,36 @@ def download_media(
                     tbl.add_row("…", f"[dim]+{len(media_urls) - 30} more[/dim]")
                 console.print(tbl)
 
-                with Progress(
-                    TextColumn("[progress.description]{task.description}"),
-                    BarColumn(), TaskProgressColumn(),
-                    "•", TransferSpeedColumn(),
-                    "•", TimeRemainingColumn(),
-                    console=console,
-                ) as progress:
-                    overall = progress.add_task(
-                        f"[cyan]Downloading {len(media_urls)} assets…",
-                        total=len(media_urls),
-                    )
-
-                    if use_async and _HAS_AIOHTTP:
+                if use_async and _HAS_AIOHTTP:
+                    with Progress(
+                        TextColumn("[progress.description]{task.description}"),
+                        BarColumn(), TaskProgressColumn(),
+                        "•", TransferSpeedColumn(),
+                        "•", TimeRemainingColumn(),
+                        console=console,
+                    ) as progress:
+                        overall = progress.add_task(
+                            f"[cyan]Downloading {len(media_urls)} assets…",
+                            total=len(media_urls),
+                        )
                         print_info("Using aiohttp async downloader.")
                         s, k, e = asyncio.run(_download_media_async(
                             media_urls, temp_dir, headers,
                             progress, overall, min_size,
                             max_concurrent=max(max_workers, 8),
+                            verify_ssl=verify_ssl,
                         ))
-                        success_count += s
-                        skip_count    += k
-                        error_count   += e
-                    else:
-                        if use_async and not _HAS_AIOHTTP:
-                            print_warn("aiohttp not installed — falling back to ThreadPoolExecutor.")
-                        with ThreadPoolExecutor(max_workers=max_workers) as executor:
-                            futures = {
-                                executor.submit(
-                                    _download_single, u, temp_dir, headers,
-                                    progress, overall, min_size
-                                ): u
-                                for u in media_urls
-                            }
-                            for future in as_completed(futures):
-                                ok, msg = future.result()
-                                if ok:
-                                    success_count += 1
-                                elif "Skipped" in msg:
-                                    skip_count += 1
-                                    console.print(f"  [dim]{msg}[/dim]")
-                                else:
-                                    error_count += 1
-                                    console.print(f"  [yellow]{msg}[/yellow]")
+                else:
+                    if use_async and not _HAS_AIOHTTP:
+                        print_warn("aiohttp not installed — falling back to ThreadPoolExecutor.")
+                    s, k, e = _download_batch_sync(
+                        media_urls, temp_dir, headers, min_size, max_workers,
+                        f"[cyan]Downloading {len(media_urls)} assets…",
+                        verbose=True,
+                    )
+                success_count += s
+                skip_count    += k
+                error_count   += e
 
         # ── Summary ────────────────────────────────────────────────────────
         console.print(

@@ -32,6 +32,7 @@ import csv
 import json
 import shutil
 import subprocess
+import sys
 import tempfile
 
 from cli.ui import (
@@ -47,7 +48,10 @@ from core.throttle import throttled
 # Backend detection (resolved at import time)
 # ---------------------------------------------------------------------------
 
-_HOLEHE_BIN = shutil.which("holehe")
+_HOLEHE_BIN = (
+    shutil.which("holehe")
+    or shutil.which("holehe", path=os.path.dirname(sys.executable))
+)
 HOLEHE_AVAILABLE = _HOLEHE_BIN is not None
 
 

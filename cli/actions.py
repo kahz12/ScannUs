@@ -172,8 +172,13 @@ def do_deep_search(query: str, engine: str, pages: int,
             ("Values", "white"),
             show_lines=True,
         )
+        _PREVIEW_LIMIT = 20
         for key, values in all_extracted.items():
-            tbl.add_row(key.replace("_", " ").capitalize(), "\n".join(sorted(values)))
+            ordered = sorted(values)
+            shown = ordered[:_PREVIEW_LIMIT]
+            if len(ordered) > _PREVIEW_LIMIT:
+                shown.append(f"[{THEME['DIM']}](+{len(ordered) - _PREVIEW_LIMIT} more — saved in case/export)[/]")
+            tbl.add_row(key.replace("_", " ").capitalize(), "\n".join(shown))
         console.print(tbl)
     else:
         print_warn("No PII or sensitive identifiers extracted from the reviewed links.")
@@ -302,8 +307,7 @@ def do_generate_dork_ia() -> None:
         return
 
     console.print()
-    with console.status(f"[{THEME['PRIMARY']}]Generating dork…[/]", spinner="dots2"):
-        dork = ia_agent.generate_gdork(description)
+    dork = ia_agent.generate_gdork(description)
 
     if dork:
         console.print(

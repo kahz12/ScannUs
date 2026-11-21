@@ -9,6 +9,7 @@ user always receives at least the manual-lookup URL tier.
 """
 
 from cli.ui import console, THEME, print_info, print_error, print_warn
+from core.findings import get_hub
 from search.reverse_image_engines import reverse_image_aggregate
 from utils.results_parse import ResultsParser
 
@@ -46,6 +47,11 @@ def do_reverse_image_search(image_url: str | None = None) -> bool:
         for r in results:
             by_engine[r.get("engine", "?")] = by_engine.get(r.get("engine", "?"), 0) + 1
         breakdown = ", ".join(f"{eng}×{n}" for eng, n in by_engine.items())
+
+        # Pool non-manual match URLs into the Findings Hub for follow-up pivots
+        live_hits = [r for r in results if r.get("engine") != "manual"]
+        if live_hits:
+            get_hub().ingest_results(live_hits, source="reverse-image")
 
         console.print(
             f"  [{THEME['SUCCESS']}]✔[/]  {len(results)} result(s) "

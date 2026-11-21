@@ -147,14 +147,18 @@ class DuckDuckGoSearch:
             link_el    = container.find("a",  {"class": "result__a"})
             snippet_el = container.find("a",  {"class": "result__snippet"})
 
-            if not (title_el and link_el and snippet_el):
+            if not (title_el and link_el):
+                continue
+
+            raw_href = link_el.get("href")
+            if not raw_href:
                 continue
 
             title = title_el.get_text(strip=True)
-            parsed_link = self.clean_link(link_el["href"])
-            snippet = snippet_el.get_text(strip=True)
+            parsed_link = self.clean_link(raw_href)
+            snippet = snippet_el.get_text(strip=True) if snippet_el else ""
 
-            if title and parsed_link and snippet:
+            if title and parsed_link:
                 results.append({
                     "title":       title,
                     "description": snippet,

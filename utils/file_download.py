@@ -14,32 +14,9 @@ import hashlib
 import requests
 from urllib.parse import urlparse
 from rich.table import Table
-import exifread
 
 from cli.ui import console, THEME, print_success, print_error, print_warn, print_info
 from core.config import DIR_DOWNLOADS
-
-
-# ---------------------------------------------------------------------------
-# Optional metadata backends
-# ---------------------------------------------------------------------------
-
-try:
-    from pypdf import PdfReader as _PdfReader
-except ImportError:
-    _PdfReader = None
-
-try:
-    from docx import Document as _DocxDocument  # python-docx
-    _HAS_DOCX = True
-except ImportError:
-    _HAS_DOCX = False
-
-try:
-    import openpyxl  # already in requirements for Excel export
-    _HAS_OPENPYXL = True
-except ImportError:
-    _HAS_OPENPYXL = False
 
 
 # ---------------------------------------------------------------------------
@@ -69,7 +46,9 @@ class FileDownload:
         console.print(tbl)
 
     def _extract_pdf_metadata(self, file_path: str) -> None:
-        if _PdfReader is None:
+        try:
+            from pypdf import PdfReader as _PdfReader
+        except ImportError:
             print_warn("pypdf not installed — cannot read PDF metadata.")
             return
         try:
@@ -104,6 +83,11 @@ class FileDownload:
 
     def _extract_exif_metadata(self, file_path: str) -> None:
         try:
+            import exifread
+        except ImportError:
+            print_warn("exifread not installed — cannot read EXIF metadata.")
+            return
+        try:
             with open(file_path, "rb") as f:
                 tags = exifread.process_file(f, details=False)
             skip = {"JPEGThumbnail", "TIFFThumbnail", "Filename", "EXIF MakerNote"}
@@ -113,7 +97,9 @@ class FileDownload:
             print_error(f"EXIF metadata error: {e}")
 
     def _extract_docx_metadata(self, file_path: str) -> None:
-        if not _HAS_DOCX:
+        try:
+            from docx import Document as _DocxDocument
+        except ImportError:
             print_warn("python-docx not installed — cannot read DOCX metadata.")
             return
         try:
@@ -138,7 +124,9 @@ class FileDownload:
             print_error(f"DOCX metadata error: {e}")
 
     def _extract_xlsx_metadata(self, file_path: str) -> None:
-        if not _HAS_OPENPYXL:
+        try:
+            import openpyxl
+        except ImportError:
             print_warn("openpyxl not installed — cannot read XLSX metadata.")
             return
         try:

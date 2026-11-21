@@ -86,8 +86,9 @@ class DBManager:
 
     @contextmanager
     def _connect(self) -> Iterator[sqlite3.Connection]:
-        conn = sqlite3.connect(self.db_path)
+        conn = sqlite3.connect(self.db_path, timeout=10)
         try:
+            conn.execute("PRAGMA journal_mode = WAL")
             conn.execute("PRAGMA foreign_keys = ON")
             with conn:
                 yield conn
@@ -110,13 +111,15 @@ class DBManager:
         query_data = json.dumps(current_case.get("search_params", {}), ensure_ascii=False)
         investigation = self._dump_investigation(current_case)
         results = current_case.get("results", [])
+        now = datetime.now(timezone.utc).isoformat(timespec="seconds")
 
         try:
             with self._connect() as conn:
                 try:
                     cursor = conn.execute(
-                        "INSERT INTO cases (name, query_data, investigation) VALUES (?, ?, ?)",
-                        (name, query_data, investigation),
+                        "INSERT INTO cases (name, query_data, investigation, created_at, updated_at) "
+                        "VALUES (?, ?, ?, ?, ?)",
+                        (name, query_data, investigation, now, now),
                     )
                     case_id = cursor.lastrowid
                 except sqlite3.IntegrityError:
@@ -152,7 +155,7 @@ class DBManager:
                     return False, f"No case named '{name}' found."
 
                 case_id = row[0]
-                now = datetime.now(timezone.utc).isoformat()
+                now = datetime.now(timezone.utc).isoformat(timespec="seconds")
 
                 conn.execute(
                     "UPDATE cases SET query_data = ?, investigation = ?, updated_at = ? "

@@ -154,6 +154,7 @@ def load_case() -> bool:
 
     evidence = case_data.get("evidence", [])
     hub = get_hub()
+    hub.clear()
     hub.ingest_results(state.LAST_RESULTS, source="case")
     hub.ingest_evidence(evidence)
 
@@ -162,3 +163,56 @@ def load_case() -> bool:
         f"{len(state.LAST_RESULTS)} results and {len(evidence)} findings available."
     )
     return True
+
+
+def list_cases() -> list[tuple]:
+    """Prints a table of all saved cases and returns the rows ``(id, name, created_at)``."""
+    saved_cases = DBManager().get_all_cases()
+    if not saved_cases:
+        print_warn("No saved cases found.")
+        return []
+    tbl = make_table(
+        f"Saved Cases  [{THEME['DIM']}]({len(saved_cases)} total)[/]",
+        ("#",       THEME["DIM"]),
+        ("Name",    "bold white"),
+        ("Created", THEME["DIM"]),
+        show_lines=False,
+    )
+    for i, row in enumerate(saved_cases, 1):
+        tbl.add_row(str(i), row[1], str(row[2]))
+    console.print()
+    console.print(tbl)
+    return saved_cases
+
+
+def delete_case_by_name(name: str) -> bool:
+    """Deletes a saved case by name without prompting. Returns True on success."""
+    ok, msg = DBManager().delete_case(name)
+    (print_success if ok else print_error)(msg)
+    return ok
+
+
+def delete_case_prompt() -> bool:
+    """Interactively selects and deletes a saved case after confirmation."""
+    saved_cases = list_cases()
+    if not saved_cases:
+        return False
+    choice = console.input(
+        f"\n  [{THEME['DIM']}]Select case number to delete (blank to cancel):[/] "
+        f"[{THEME['INPUT']}]❯[/] "
+    ).strip()
+    if not choice:
+        print_info("Delete cancelled.")
+        return False
+    if not choice.isdigit() or not (1 <= int(choice) <= len(saved_cases)):
+        print_error(f"'{choice}' is not a valid selection.")
+        return False
+    case_name = saved_cases[int(choice) - 1][1]
+    confirm = console.input(
+        f"  [{THEME['WARN']}]⚠[/]  Permanently delete case '{case_name}'? (y/n) "
+        f"[{THEME['INPUT']}]❯[/] "
+    ).strip().lower()
+    if confirm != "y":
+        print_info("Delete cancelled.")
+        return False
+    return delete_case_by_name(case_name)

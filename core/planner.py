@@ -452,6 +452,7 @@ def _dispatch_phone_osint(args: dict, ia_agent) -> dict:
         return {"status": "error",
                 "summary": f"phone_osint: could not parse '{phone}' as a number"}
     records = from_phone_osint(phone, report)
+    get_hub().add_phone(report["e164"], source="planner:phone")
     validity = "valid" if report["valid"] else "invalid"
     return {
         "status":  "ok",
@@ -728,6 +729,7 @@ def _dispatch_hibp_account(args: dict, ia_agent) -> dict:
         render_pastes_for_account(email, pastes_raw)
         pastes = pastes_raw
     records = from_hibp_breaches(email, breaches) + from_hibp_pastes(email, pastes)
+    get_hub().add_email(email, source="planner:hibp")
     return {
         "status":  "ok",
         "summary": f"{email}: {len(breaches)} breach(es), {len(pastes)} paste(s)",
@@ -757,6 +759,7 @@ def _dispatch_hibp_domain(args: dict, ia_agent) -> dict:
     render_breaches_for_domain(domain, breaches)
     if breaches is None:
         return {"status": "error", "summary": f"hibp_domain: lookup failed for {domain}"}
+    get_hub().add_domain(domain, source="planner:hibp")
     return {
         "status":  "ok",
         "summary": f"{domain}: {len(breaches)} breach(es) recorded",

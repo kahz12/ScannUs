@@ -19,6 +19,7 @@ class GeminiGenerator:
     """
 
     DEFAULT_MODEL = "gemini-3.6-flash"
+    supports_system = True
 
     def __init__(self, model_name: str | None = None, timeout: float = 60.0):
         self.model_name = model_name or os.getenv("GEMINI_MODEL") or self.DEFAULT_MODEL
@@ -32,27 +33,35 @@ class GeminiGenerator:
         if api_key:
             try:
                 from google import genai
-                self.client = genai.Client(api_key=api_key)
+                try:
+                    self.client = genai.Client(
+                        api_key=api_key,
+                        http_options={"timeout": int(self.timeout * 1000)},
+                    )
+                except TypeError:
+                    self.client = genai.Client(api_key=api_key)
             except Exception as e:
                 console.print(f"  [{THEME['ERROR']}]✘[/]  Gemini init error: {e}")
 
-    def _open_stream(self, prompt: str):
-        return self.client.models.generate_content_stream(
-            model=self.model_name,
-            contents=prompt,
-        )
+    def _open_stream(self, prompt: str, system: str | None = None):
+        kwargs: dict = {"model": self.model_name, "contents": prompt}
+        if system:
+            kwargs["config"] = {"system_instruction": system}
+        return self.client.models.generate_content_stream(**kwargs)
 
-    def generate(self, prompt: str) -> str:
+    def generate(self, prompt: str, system: str | None = None) -> str:
         """Streams the response, rendering tokens live; returns full text."""
-        return "".join(self.stream(prompt, render=True))
+        return "".join(self.stream(prompt, render=True, system=system))
 
-    def stream(self, prompt: str, render: bool = False) -> Iterator[str]:
+    def stream(self, prompt: str, render: bool = False,
+               system: str | None = None) -> Iterator[str]:
         """
         Yields text chunks from the Gemini streaming API with retry/backoff.
 
         Args:
             prompt: Prompt text.
             render:  If True, tokens are printed live to the terminal.
+            system:  Optional system instruction kept apart from user data.
         """
         if not self.client:
             self._initialize_client()
@@ -66,14 +75,17 @@ class GeminiGenerator:
 
         try:
             stream = _retry_with_backoff(
-                self._open_stream, prompt, label=f"Gemini {self.model_name}",
+                self._open_stream, prompt, system, label=f"Gemini {self.model_name}",
             )
         except AttributeError:
             try:
+                kwargs: dict = {"model": self.model_name, "contents": prompt}
+                if system:
+                    kwargs["config"] = {"system_instruction": system}
                 response = _retry_with_backoff(
                     self.client.models.generate_content,
-                    model=self.model_name, contents=prompt,
                     label=f"Gemini {self.model_name}",
+                    **kwargs,
                 )
                 text = response.text or ""
                 if render:
@@ -88,11 +100,14 @@ class GeminiGenerator:
 
         if render:
             console.print()
-        for chunk in stream:
-            text = chunk.text or ""
-            if text:
-                if render:
-                    print(text, end="", flush=True)
-                yield text
+        try:
+            for chunk in stream:
+                text = chunk.text or ""
+                if text:
+                    if render:
+                        print(text, end="", flush=True)
+                    yield text
+        except Exception as e:
+            yield f"[Gemini stream error: {e}]"
         if render:
             print()

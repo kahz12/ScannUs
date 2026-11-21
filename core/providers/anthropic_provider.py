@@ -20,6 +20,7 @@ class AnthropicGenerator:
 
     DEFAULT_MODEL    = "claude-sonnet-4-6"
     DEFAULT_MAX_TOK  = 4096
+    supports_system  = True
 
     def __init__(self, model_name: str | None = None, timeout: float = 60.0,
                  max_tokens: int = DEFAULT_MAX_TOK):
@@ -41,22 +42,26 @@ class AnthropicGenerator:
             )
         self.client = _Anthropic(api_key=api_key, timeout=timeout)
 
-    def generate(self, prompt: str) -> str:
+    def generate(self, prompt: str, system: str | None = None) -> str:
         """Streams the response, rendering tokens live; returns full text."""
-        return "".join(self.stream(prompt, render=True))
+        return "".join(self.stream(prompt, render=True, system=system))
 
-    def stream(self, prompt: str, render: bool = False) -> Iterator[str]:
+    def stream(self, prompt: str, render: bool = False,
+               system: str | None = None) -> Iterator[str]:
         """Yields text chunks from Claude's streaming API with retry/backoff."""
         console.print(
             f"  [{THEME['DIM']}]⟳ Generating with Claude ({self.model_name})…[/]"
         )
 
         def _open():
-            return self.client.messages.stream(
-                model=self.model_name,
-                max_tokens=self.max_tokens,
-                messages=[{"role": "user", "content": prompt}],
-            )
+            kwargs: dict = {
+                "model": self.model_name,
+                "max_tokens": self.max_tokens,
+                "messages": [{"role": "user", "content": prompt}],
+            }
+            if system:
+                kwargs["system"] = system
+            return self.client.messages.stream(**kwargs)
 
         try:
             ctx = _retry_with_backoff(_open, label=f"Claude {self.model_name}")

@@ -632,7 +632,7 @@ def check_account(email: str, *, include_pastes: bool = True) -> dict:
     breaches = hibp_breached_account(email)
     render_breached_account(email, breaches)
     pastes = None
-    if include_pastes:
+    if include_pastes and breaches is not None:
         pastes = hibp_pastes_for_account(email)
         render_pastes_for_account(email, pastes)
     return {
