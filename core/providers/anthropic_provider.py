@@ -7,6 +7,7 @@ from typing import Iterator
 
 from cli.ui import console, THEME
 from core.providers.backoff import _retry_with_backoff
+from core.providers.errors import ProviderError
 
 
 class AnthropicGenerator:
@@ -66,8 +67,7 @@ class AnthropicGenerator:
         try:
             ctx = _retry_with_backoff(_open, label=f"Claude {self.model_name}")
         except Exception as e:
-            yield f"[Claude error: {e}]"
-            return
+            raise ProviderError(f"Claude: {e}") from e
 
         if render:
             console.print()
@@ -80,6 +80,7 @@ class AnthropicGenerator:
                         print(text, end="", flush=True)
                     yield text
         except Exception as e:
-            yield f"[Claude stream error: {e}]"
-        if render:
-            print()
+            raise ProviderError(f"Claude stream: {e}") from e
+        finally:
+            if render:
+                print()

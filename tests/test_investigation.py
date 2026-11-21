@@ -10,6 +10,7 @@ import utils.results_parse as rp
 from cli import actions
 from core import ai_agent, case_manager, planner, state
 from core.ai_agent import MAX_STEPS, IAAgent
+from core.providers import ProviderError
 from core.database import DBManager
 from core.findings import FindingsHub
 
@@ -24,7 +25,8 @@ FINISH = json.dumps({"finish": True, "rationale": "the goal is answered"})
 class ScriptedModel:
     """
     Replies with the given texts in order and remembers every prompt.
-    A tuple reply is streamed as separate chunks.
+    A tuple reply is streamed as separate chunks; an exception in it is raised
+    at that point, as a provider does when its stream breaks.
     """
 
     def __init__(self, *replies):
@@ -37,7 +39,10 @@ class ScriptedModel:
         if isinstance(reply, Exception):
             raise reply
         if isinstance(reply, tuple):
-            yield from reply
+            for chunk in reply:
+                if isinstance(chunk, Exception):
+                    raise chunk
+                yield chunk
             return
         yield reply
 
@@ -218,19 +223,21 @@ class TestModelProblems:
         assert [s["tool"] for s in result["steps"]] == ["search"]
 
     @pytest.mark.parametrize("failure", [
-        "[Gemini error: 503 overloaded]",
-        "[Claude stream error: connection reset]",
-        "Error: Gemini client not initialized",
+        "Gemini: 503 overloaded",
+        "Claude stream: connection reset",
+        "Gemini: client not initialized",
     ])
-    def test_provider_failure_text_is_not_taken_for_a_reply(self, tools, failure):
-        result, _ = investigate(*[failure] * ai_agent._MODEL_ATTEMPTS)
+    def test_provider_failure_ends_the_investigation(self, tools, failure):
+        result, _ = investigate(ProviderError(failure), call("search", query="acme"),
+                                FINISH, "# Report")
 
+        assert result["steps"] == []
         assert result["stopped_because"] == "the model gave no usable reply"
         assert failure not in result["report"]
 
     def test_stream_cut_after_partial_text_is_not_taken_for_a_reply(self, tools):
         result, _ = investigate(
-            ('{"tool": "sea', "[OpenAI stream error: connection reset]"),
+            ('{"tool": "sea', ProviderError("OpenAI stream: connection reset")),
             call("search", query="acme"), FINISH, "# Report",
         )
 
@@ -240,12 +247,18 @@ class TestModelProblems:
     def test_report_cut_mid_stream_falls_back_to_the_step_list(self, tools):
         result, _ = investigate(
             call("search", query="acme"), FINISH,
-            ("# Report\nacme-corp.io is run by", "[Gemini stream error: connection reset]"),
+            ("# Report\nacme-corp.io is run by", ProviderError("Gemini stream: connection reset")),
         )
 
         assert "`search` (ok): 2 hits" in result["report"]
         assert "is run by" not in result["report"]
-        assert "stream error" not in result["report"]
+        assert "connection reset" not in result["report"]
+
+    def test_text_that_looks_like_a_failure_is_a_reply(self, tools):
+        result, _ = investigate(call("search", query="acme"), FINISH,
+                                "Error rates on acme-corp.io are public.")
+
+        assert result["report"] == "Error rates on acme-corp.io are public."
 
     def test_provider_exception_is_handled(self, tools):
         result, _ = investigate(*[RuntimeError("timeout")] * ai_agent._MODEL_ATTEMPTS)
@@ -255,7 +268,7 @@ class TestModelProblems:
 
     def test_steps_are_kept_when_the_model_cannot_write_the_report(self, tools):
         result, _ = investigate(
-            call("search", query="acme"), FINISH, "[Gemini error: quota exhausted]",
+            call("search", query="acme"), FINISH, ProviderError("Gemini: quota exhausted"),
         )
 
         assert "Who runs acme-corp.io?" in result["report"]
@@ -465,6 +478,234 @@ class TestDispatchersGiveTheModelSomethingToWorkWith:
         assert "dev.acme-corp.io" in [f.value for f in session.of_kind("domain")]
 
 
+class TestSimilarSearches:
+    """A reworded search that would bring the same results does not spend a step."""
+
+    def statuses(self, *queries, tool="search", **extra):
+        steps = [call(tool, query=q, **extra) for q in queries]
+        result, _ = investigate(*steps, FINISH, "# Report")
+        return [s["status"] for s in result["steps"]], result["steps"]
+
+    def test_reordered_words_count_as_a_repeat(self, tools):
+        statuses, steps = self.statuses("acme team linkedin", "linkedin acme team")
+
+        assert statuses == ["ok", "skip"]
+        assert steps[1]["summary"].startswith("nearly the same query as step 1")
+
+    def test_one_more_word_in_a_long_query_counts_as_a_repeat(self, tools):
+        statuses, _ = self.statuses("acme official github repositories mozilla",
+                                    'acme official "github" repositories mozilla team')
+
+        assert statuses == ["ok", "skip"]
+
+    def test_searches_that_differ_enough_both_run(self, tools):
+        # Steps 3 and 4 of a real run: dropping the site: filters found new accounts.
+        statuses, _ = self.statuses(
+            "Mozilla official social media accounts Twitter X YouTube LinkedIn Instagram "
+            "Mastodon Bluesky site:mozilla.org OR site:mozillafoundation.org",
+            "Mozilla official social media handles Twitter Instagram YouTube LinkedIn Mastodon X",
+        )
+
+        assert statuses == ["ok", "ok"]
+
+    def test_another_engine_is_not_a_repeat(self, tools):
+        result, _ = investigate(call("search", query="acme team"),
+                                call("search", query="team acme", engine="tavily"),
+                                FINISH, "# Report")
+
+        assert [s["status"] for s in result["steps"]] == ["ok", "ok"]
+
+    def test_deep_search_after_a_search_is_not_a_repeat(self, tools, monkeypatch):
+        tools.fake("deep_search", {"status": "ok", "summary": "deep search over 1 URLs"})
+
+        result, _ = investigate(call("search", query="acme team"),
+                                call("deep_search", query="acme team"), FINISH, "# Report")
+
+        assert [s["status"] for s in result["steps"]] == ["ok", "ok"]
+
+    def test_a_failed_search_may_be_retried_reworded(self, tools, monkeypatch):
+        outcomes = [{"status": "error", "summary": "blocked"}, {"status": "ok", "summary": "1 hit"}]
+        monkeypatch.setitem(planner.TOOL_DISPATCH, "search", lambda args, agent: outcomes.pop(0))
+
+        statuses, _ = self.statuses("acme team linkedin", "linkedin acme team")
+
+        assert statuses == ["error", "ok"]
+
+
+class TestReportSources:
+    """Domains in the report are checked against what the tools returned."""
+
+    OBSERVATIONS = [{"step": 1, "tool": "search", "args": {"query": "site:acme.test"},
+                     "status": "ok", "summary": "2 hits",
+                     "data": {"results": [{"link": "https://wiki.acme-corp.io/team"}]}}]
+
+    def unsourced(self, report):
+        return ai_agent._unsourced_hosts(report, "Who runs acme-corp.io?", self.OBSERVATIONS)
+
+    def test_domain_without_a_source_is_listed(self):
+        assert self.unsourced("The site is acmefoundation.org.") == ["acmefoundation.org"]
+
+    @pytest.mark.parametrize("report", [
+        "See https://wiki.acme-corp.io/team",
+        "It runs acme-corp.io",
+        "It runs www.acme-corp.io",
+        "The wiki lives at WIKI.ACME-CORP.IO.",
+    ])
+    def test_domains_in_the_goal_or_a_result_are_not_listed(self, report):
+        assert self.unsourced(report) == []
+
+    def test_a_query_the_model_wrote_is_not_a_source(self):
+        assert self.unsourced("It also uses acme.test") == ["acme.test"]
+
+    @pytest.mark.parametrize("report", [
+        "See contribute.json and README.md", "Built with Node.js", "e.g. version 3.6",
+        "Write to bob@other.test",
+    ])
+    def test_file_names_versions_and_email_addresses_are_ignored(self, report):
+        assert self.unsourced(report) == []
+
+    def test_each_domain_is_listed_once(self):
+        assert self.unsourced("x.example and https://x.example/a") == ["x.example"]
+
+    def test_report_ends_with_the_unsourced_domains(self, tools):
+        result, _ = investigate(
+            call("search", query="acme"), FINISH,
+            "# Report\nacme-corp.io belongs to acmeholdings.com, see https://acme-corp.io/team",
+        )
+
+        assert result["report"].endswith(
+            "**Not found in any step result** — check before relying on them: "
+            "`acmeholdings.com`")
+
+    def test_report_with_every_domain_sourced_is_unchanged(self, tools):
+        result, _ = investigate(call("search", query="acme"), FINISH,
+                                "# Report\nSee https://acme-corp.io/team")
+
+        assert result["report"] == "# Report\nSee https://acme-corp.io/team"
+
+
+class TestOrInSearchQueries:
+    """Tavily and Exa have no OR, so the planner runs each alternative on its own."""
+
+    @pytest.mark.parametrize("query, expected", [
+        ('site:x.test "Ann Lee" OR "A. Lee"', ['site:x.test "Ann Lee"', 'site:x.test "A. Lee"']),
+        ('"Ann Lee" (site:a.test OR site:b.test)', ['"Ann Lee" site:a.test', '"Ann Lee" site:b.test']),
+        ("acme (ceo OR founder) (2023 OR 2024)",
+         ["acme ceo 2023", "acme ceo 2024", "acme founder 2023", "acme founder 2024"]),
+        ("ann | lee", ["ann", "lee"]),
+        ('"cats OR dogs" pets', ['"cats OR dogs" pets']),
+        ("cats or dogs", ["cats or dogs"]),
+        ("OR acme OR", ["acme"]),
+        ("(a OR b", ["a", "b"]),
+        ('"unclosed OR quote', ['"unclosed OR quote']),
+        ("site:x.test  acme", ["site:x.test  acme"]),
+    ])
+    def test_alternatives(self, query, expected):
+        assert planner._or_alternatives(query) == expected
+
+    def test_nested_groups_stay_bounded(self):
+        alternatives = planner._or_alternatives(" ".join(["(a OR b)"] * 30))
+
+        assert len(alternatives) == planner._OR_EXPANSION_LIMIT
+
+    def test_search_runs_each_alternative_and_merges_the_hits(self, session, monkeypatch):
+        hits = {
+            '"Ann Lee"': [{"title": "A", "link": "https://site.test/a"},
+                          {"title": "B", "link": "https://site.test/b"}],
+            '"A. Lee"':  [{"title": "B", "link": "https://site.test/b"},
+                          {"title": "C", "link": "https://site.test/c"}],
+        }
+        sent = []
+
+        def engine(name, pages, start, query):
+            sent.append(query)
+            return hits[query]
+
+        monkeypatch.setattr(actions, "get_search_engine", engine)
+
+        result = planner._dispatch_search({"query": '"Ann Lee" OR "A. Lee"'}, None)
+
+        assert sent == ['"Ann Lee"', '"A. Lee"']
+        assert [r["link"] for r in result["data"]["results"]] == [
+            "https://site.test/a", "https://site.test/b", "https://site.test/c"]
+        assert result["summary"].startswith("OR split into 2 separate searches · 3 hits")
+
+    def test_query_without_or_reaches_the_engine_unchanged(self, session, monkeypatch):
+        sent = []
+        monkeypatch.setattr(actions, "get_search_engine",
+                            lambda name, pages, start, query: sent.append(query) or [])
+
+        result = planner._dispatch_search({"query": 'site:x.test "Ann Lee"'}, None)
+
+        assert sent == ['site:x.test "Ann Lee"']
+        assert result["summary"].startswith("0 hits")
+
+    def test_alternatives_past_the_limit_are_named_for_the_model(self, session, monkeypatch):
+        sent = []
+        monkeypatch.setattr(actions, "get_search_engine",
+                            lambda name, pages, start, query: sent.append(query) or [])
+
+        result = planner._dispatch_search({"query": "a OR b OR c OR d OR e"}, None)
+
+        assert sent == ["a", "b", "c"]
+        assert "not run: d | e" in result["summary"]
+
+    def test_one_failed_alternative_keeps_the_others(self, session, monkeypatch):
+        def engine(name, pages, start, query):
+            if query == "a":
+                raise RuntimeError("blocked")
+            return [{"title": "B", "link": "https://site.test/b"}]
+
+        monkeypatch.setattr(actions, "get_search_engine", engine)
+
+        result = planner._dispatch_search({"query": "a OR b"}, None)
+
+        assert result["status"] == "ok"
+        assert "1 failed" in result["summary"]
+        assert result["data"]["results"][0]["link"] == "https://site.test/b"
+
+    def test_search_fails_when_every_alternative_fails(self, session, monkeypatch):
+        def engine(name, pages, start, query):
+            raise RuntimeError("blocked")
+
+        monkeypatch.setattr(actions, "get_search_engine", engine)
+
+        result = planner._dispatch_search({"query": "a OR b"}, None)
+
+        assert result == {"status": "error", "summary": "search failed: blocked"}
+
+    def test_deep_search_runs_each_alternative(self, session, monkeypatch):
+        sent = []
+
+        def deep(query, engine, pages, start_page, skip_links=None):
+            sent.append(query)
+            return [{"link": f"https://site.test/{query}"}]
+
+        monkeypatch.setattr(actions, "do_deep_search", deep)
+
+        result = planner._dispatch_deep_search({"query": "acme (ceo OR founder)"}, None)
+
+        assert sent == ["acme ceo", "acme founder"]
+        assert result["data"]["count"] == 2
+        assert result["summary"].startswith("OR split into 2 separate searches")
+
+    def test_deep_search_crawls_a_result_shared_by_alternatives_once(self, session, monkeypatch):
+        def row(name):
+            return {"title": name, "description": "", "link": f"https://site.test/{name}"}
+
+        hits = {"acme ceo": [row("a"), row("b")], "acme founder": [row("b"), row("c")]}
+        monkeypatch.setattr(actions, "get_search_engine",
+                            lambda engine, pages, start, query: hits[query])
+        fetched = []
+        monkeypatch.setattr(actions, "get_text_from_url", lambda url: fetched.append(url) or "")
+
+        result = planner._dispatch_deep_search({"query": "acme (ceo OR founder)"}, None)
+
+        assert sorted(fetched) == ["https://site.test/a", "https://site.test/b",
+                                   "https://site.test/c"]
+        assert result["data"]["count"] == 3
+
+
 class TestCommandLine:
     @pytest.fixture
     def run_plan(self, session, tmp_path, monkeypatch, tools):
@@ -560,3 +801,22 @@ class TestCommandLine:
         investigation = actions.do_query_planner("goal")
 
         assert investigation["stopped_because"] == "[/bold] done ["
+
+    @pytest.mark.parametrize("rationale, shown", [
+        ("the goal is answered.", "stopped because the goal is answered."),
+        ("the goal is answered", "stopped because the goal is answered."),
+        ("nothing else to find?", "stopped because nothing else to find?"),
+    ])
+    def test_stop_reason_ends_with_a_single_full_stop(self, session, tmp_path, monkeypatch,
+                                                      tools, rationale, shown):
+        monkeypatch.setattr(actions, "DIR_REPORTS", str(tmp_path))
+        monkeypatch.setattr("cli.ui.confirm", lambda question, default=False: False)
+        lines = []
+        monkeypatch.setattr(actions, "print_info", lines.append)
+        finish = json.dumps({"finish": True, "rationale": rationale})
+        agent = IAAgent(ScriptedModel(call("search", query="acme"), finish, "# Report"))
+        monkeypatch.setattr("cli.menus.select_ia_agent", lambda: agent)
+
+        actions.do_query_planner("goal")
+
+        assert lines[-1].endswith(shown)

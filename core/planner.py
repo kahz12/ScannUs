@@ -51,6 +51,113 @@ class PlanStep:
 
 
 # ---------------------------------------------------------------------------
+# OR in search queries
+# ---------------------------------------------------------------------------
+
+_MAX_OR_SEARCHES = 3       # separate searches one query with OR may run
+_OR_EXPANSION_LIMIT = 20   # alternatives kept while expanding nested groups
+
+
+def _query_tokens(query: str) -> list[str]:
+    """
+    Splits a search query into terms, parentheses and ``OR`` markers.
+
+    A quoted phrase stays one term together with any prefix attached to it
+    (``intitle:"a b"``, ``-"a b"``), so an ``OR`` inside quotes is plain text.
+    ``|`` counts as ``OR``; a lowercase ``or`` is an ordinary word, as on web
+    search engines. An unclosed quote runs to the end of the query.
+    """
+    tokens: list[str] = []
+    i, n = 0, len(query)
+    while i < n:
+        ch = query[i]
+        if ch.isspace():
+            i += 1
+        elif ch in "()|":
+            tokens.append("OR" if ch == "|" else ch)
+            i += 1
+        else:
+            start = i
+            while i < n and not query[i].isspace() and query[i] not in "()|":
+                if query[i] == '"':
+                    close = query.find('"', i + 1)
+                    i = n if close < 0 else close + 1
+                else:
+                    i += 1
+            tokens.append(query[start:i])
+    return tokens
+
+
+def _or_alternatives(query: str) -> list[str]:
+    """
+    Expands ``OR`` into the separate queries it stands for.
+
+    Follows web search precedence: ``OR`` joins the term or parenthesised group
+    on each side of it, and every other term applies to all alternatives, so
+    ``site:x.com "Ann Lee" OR "A. Lee"`` gives ``site:x.com "Ann Lee"`` and
+    ``site:x.com "A. Lee"``. Tavily and Exa have no ``OR`` operator, so the
+    planner runs each alternative as its own search on every engine. A query
+    without ``OR`` comes back unchanged as the only item.
+    """
+    tokens = _query_tokens(query)
+    if "OR" not in tokens:
+        return [query]
+    pos = 0
+
+    def atom() -> list[list[str]]:
+        nonlocal pos
+        token = tokens[pos]
+        pos += 1
+        if token != "(":
+            return [[token]]
+        inner = sequence()
+        if pos < len(tokens):      # the closing ")"
+            pos += 1
+        return inner
+
+    def item() -> list[list[str]]:
+        nonlocal pos
+        options = atom()
+        while (pos + 1 < len(tokens) and tokens[pos] == "OR"
+               and tokens[pos + 1] not in (")", "OR")):
+            pos += 1
+            options = (options + atom())[:_OR_EXPANSION_LIMIT]
+        return options
+
+    def sequence() -> list[list[str]]:
+        nonlocal pos
+        combos: list[list[str]] = [[]]
+        while pos < len(tokens) and tokens[pos] != ")":
+            if tokens[pos] == "OR":    # nothing on its left to join
+                pos += 1
+                continue
+            options = item()
+            combos = [c + o for c in combos for o in options][:_OR_EXPANSION_LIMIT]
+        return combos
+
+    combos: list[list[str]] = [[]]
+    while pos < len(tokens):
+        part = sequence()
+        combos = [c + p for c in combos for p in part][:_OR_EXPANSION_LIMIT]
+        pos += 1                       # an unmatched ")" ends a sequence early
+    queries = [" ".join(terms) for terms in combos if terms]
+    return list(dict.fromkeys(queries)) or [query]
+
+
+def _or_note(queries: list[str], ran: list[str], failed: int) -> str:
+    """Tells the model how an ``OR`` query was split, and what did not run."""
+    if len(queries) == 1:
+        return ""
+    note = f"OR split into {len(ran)} separate searches"
+    if failed:
+        note += f", {failed} failed"
+    skipped = queries[len(ran):]
+    if skipped:
+        note += "; not run: " + " | ".join(_truncate(q, 60) for q in skipped)
+    return note
+
+
+# ---------------------------------------------------------------------------
 # What the model is allowed to see
 # ---------------------------------------------------------------------------
 
@@ -97,7 +204,8 @@ TOOL_CATALOG: dict[str, dict] = {
     "search": {
         "desc": "Run a SERP search and return the list of titles/URLs/snippets.",
         "args": {
-            "query":  "str (required) — search string, dork operators welcome",
+            "query":  "str (required) — search string, dork operators welcome; "
+                      f"each OR alternative runs as its own search (at most {_MAX_OR_SEARCHES})",
             "engine": "str — duckduckgo | brave | tavily | exa (default: duckduckgo)",
             "pages":  "int — SERP pages to retrieve (default: 1)",
         },
@@ -109,8 +217,9 @@ TOOL_CATALOG: dict[str, dict] = {
                 "AWS/GitHub/Slack/Stripe/Google API keys, JWTs, "
                 "private keys, BTC/ETH wallets, public IPs).",
         "args": {
-            "query":  "str (required)",
-            "engine": "str (default: duckduckgo)",
+            "query":  "str (required) — each OR alternative runs as its own deep "
+                      f"search (at most {_MAX_OR_SEARCHES})",
+            "engine": "str — duckduckgo | brave | tavily | exa (default: duckduckgo)",
         },
     },
     "extract_pii": {
@@ -275,13 +384,36 @@ def _truncate(value: Any, limit: int = 220) -> str:
 
 
 def _format_catalog_for_prompt() -> str:
-    """Human-readable tool catalog embedded into the planner prompt."""
+    """
+    Human-readable tool catalog embedded into the planner prompt.
+
+    The ``engine`` argument lists only the engines that can search right now,
+    so the model does not spend a step on one without a key or credit.
+    """
+    from search.engines import available_engines
+    engines = "str — " + " | ".join(available_engines()) + " (default: duckduckgo)"
     lines: list[str] = []
     for name, meta in TOOL_CATALOG.items():
         lines.append(f"- {name}: {meta['desc']}")
         for arg_name, arg_desc in meta["args"].items():
-            lines.append(f"    · {arg_name}: {arg_desc}")
+            lines.append(f"    · {arg_name}: {engines if arg_name == 'engine' else arg_desc}")
     return "\n".join(lines)
+
+
+def _unusable_engine(engine: str, tool: str) -> dict | None:
+    """A failed step result when *engine* cannot search now, naming the engines that can."""
+    import os
+    from search.engines import API_KEY_VARS, available_engines, unavailable_engines
+    available = available_engines()
+    if engine in available:
+        return None
+    reason = unavailable_engines().get(engine)
+    if not reason and engine in API_KEY_VARS and not os.getenv(API_KEY_VARS[engine]):
+        reason = f"{API_KEY_VARS[engine]} is not set"
+    why = f" ({reason})" if reason else ""
+    return {"status":  "error",
+            "summary": f"{tool}: engine '{engine}' cannot search now{why}; "
+                       f"use one of: {', '.join(available)}"}
 
 
 # ---------------------------------------------------------------------------
@@ -294,20 +426,41 @@ def _dispatch_search(args: dict, ia_agent) -> dict:
     if not query:
         return {"status": "error", "summary": "search: missing 'query'"}
     engine = (args.get("engine") or "duckduckgo").lower()
+    unusable = _unusable_engine(engine, "search")
+    if unusable:
+        return unusable
     try:
         pages = int(args.get("pages") or 1)
     except (TypeError, ValueError):
         pages = 1
-    try:
-        results = get_search_engine(engine, pages, 1, query)
-    except Exception as e:
-        return {"status": "error", "summary": f"search failed: {e}"}
+    queries = _or_alternatives(query)
+    ran = queries[:_MAX_OR_SEARCHES]
+    results: list[dict] = []
+    seen_links: set[str] = set()
+    failures: list[str] = []
+    for q in ran:
+        try:
+            hits = get_search_engine(engine, pages, 1, q) or []
+        except Exception as e:
+            failures.append(f"search failed: {e}")
+            continue
+        for hit in hits:
+            link = hit.get("link")
+            if link and link in seen_links:
+                continue
+            if link:
+                seen_links.add(link)
+            results.append(hit)
+    if len(failures) == len(ran):
+        return {"status": "error", "summary": failures[0]}
     state.add_results(results)
     get_hub().ingest_results(results, source="planner")
     top = [r.get("title", "") for r in results[:5]]
+    summary = f"{len(results)} hits · top: " + " | ".join(_truncate(t, 60) for t in top)
+    note = _or_note(queries, ran, len(failures))
     return {
         "status":  "ok",
-        "summary": f"{len(results)} hits · top: " + " | ".join(_truncate(t, 60) for t in top),
+        "summary": f"{note} · {summary}" if note else summary,
         "data":    {"results": [
             {key: r.get(key) for key in ("title", "link", "description")}
             for r in results[:10]
@@ -321,19 +474,34 @@ def _dispatch_deep_search(args: dict, ia_agent) -> dict:
     if not query:
         return {"status": "error", "summary": "deep_search: missing 'query'"}
     engine = (args.get("engine") or "duckduckgo").lower()
+    unusable = _unusable_engine(engine, "deep_search")
+    if unusable:
+        return unusable
     evidence = state.CURRENT_CASE.setdefault("evidence", [])
     known = len(evidence)
-    try:
-        results = do_deep_search(query, engine, pages=1, start_page=1)
-    except Exception as e:
-        return {"status": "error", "summary": f"deep_search failed: {e}"}
-    if results is None:
-        return {"status": "error", "summary": "deep search failed"}
-    count = len(results)
+    queries = _or_alternatives(query)
+    ran = queries[:_MAX_OR_SEARCHES]
+    count = 0
+    failures: list[str] = []
+    crawled: set[str] = set()   # alternatives often share results
+    for q in ran:
+        try:
+            results = do_deep_search(q, engine, pages=1, start_page=1, skip_links=crawled)
+        except Exception as e:
+            failures.append(f"deep_search failed: {e}")
+            continue
+        if results is None:
+            failures.append("deep search failed")
+        else:
+            count += len(results)
+    if len(failures) == len(ran):
+        return {"status": "error", "summary": failures[0]}
     found = evidence[known:]
+    summary = f"deep search over {count} URLs: {len(found)} new value(s)"
+    note = _or_note(queries, ran, len(failures))
     return {
         "status":  "ok",
-        "summary": f"deep search over {count} URLs: {len(found)} new value(s)",
+        "summary": f"{note} · {summary}" if note else summary,
         "data":    {"count": count, **_evidence_digest(found)},
     }
 

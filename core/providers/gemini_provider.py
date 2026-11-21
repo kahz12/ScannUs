@@ -7,6 +7,7 @@ from typing import Iterator
 
 from cli.ui import console, THEME
 from core.providers.backoff import _retry_with_backoff
+from core.providers.errors import ProviderError
 
 
 class GeminiGenerator:
@@ -66,8 +67,9 @@ class GeminiGenerator:
         if not self.client:
             self._initialize_client()
             if not self.client:
-                yield "Error: Gemini client not initialized — check GOOGLE_API_KEY_FOR_GEMINI."
-                return
+                raise ProviderError(
+                    "Gemini: client not initialized — check GOOGLE_API_KEY_FOR_GEMINI."
+                )
 
         console.print(
             f"  [{THEME['DIM']}]⟳ Generating with Gemini ({self.model_name})…[/]"
@@ -92,11 +94,10 @@ class GeminiGenerator:
                     print(text, flush=True)
                 yield text
             except Exception as e:
-                yield f"[Gemini error: {e}]"
+                raise ProviderError(f"Gemini: {e}") from e
             return
         except Exception as e:
-            yield f"[Gemini error: {e}]"
-            return
+            raise ProviderError(f"Gemini: {e}") from e
 
         if render:
             console.print()
@@ -108,6 +109,7 @@ class GeminiGenerator:
                         print(text, end="", flush=True)
                     yield text
         except Exception as e:
-            yield f"[Gemini stream error: {e}]"
-        if render:
-            print()
+            raise ProviderError(f"Gemini stream: {e}") from e
+        finally:
+            if render:
+                print()

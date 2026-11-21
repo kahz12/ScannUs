@@ -19,7 +19,7 @@ from core import ai_agent, case_manager, config, state
 from core.ai_agent import IAAgent
 from core.database import DBManager
 from core.findings import FindingsHub
-from core.providers import AnthropicGenerator, OllamaGenerator, OpenAIGenerator
+from core.providers import AnthropicGenerator, OllamaGenerator, OpenAIGenerator, ProviderError
 from search import smart_search as s
 from search.engines.bravesearch import BraveSearch
 from search.engines.duckduckgosearch import DuckDuckGoSearch
@@ -146,7 +146,8 @@ class TestAIAndChunking:
         class FailingModel:
             def stream(self, prompt, render=False):
                 calls.append(prompt)
-                yield "[Gemini error: 503 overloaded]"
+                raise ProviderError("Gemini: 503 overloaded")
+                yield  # makes this a generator, like the real providers
 
         step, reason = IAAgent(FailingModel()).next_step("goal", [])
         assert step is None
@@ -206,8 +207,8 @@ class TestAIAndChunking:
                 self.chat = SimpleNamespace(completions=BrokenCompletions())
 
         monkeypatch.setattr("openai.OpenAI", FakeOpenAI)
-        out = "".join(OpenAIGenerator().stream("hello"))
-        assert out.startswith("[OpenAI error:")
+        with pytest.raises(ProviderError, match="^OpenAI: invalid api key"):
+            "".join(OpenAIGenerator().stream("hello"))
 
     def test_anthropic_and_ollama_pass_system_prompt(self, monkeypatch):
         monkeypatch.setenv("ANTHROPIC_API_KEY", "k")
@@ -319,7 +320,7 @@ class TestExtractorsExportsAndEngines:
         def fake_get(url, headers, params, timeout):
             seen.append(params["offset"])
             body = {"query": {"more_results_available": False}, "web": {"results": []}}
-            return SimpleNamespace(raise_for_status=lambda: None, json=lambda: body)
+            return SimpleNamespace(status_code=200, raise_for_status=lambda: None, json=lambda: body)
 
         monkeypatch.setattr("search.engines.bravesearch.requests.get", fake_get)
         BraveSearch("k").search("q", pages=0, start_page=0)

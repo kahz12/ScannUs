@@ -10,7 +10,9 @@ from cli import actions, menus
 from cli.parser import get_parser
 from core import config
 from core.cache import SQLiteCache
+from core import planner
 from core.planner import TOOL_CATALOG
+from search import engines
 from search.engines import SEARCH_ENGINES, api_query
 from search.engines.api_query import result_window, split_site_filters, warn_ignored_operators
 from search.engines.duckduckgosearch import SearchBlockedError
@@ -420,6 +422,92 @@ class TestMoveFromDuckDuckGo:
         actions.get_search_engine("duckduckgo", 1, 1, QUERY)
 
         assert created == []
+
+
+
+@pytest.fixture
+def fresh_session(no_keys):
+    """No key set and no engine marked unavailable yet."""
+    no_keys.setattr(engines, "_UNAVAILABLE", {})
+    return no_keys
+
+
+class TestUnavailableEngines:
+    def test_only_engines_with_a_key_are_available(self, fresh_session):
+        fresh_session.setenv("TAVILY_API_KEY", "key")
+
+        assert engines.available_engines() == ["duckduckgo", "tavily"]
+
+    @pytest.mark.parametrize("status", [401, 402])
+    def test_rejected_key_or_empty_balance_marks_the_engine(self, api, fresh_session, status):
+        fresh_session.setenv("EXA_API_KEY", "key")
+        api.status = status
+
+        with pytest.raises(engines.EngineUnavailableError):
+            actions.get_search_engine("exa", 1, 1, QUERY)
+
+        assert "exa" not in engines.available_engines()
+        assert "exa" in engines.unavailable_engines()
+
+    def test_marked_engine_is_not_asked_again(self, api, fresh_session):
+        fresh_session.setenv("EXA_API_KEY", "key")
+        api.status = 402
+        with pytest.raises(engines.EngineUnavailableError):
+            actions.get_search_engine("exa", 1, 1, QUERY)
+        requests_sent = len(api.calls)
+
+        with pytest.raises(engines.EngineUnavailableError, match="no credit"):
+            actions.get_search_engine("exa", 1, 1, QUERY)
+
+        assert len(api.calls) == requests_sent
+
+    def test_rate_limit_leaves_the_engine_available(self, api, fresh_session):
+        fresh_session.setenv("TAVILY_API_KEY", "key")
+        api.status = 429
+
+        with pytest.raises(RuntimeError, match="rate limit"):
+            actions.get_search_engine("tavily", 1, 1, QUERY)
+
+        assert "tavily" in engines.available_engines()
+
+    def test_block_skips_an_engine_marked_unavailable(self, fresh_session):
+        created = stub_engines(fresh_session, SearchBlockedError("blocked"))
+        for variable in ("TAVILY_API_KEY", "EXA_API_KEY"):
+            fresh_session.setenv(variable, "key")
+        engines.mark_unavailable("tavily", "Tavily rejected TAVILY_API_KEY.")
+        fresh_session.setattr(actions, "print_warn", lambda message: None)
+
+        actions.get_search_engine("duckduckgo", 1, 1, QUERY)
+
+        assert [name for name, _ in created] == ["exa"]
+
+    def test_planner_is_offered_only_available_engines(self, fresh_session):
+        fresh_session.setenv("TAVILY_API_KEY", "key")
+        fresh_session.setenv("EXA_API_KEY", "key")
+        engines.mark_unavailable("exa", "Exa has no credit left.")
+
+        catalog = planner._format_catalog_for_prompt()
+
+        engine_lines = [line.strip() for line in catalog.splitlines() if "· engine:" in line]
+        assert engine_lines == ["· engine: str — duckduckgo | tavily (default: duckduckgo)"] * 2
+
+    def test_planner_says_why_an_engine_cannot_search(self, fresh_session):
+        fresh_session.setenv("EXA_API_KEY", "key")
+        engines.mark_unavailable("exa", "Exa has no credit left.")
+
+        result = planner._dispatch_search({"query": "acme", "engine": "exa"}, None)
+
+        assert result == {
+            "status": "error",
+            "summary": "search: engine 'exa' cannot search now (Exa has no credit left.); "
+                       "use one of: duckduckgo",
+        }
+
+    def test_planner_names_the_missing_key(self, fresh_session):
+        result = planner._dispatch_deep_search({"query": "acme", "engine": "brave"}, None)
+
+        assert result["status"] == "error"
+        assert "BRAVE_API_KEY is not set" in result["summary"]
 
 
 class TestConfiguration:

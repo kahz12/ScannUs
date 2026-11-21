@@ -16,7 +16,7 @@ from cli.ui import (
     ask, confirm, select_menu,
     header_bar, status_footer, panel,
     print_success, print_error, print_warn, print_info,
-    make_table,
+    make_table, run_guarded,
 )
 from cli.results_menu import (
     PAGE_SIZE,
@@ -442,48 +442,54 @@ def show_main_menu() -> None:
             )
             break
 
-        if choice == "guided":
-            _run_guided_search()
-        elif choice == "direct":
-            _run_direct_search()
-        elif choice == "dork":
-            import cli.actions
-            header_bar("AI Dork Generator", "Turn a natural-language brief into a dork")
-            cli.actions.do_generate_dork_ia()
-        elif choice == "planner":
-            import cli.actions
-            cli.actions.do_query_planner()
-        elif choice == "hub":
-            findings_hub_menu()
-        elif choice == "reverse":
-            from search.reverse_image import do_reverse_image_search
-            header_bar("Reverse Image Lookup", "TinEye · Bing · Yandex · manual URLs")
-            if do_reverse_image_search():
-                _offer_hub()
-        elif choice == "tech":
-            _run_tech_scan()
-        elif choice == "user-enum":
-            _run_username_enum()
-        elif choice == "email-enum":
-            _run_email_enum()
-        elif choice == "phone-osint":
-            _run_phone_osint()
-        elif choice == "recon":
-            _run_domain_recon()
-        elif choice == "hibp":
-            _run_hibp_menu()
-        elif choice == "load":
-            header_bar("Load Case", "Restore a saved investigation")
-            ia_agent = select_ia_agent()
-            if ia_agent and load_case():
-                interactive_analysis_menu(state.LAST_RESULTS, ia_agent)
-        elif choice == "del-case":
-            header_bar("Delete Case", "Remove a saved investigation")
-            delete_case_prompt()
-        elif choice == "config":
-            header_bar("API Credentials", "Update .env file")
-            env_config()
-            openai_config()
+        labels = {value: label for label, value, *_ in _MAIN_MENU_CHOICES}
+        run_guarded(_run_main_choice, choice, label=labels.get(choice, choice))
+
+
+def _run_main_choice(choice: str) -> None:
+    """Runs the tool picked in the main menu."""
+    if choice == "guided":
+        _run_guided_search()
+    elif choice == "direct":
+        _run_direct_search()
+    elif choice == "dork":
+        import cli.actions
+        header_bar("AI Dork Generator", "Turn a natural-language brief into a dork")
+        cli.actions.do_generate_dork_ia()
+    elif choice == "planner":
+        import cli.actions
+        cli.actions.do_query_planner()
+    elif choice == "hub":
+        findings_hub_menu()
+    elif choice == "reverse":
+        from search.reverse_image import do_reverse_image_search
+        header_bar("Reverse Image Lookup", "TinEye · Bing · Yandex · manual URLs")
+        if do_reverse_image_search():
+            _offer_hub()
+    elif choice == "tech":
+        _run_tech_scan()
+    elif choice == "user-enum":
+        _run_username_enum()
+    elif choice == "email-enum":
+        _run_email_enum()
+    elif choice == "phone-osint":
+        _run_phone_osint()
+    elif choice == "recon":
+        _run_domain_recon()
+    elif choice == "hibp":
+        _run_hibp_menu()
+    elif choice == "load":
+        header_bar("Load Case", "Restore a saved investigation")
+        ia_agent = select_ia_agent()
+        if ia_agent and load_case():
+            interactive_analysis_menu(state.LAST_RESULTS, ia_agent)
+    elif choice == "del-case":
+        header_bar("Delete Case", "Remove a saved investigation")
+        delete_case_prompt()
+    elif choice == "config":
+        header_bar("API Credentials", "Update .env file")
+        env_config()
+        openai_config()
 
 
 __all__ = [

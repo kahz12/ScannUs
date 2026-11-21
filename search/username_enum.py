@@ -132,7 +132,22 @@ def _run_sherlock(username: str, timeout: int = 20) -> list[dict]:
 # Maigret backend
 # ---------------------------------------------------------------------------
 
-_MAIGRET_FOUND_STATUSES = {"claimed", "found", "available"}
+# Maigret's "available" means the handle is not registered on the site.
+_MAIGRET_FOUND_STATUSES = {"claimed", "found"}
+
+
+def _maigret_status(info: dict) -> str:
+    """
+    Reads the check status of one site in a Maigret JSON report, lowercased.
+
+    Maigret 0.6 writes ``status`` as the check result object
+    (``{"status": "Claimed", "url": ..., "ids": ...}``); older releases wrote
+    the bare string.
+    """
+    status = info.get("status")
+    if isinstance(status, dict):
+        status = status.get("status")
+    return str(status or "").lower()
 
 
 @throttled(namespace="maigret")
@@ -183,11 +198,13 @@ def _run_maigret(username: str, timeout: int = 20) -> list[dict]:
 
         results: list[dict] = []
         for site, info in (data or {}).items():
-            info = info or {}
-            status_raw = (info.get("status") or "").lower()
+            if not isinstance(info, dict):
+                continue
+            status_raw = _maigret_status(info)
             if status_raw and status_raw not in _MAIGRET_FOUND_STATUSES:
                 continue
-            url = info.get("url_user") or info.get("url") or ""
+            nested = info["status"] if isinstance(info.get("status"), dict) else {}
+            url = info.get("url_user") or info.get("url") or nested.get("url") or ""
             if not url:
                 continue
             results.append({

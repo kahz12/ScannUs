@@ -251,6 +251,31 @@ def print_warn(msg: str) -> None:
 def print_info(msg: str) -> None:
     console.print(f"  [{THEME['INFO']}]{INFO_GLYPH}[/]  {msg}")
 
+def run_guarded(action, *args, label: str = "", **kwargs):
+    """
+    Runs one menu action so that a crash or Ctrl+C brings the user back to the
+    menu instead of ending the session, which would drop the Findings Hub and
+    any unsaved case. The traceback goes to the log file.
+
+    Returns the action's result, or None when it did not finish.
+    """
+    from rich.markup import escape
+    from core.logging_setup import get_logger
+
+    name = label or getattr(action, "__name__", "action")
+    try:
+        return action(*args, **kwargs)
+    except KeyboardInterrupt:
+        console.print()
+        print_warn(f"{escape(name)} cancelled — back to the menu.")
+    except Exception as e:
+        get_logger("cli").exception("menu action %r stopped", name)
+        print_error(f"{escape(name)} stopped unexpectedly: "
+                    f"{escape(type(e).__name__)}: {escape(str(e))}")
+        print_info("The traceback is in outputs/logs/scannus.log. "
+                   "Findings and the current case are kept.")
+    return None
+
 def print_section(title: str, subtitle: str = "") -> None:
     """Visual separator with a centred title and optional subtitle."""
     console.print()

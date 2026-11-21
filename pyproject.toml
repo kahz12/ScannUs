@@ -26,6 +26,7 @@ dynamic = ["dependencies"]
 # Dev/test tooling — install with:  pip install -e ".[dev]"
 dev = [
     "pytest==9.0.3",
+    "pytest-cov==7.1.0",
     # Ruff (linter) runs in CI and via pre-commit. It has no Android/Termux
     # wheel and builds from source there (needs Rust), so it is not pinned
     # here. On Linux/macOS/Windows:  pip install ruff==0.14.0
@@ -75,3 +76,14 @@ ignore = ["E701", "E402", "E731"]
 pythonpath = ["."]
 testpaths = ["tests"]
 addopts = "-ra"
+
+# ---------------------------------------------------------------------------
+# Coverage — measured by `pytest --cov` (CI runs it on one Python version)
+# ---------------------------------------------------------------------------
+[tool.coverage.run]
+source = ["analysis", "cli", "core", "search", "utils", "main"]
+
+[tool.coverage.report]
+skip_covered = true
+show_missing = true
+sort = "Cover"

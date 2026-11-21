@@ -7,7 +7,10 @@ from rich.panel import Panel
 from rich.text import Text
 from cli.ui import console, THEME, print_success, print_error, print_warn, print_info, make_table
 from core.config import DIR_REPORTS
-from search.engines import SEARCH_ENGINES
+from search.engines import (
+    API_KEY_VARS, SEARCH_ENGINES, EngineUnavailableError,
+    available_engines, mark_unavailable, unavailable_engines,
+)
 from search.engines.duckduckgosearch import DuckDuckGoSearch, SearchBlockedError
 from search.engines.exasearch import ExaSearch
 from search.engines.tavilysearch import TavilySearch
@@ -25,22 +28,25 @@ _log = get_logger(__name__)
 # Internal helpers
 # ---------------------------------------------------------------------------
 
-# Engines that need a key, in the order a blocked DuckDuckGo search tries them.
-_API_KEY_VARS = {
-    "brave":  "BRAVE_API_KEY",
-    "tavily": "TAVILY_API_KEY",
-    "exa":    "EXA_API_KEY",
-}
-
-
 def _search_with_api_engine(engine: str, pages: int, start_page: int, query: str):
-    """Runs one of the engines that need a key, naming the key when it is missing."""
-    key_var = _API_KEY_VARS[engine]
+    """
+    Runs one of the engines that need a key, naming the key when it is missing.
+    An engine that rejects its key or has no credit is marked unavailable for
+    the rest of the session.
+    """
+    key_var = API_KEY_VARS[engine]
     api_key = os.getenv(key_var)
     if not api_key:
         raise EnvironmentError(f"{key_var} not found in .env")
+    reason = unavailable_engines().get(engine)
+    if reason:
+        raise EngineUnavailableError(reason)
     client = {"brave": BraveSearch, "tavily": TavilySearch, "exa": ExaSearch}[engine](api_key)
-    return client.search(query, pages=pages, start_page=start_page)
+    try:
+        return client.search(query, pages=pages, start_page=start_page)
+    except EngineUnavailableError as e:
+        mark_unavailable(engine, str(e))
+        raise
 
 
 def get_search_engine(engine: str, pages: int, start_page: int, query: str):
@@ -61,8 +67,7 @@ def get_search_engine(engine: str, pages: int, start_page: int, query: str):
         try:
             results = DuckDuckGoSearch().search(query, pages=pages, start_page=start_page)
         except SearchBlockedError:
-            engine = next((name for name, key_var in _API_KEY_VARS.items()
-                           if os.getenv(key_var)), None)
+            engine = next((name for name in available_engines() if name in API_KEY_VARS), None)
             if not engine:
                 raise
             print_warn(f"DuckDuckGo blocked this search — using {engine.capitalize()} instead.")
@@ -134,11 +139,15 @@ def _fetch_search_texts(results: list[dict]):
 # Public actions
 # ---------------------------------------------------------------------------
 
-def do_deep_search(query: str, engine: str, pages: int,
-                   start_page: int) -> list[dict] | None:
+def do_deep_search(query: str, engine: str, pages: int, start_page: int,
+                   *, skip_links: set[str] | None = None) -> list[dict] | None:
     """
     Intensive search: retrieves SERP results then crawls each URL to extract PII.
     Returns search results on success (including an empty list), or None on failure.
+
+    ``skip_links`` carries the links an earlier deep search of the same step
+    already crawled: those results are left out, and every link crawled here
+    is added to the set.
     """
     _print_search_header(engine, query, mode="Deep / PII Extraction")
 
@@ -147,6 +156,13 @@ def do_deep_search(query: str, engine: str, pages: int,
     except Exception as e:
         print_error(str(e))
         return
+
+    if skip_links is not None:
+        fresh = [r for r in resultados if not r.get("link") or r["link"] not in skip_links]
+        if len(fresh) < len(resultados):
+            print_info(f"{len(resultados) - len(fresh)} URL(s) already crawled in this step — skipped.")
+        resultados = fresh
+        skip_links.update(r["link"] for r in resultados if r.get("link"))
 
     print_info(f"{len(resultados)} URLs found — beginning data extraction…")
     console.print()
@@ -286,8 +302,11 @@ def do_query_planner(goal: str | None = None) -> dict | None:
 
     console.print()
     panel(Markdown(investigation["report"]), title="Investigation Report", border="green")
-    print_info(f"{ok} ok · {err} failed · {skip} skipped — "
-               f"stopped because {escape(investigation['stopped_because'])}.")
+    # The model often ends its rationale with a full stop already.
+    reason = investigation["stopped_because"].rstrip()
+    if not reason.endswith((".", "!", "?", "…")):
+        reason += "."
+    print_info(f"{ok} ok · {err} failed · {skip} skipped — stopped because {escape(reason)}")
     print_success(f"Report saved → {_save_report(investigation['report'])}")
     return investigation
 

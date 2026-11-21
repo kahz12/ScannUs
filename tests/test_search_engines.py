@@ -53,7 +53,7 @@ class FakeBraveAPI:
             "web": {"results": [{"title": f"Page {offset}", "description": "d",
                                  "url": f"https://site.test/{offset}"}]},
         }
-        return SimpleNamespace(raise_for_status=lambda: None, json=lambda: body)
+        return SimpleNamespace(status_code=200, raise_for_status=lambda: None, json=lambda: body)
 
 
 @pytest.fixture
@@ -180,7 +180,7 @@ class TestBravePaging:
         def fake_get(url, headers, params, timeout):
             offsets.append(params["offset"])
             body = {"web": {"results": [{"title": "T", "description": "D", "url": "u"}]}}
-            return SimpleNamespace(raise_for_status=lambda: None, json=lambda: body)
+            return SimpleNamespace(status_code=200, raise_for_status=lambda: None, json=lambda: body)
 
         monkeypatch.setattr(bravesearch.requests, "get", fake_get)
 

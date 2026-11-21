@@ -41,4 +41,11 @@ jobs:
           python -m pip install --upgrade pip
           pip install -e ".[dev]"
       - name: Run tests
+        if: matrix.python-version != '3.14'
         run: pytest
+      # One version is enough to measure coverage; the table lands in the job summary.
+      - name: Run tests with coverage
+        if: matrix.python-version == '3.14'
+        run: |
+          pytest --cov
+          coverage report --format=markdown >> "$GITHUB_STEP_SUMMARY"

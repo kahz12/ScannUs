@@ -7,6 +7,7 @@ from typing import Iterator
 
 from cli.ui import console, THEME
 from core.providers.backoff import _retry_with_backoff
+from core.providers.errors import ProviderError
 
 
 class OpenAIGenerator:
@@ -66,8 +67,7 @@ class OpenAIGenerator:
                 self._open_stream, prompt, system, label=f"OpenAI {self.model_name}",
             )
         except Exception as e:
-            yield f"[OpenAI error: {e}]"
-            return
+            raise ProviderError(f"OpenAI: {e}") from e
 
         if render:
             console.print()
@@ -81,6 +81,7 @@ class OpenAIGenerator:
                         print(delta, end="", flush=True)
                     yield delta
         except Exception as e:
-            yield f"[OpenAI stream error: {e}]"
-        if render:
-            print()
+            raise ProviderError(f"OpenAI stream: {e}") from e
+        finally:
+            if render:
+                print()

@@ -10,6 +10,7 @@ import re
 import requests
 
 from cli.ui import print_warn
+from search.engines import EngineUnavailableError
 
 _TIMEOUT = 30
 
@@ -101,6 +102,9 @@ def post_search(engine: str, url: str, headers: dict, payload: dict,
         raise RuntimeError(f"{engine} Search API Error: {e}")
 
     if response.status_code in rejections:
+        # A rejected key (401) or an empty balance (402) lasts for the session.
+        if response.status_code in (401, 402):
+            raise EngineUnavailableError(rejections[response.status_code])
         raise RuntimeError(rejections[response.status_code])
 
     try:

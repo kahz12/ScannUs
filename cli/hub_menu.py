@@ -13,7 +13,7 @@ from cli.ui import (
     ask, confirm, select_menu,
     header_bar, status_footer,
     print_success, print_error, print_warn, print_info,
-    make_table,
+    make_table, run_guarded,
 )
 from core.findings import KINDS
 from cli.results_menu import _MEDIA_CHOICES, _agent_label, process_selected_url
@@ -310,32 +310,38 @@ def findings_hub_menu(ia_agent=None) -> None:
 
         if choice in (None, "back"):
             break
-        elif choice == "analyse":
-            url = _pick_value(_kind_options(hub, "url"), "Pick a URL to analyse")
-            if url:
-                process_selected_url(url, ia_agent)
-        elif choice == "download":
-            _hub_download_pivot(hub)
-        elif choice == "search":
-            _hub_search_pivot(hub, ia_agent)
-        elif choice == "recon":
-            _hub_recon_pivot(hub)
-        elif choice == "user-enum":
-            _hub_username_pivot(hub)
-        elif choice == "email-enum":
-            _hub_email_pivot(hub)
-        elif choice == "phone-osint":
-            _hub_phone_pivot(hub)
-        elif choice == "hibp":
-            _hub_hibp_pivot(hub)
-        elif choice == "add":
-            _hub_add_target(hub)
-        elif choice == "view":
-            _render_findings_full(hub)
-        elif choice == "clear":
-            if confirm("Clear all findings?", default=False):
-                hub.clear()
-                print_info("Findings cleared.")
+        labels = {value: label for label, value, _ in actions}
+        run_guarded(_run_hub_choice, choice, hub, ia_agent, label=labels.get(choice, choice))
+
+
+def _run_hub_choice(choice: str, hub, ia_agent) -> None:
+    """Runs the pivot picked in the Findings Hub."""
+    if choice == "analyse":
+        url = _pick_value(_kind_options(hub, "url"), "Pick a URL to analyse")
+        if url:
+            process_selected_url(url, ia_agent)
+    elif choice == "download":
+        _hub_download_pivot(hub)
+    elif choice == "search":
+        _hub_search_pivot(hub, ia_agent)
+    elif choice == "recon":
+        _hub_recon_pivot(hub)
+    elif choice == "user-enum":
+        _hub_username_pivot(hub)
+    elif choice == "email-enum":
+        _hub_email_pivot(hub)
+    elif choice == "phone-osint":
+        _hub_phone_pivot(hub)
+    elif choice == "hibp":
+        _hub_hibp_pivot(hub)
+    elif choice == "add":
+        _hub_add_target(hub)
+    elif choice == "view":
+        _render_findings_full(hub)
+    elif choice == "clear":
+        if confirm("Clear all findings?", default=False):
+            hub.clear()
+            print_info("Findings cleared.")
 
 
 def _offer_hub(ia_agent=None) -> None:

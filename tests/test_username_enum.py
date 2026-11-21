@@ -1,5 +1,7 @@
 """Username enumeration with the backend replaced by a fake that answers per handle."""
 
+import json
+import os
 import re
 
 import pytest
@@ -106,3 +108,64 @@ class TestFalsePositives:
 
         assert result["summary"] == "username_enum: 2 claimed account(s) for @jperez.7q"
         assert all("ghost" not in f.value and "echo" not in f.value for f in hub.of_kind("url"))
+
+
+def maigret_site(site, handle, status):
+    """One site entry as Maigret 0.6 writes it in a simple JSON report."""
+    url = f"https://{site.lower()}.test/{handle}"
+    return {
+        "username": handle, "parsing_enabled": False, "url_main": f"https://{site.lower()}.test/",
+        "url_user": url, "http_status": 200, "rank": 1,
+        "status": {"username": handle, "site_name": site, "url": url, "status": status,
+                   "ids": {}, "tags": [], "keywords": [], "keyword_match_status": "No Keywords"},
+        "site": {"url": f"https://{site.lower()}.test/{{username}}", "tags": []},
+    }
+
+
+def run_maigret(monkeypatch, report):
+    """Runs the Maigret backend against a subprocess that writes ``report``."""
+    def fake_run(cmd, **kwargs):
+        folder = cmd[cmd.index("--folderoutput") + 1]
+        with open(os.path.join(folder, f"report_{cmd[1]}_simple.json"), "w", encoding="utf-8") as f:
+            json.dump(report, f)
+
+    monkeypatch.setattr(ue.subprocess, "run", fake_run)
+    monkeypatch.setattr(ue, "_MAIGRET_BIN", "maigret")
+    return ue._run_maigret.__wrapped__("jperez.7q", 20)
+
+
+class TestMaigretReport:
+    def test_reads_the_status_object_of_maigret_0_6(self, monkeypatch):
+        rows = run_maigret(monkeypatch, {"GitHub": maigret_site("GitHub", "jperez.7q", "Claimed")})
+
+        assert rows == [{"site": "GitHub", "url": "https://github.test/jperez.7q",
+                         "status": "found", "http_status": "200", "response_time": ""}]
+
+    def test_reads_the_bare_status_of_older_releases(self, monkeypatch):
+        report = {"Reddit": {"status": "Claimed", "url_user": "https://reddit.test/jperez.7q"}}
+
+        rows = run_maigret(monkeypatch, report)
+
+        assert [r["url"] for r in rows] == ["https://reddit.test/jperez.7q"]
+
+    @pytest.mark.parametrize("entry", [
+        maigret_site("GitHub", "jperez.7q", "Available"),
+        {"status": "Available", "url_user": "https://github.test/jperez.7q"},
+        {"status": "Unknown", "url_user": "https://github.test/jperez.7q"},
+    ])
+    def test_sites_without_the_handle_are_left_out(self, monkeypatch, entry):
+        assert run_maigret(monkeypatch, {"GitHub": entry}) == []
+
+    def test_url_falls_back_to_the_status_object(self, monkeypatch):
+        entry = maigret_site("GitHub", "jperez.7q", "Claimed")
+        del entry["url_user"]
+
+        rows = run_maigret(monkeypatch, {"GitHub": entry})
+
+        assert rows[0]["url"] == "https://github.test/jperez.7q"
+
+    def test_entries_that_are_not_objects_are_skipped(self, monkeypatch):
+        report = {"Broken": None, "Odd": "Claimed",
+                  "GitHub": maigret_site("GitHub", "jperez.7q", "Claimed")}
+
+        assert [r["site"] for r in run_maigret(monkeypatch, report)] == ["GitHub"]

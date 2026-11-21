@@ -8,6 +8,7 @@ from typing import Iterator
 
 from cli.ui import console, THEME
 from core.providers.backoff import _retry_with_backoff
+from core.providers.errors import ProviderError
 
 
 class OllamaGenerator:
@@ -55,9 +56,8 @@ class OllamaGenerator:
         object with a ``response`` token; the final object has ``done: true``.
         """
         if not self._ping():
-            yield (f"[Ollama error: daemon not reachable at {self.host}. "
-                   f"Start it with `ollama serve` or set OLLAMA_HOST.]")
-            return
+            raise ProviderError(f"Ollama: daemon not reachable at {self.host}. "
+                                f"Start it with `ollama serve` or set OLLAMA_HOST.")
 
         console.print(
             f"  [{THEME['DIM']}]⟳ Generating with Ollama "
@@ -79,8 +79,7 @@ class OllamaGenerator:
             )
             response.raise_for_status()
         except Exception as e:
-            yield f"[Ollama error: {e}]"
-            return
+            raise ProviderError(f"Ollama: {e}") from e
 
         if render:
             console.print()
@@ -93,8 +92,7 @@ class OllamaGenerator:
                 except json.JSONDecodeError:
                     continue
                 if "error" in payload:
-                    yield f"[Ollama error: {payload['error']}]"
-                    break
+                    raise ProviderError(f"Ollama: {payload['error']}")
                 text = payload.get("response", "")
                 if text:
                     if render:
@@ -102,7 +100,10 @@ class OllamaGenerator:
                     yield text
                 if payload.get("done"):
                     break
+        except ProviderError:
+            raise
         except Exception as e:
-            yield f"[Ollama stream error: {e}]"
-        if render:
-            print()
+            raise ProviderError(f"Ollama stream: {e}") from e
+        finally:
+            if render:
+                print()

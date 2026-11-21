@@ -1,6 +1,7 @@
 import requests
 
 from cli.ui import print_warn
+from search.engines import EngineUnavailableError
 from search.engines.cache import search_cache
 
 # Highest page offset the API accepts, so a query reaches ten pages at most.
@@ -77,6 +78,11 @@ class BraveSearch:
 
             try:
                 response = requests.get(self.base_url, headers=headers, params=params, timeout=10)
+                if response.status_code in (401, 402):
+                    raise EngineUnavailableError(
+                        f"Brave rejected BRAVE_API_KEY or has no credit left "
+                        f"(HTTP {response.status_code})."
+                    )
                 response.raise_for_status()
                 data = response.json()
                 
@@ -97,6 +103,8 @@ class BraveSearch:
 
             except Exception as e:
                 if not final_results:
+                    if isinstance(e, EngineUnavailableError):
+                        raise
                     raise RuntimeError(f"Brave Search API Error (page {offset + 1}): {e}")
                 # Incomplete set: keep what was paid for, but leave it out of
                 # the cache so a later run can fetch every page.
